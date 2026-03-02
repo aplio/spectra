@@ -89,7 +89,19 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build
-        run: cargo build --locked --release
+        run: |
+          set -euo pipefail
+          current_version="${{ needs.check-version-bump.outputs.current_version }}"
+          lock_version="$(awk '
+            /^name = "spectra"$/ {in_package=1; next}
+            in_package && /^version = / {gsub(/["[:space:]]/, "", $3); print $3; exit}
+            in_package && /^\[/ {in_package=0}
+          ' Cargo.lock)"
+          if [[ "$lock_version" != "$current_version" ]]; then
+            echo "Regenerating Cargo.lock because spectra version changed from $lock_version to $current_version"
+            cargo generate-lockfile
+          fi
+          cargo build --locked --release
 
       - name: Package artifact
         id: package
