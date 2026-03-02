@@ -1,0 +1,78 @@
+# spectra config example
+
+prefix = "C-j"
+# When true, prefix mode stays active after executing a command.
+# Press the prefix key again or ESC to exit. (default: true)
+prefix_sticky = true
+session_name = "main"
+initial_command = "echo ready"
+editor = "vim"
+
+[shell]
+suppress_prompt_eol_marker = true
+
+[mouse]
+enabled = false
+
+[terminal]
+# tmux-compatible pass-through (DCS tmux;...ST) to the outer terminal.
+allow_passthrough = true
+
+[status]
+format = "session {session_index}/{session_count}:{session_name} | window {window_index}/{window_count} | pane {pane_index}/{pane_count} | prefix {prefix}{lock}{zoom}{sync}{mouse}{message}"
+background = "#2E3440"
+foreground = "#D8DEE9"
+
+[hooks]
+session_created = ""
+session_killed = ""
+window_created = ""
+pane_split = ""
+pane_closed = ""
+config_reloaded = ""
+
+[prefix_bindings]
+"|" = "split-vertical"
+"\"" = "split-horizontal"
+Left = "focus-left"
+Down = "focus-down"
+Up = "focus-up"
+Right = "focus-right"
+w = "window-tree"
+Tab = "window-tree"
+W = "peek-all-windows"
+n = "new-session"
+c = "new-window"
+r = "reload-config"
+z = "toggle-zoom"
+S = "synchronize-panes"
+d = "detach-client"
+o = "focus-next-pane"
+p = "command-palette"
+O = "focus-prev-pane"
+"[" = "enter-cursor-mode"
+"C-Left" = "resize-left"
+"C-Down" = "resize-down"
+"C-Up" = "resize-up"
+"C-Right" = "resize-right"
+"{" = "swap-prev-window"
+"}" = "swap-next-window"
+"$" = "rename-session"
+"C-s" = "save-layout"
+l = "write-log"
+P = "write-scrollback"
+# e = "open-current-pane-buffer-in-editor"
+"(" = "prev-session"
+")" = "next-session"
+s = "window-tree"
+
+[global_bindings]
+# Alt+Arrow for pane focus without prefix.
+# macOS: most terminals intercept Alt+Left/Right. For Ghostty, add to config:
+#   keybind = alt+left=text:\x1b[1;3D
+#   keybind = alt+right=text:\x1b[1;3C
+"M-Left" = "focus-left"
+"M-Down" = "focus-down"
+"M-Up" = "focus-up"
+"M-Right" = "focus-right"
+"C-w" = "window-tree"

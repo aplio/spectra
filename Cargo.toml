@@ -1,0 +1,19 @@
+[package]
+name = "spectra"
+version = "0.1.1"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.29"
+portable-pty = { version = "0.9.0", features = ["serde", "serde_support"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.9"
+unicode-width = "0.2"
+vte = { version = "0.15.0", features = ["ansi", "serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+base64 = "0.22.1"
+
+[dev-dependencies]
+tempfile = "3"

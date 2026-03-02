@@ -1,0 +1,10 @@
+pane-1 ready            │pane-2 ready
+$                       │$
+                        │
+                        │
+                        │
+                        │
+                        │
+                        │
+                        │
+status
