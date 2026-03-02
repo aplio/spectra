@@ -59,6 +59,10 @@ if [ -n "${SPECTRA_VERSION:-}" ]; then
 else
   release_api="${GITHUB_API}/latest"
 fi
+verify_checksums=1
+if [ "${SPECTRA_SKIP_VERIFY:-0}" = "1" ]; then
+  verify_checksums=0
+fi
 
 release_json="$(curl -fsSL "${release_api}")"
 tag="$(printf '%s\n' "${release_json}" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
@@ -99,15 +103,14 @@ if [ -z "${archive}" ] || [ "${archive}" = "${archive_info}" ]; then
   exit 1
 fi
 
-if [ "${SPECTRA_SKIP_VERIFY:-0}" != "1" ]; then
+if [ "${verify_checksums}" = "1" ]; then
   checksum_info="$(extract_asset "checksums\\.txt$")"
   checksum_file="${checksum_info%%|*}"
   checksum_url="${checksum_info##*|}"
 
   if [ -z "${checksum_file}" ] || [ "${checksum_file}" = "${checksum_info}" ]; then
-    echo "Could not locate checksums.txt in release ${tag}." >&2
-    echo "Set SPECTRA_SKIP_VERIFY=1 to skip verification." >&2
-    exit 1
+    echo "Could not locate checksums.txt in release ${tag}. Proceeding without checksum verification."
+    verify_checksums=0
   fi
 fi
 
@@ -123,7 +126,7 @@ checksum_path="${tmpdir}/${checksum_file:-checksums.txt}"
 
 curl -fsSL "${archive_url}" -o "${archive_path}"
 
-if [ "${SPECTRA_SKIP_VERIFY:-0}" != "1" ]; then
+if [ "${verify_checksums}" = "1" ]; then
   curl -fsSL "${checksum_url}" -o "${checksum_path}"
 
   if command -v sha256sum >/dev/null 2>&1; then

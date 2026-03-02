@@ -37,7 +37,7 @@ Install to a custom directory:
 SPECTRA_BIN_DIR=$HOME/.bin curl -fsSL https://github.com/aplio/spectra/raw/refs/heads/master/install.sh | sh
 ```
 
-Checksum verification is enabled by default. Set `SPECTRA_SKIP_VERIFY=1` to bypass verification.
+Checksum verification is enabled when a release includes `checksums.txt`. Set `SPECTRA_SKIP_VERIFY=1` to skip verification.
 
 ## Run
 
