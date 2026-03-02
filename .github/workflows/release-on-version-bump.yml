@@ -1,0 +1,132 @@
+name: Build on version bump
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-version-bump:
+    name: Detect app version bump
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.version.outputs.should_build }}
+      current_version: ${{ steps.version.outputs.current_version }}
+      previous_version: ${{ steps.version.outputs.previous_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check Cargo.toml version
+        id: version
+        shell: bash
+        env:
+          GIT_EVENT_NAME: ${{ github.event_name }}
+          GIT_REF_TYPE: ${{ github.ref_type }}
+          PREV_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          extract_version() {
+            awk -F= '/^version[[:space:]]*=/{
+              gsub(/[[:space:]]|"/, "", $2)
+              print $2
+              exit
+            }'
+          }
+
+          current_version="$(extract_version < Cargo.toml)"
+          previous_version="$current_version"
+          should_build=false
+
+          if [[ "$GIT_EVENT_NAME" == "workflow_dispatch" || "$GIT_REF_TYPE" == "tag" ]]; then
+            should_build=true
+          else
+            if [[ -n "$PREV_SHA" && "$PREV_SHA" != "0000000000000000000000000000000000000000" ]] && git cat-file -e "$PREV_SHA"^{commit} 2>/dev/null; then
+              previous_version="$(git show "$PREV_SHA:Cargo.toml" | extract_version)"
+            fi
+
+            if [[ "$previous_version" != "$current_version" ]]; then
+              should_build=true
+            fi
+          fi
+
+          echo "current_version=$current_version" >> "$GITHUB_OUTPUT"
+          echo "previous_version=$previous_version" >> "$GITHUB_OUTPUT"
+          echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build release binaries
+    needs: [check-version-bump]
+    if: needs.check-version-bump.outputs.should_build == 'true'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_suffix: linux-x86_64
+          - os: macos-latest
+            asset_suffix: macos-arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --locked --release
+
+      - name: Package artifact
+        id: package
+        shell: bash
+        env:
+          VERSION: ${{ needs.check-version-bump.outputs.current_version }}
+          ASSET_SUFFIX: ${{ matrix.asset_suffix }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          archive="spectra-v${VERSION}-${ASSET_SUFFIX}.tar.gz"
+          tar -czf "dist/${archive}" -C target/release spectra
+          echo "archive=${archive}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: spectra-${{ matrix.asset_suffix }}
+          path: dist/${{ steps.package.outputs.archive }}
+
+  publish-release:
+    name: Publish release assets
+    needs: [check-version-bump, build]
+    if: github.ref_type == 'tag' && needs.check-version-bump.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: spectra-*
+          merge-multiple: true
+
+      - name: Publish to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.tar.gz
+          fail_on_unmatched_files: true
+          generate_release_notes: true
