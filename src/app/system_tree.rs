@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::core_lib::filtering::fzf_style_match;
+use crate::filtering::fzf_style_match;
 
 use super::types::*;
 use super::{App, session_id_for};

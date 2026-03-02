@@ -11,7 +11,7 @@ pub fn socket_path() -> PathBuf {
     if let Some(runtime_dir) = env::var_os("XDG_RUNTIME_DIR") {
         return PathBuf::from(runtime_dir).join(APP_ID).join(SOCKET_FILE);
     }
-    crate::core_lib::xdg::app_data_dir(APP_ID)
+    crate::xdg::app_data_dir()
         .join("run")
         .join(SOCKET_FILE)
 }

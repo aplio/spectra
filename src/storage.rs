@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::core_lib::xdg;
+use crate::xdg;
 
 #[derive(Debug, Clone)]
 pub struct DataStore {
@@ -27,11 +27,7 @@ pub struct SessionInfo {
 impl DataStore {
     /// Compatibility constructor for spectra.
     pub fn from_xdg() -> io::Result<Self> {
-        Self::from_xdg_app("spectra")
-    }
-
-    pub fn from_xdg_app(app_id: &str) -> io::Result<Self> {
-        let base_dir = xdg::app_data_dir(app_id);
+        let base_dir = xdg::app_data_dir();
         fs::create_dir_all(&base_dir)?;
         Ok(Self { base_dir })
     }

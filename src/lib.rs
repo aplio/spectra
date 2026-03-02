@@ -4,7 +4,7 @@ pub mod cli;
 pub mod clipboard;
 pub mod command_history;
 pub mod config;
-pub mod core_lib;
+pub mod filtering;
 pub mod input;
 pub mod io;
 pub mod ipc;

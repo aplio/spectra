@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -84,7 +86,7 @@ pub struct HooksConfig {
 }
 
 pub fn config_path() -> PathBuf {
-    crate::core_lib::config::app_config_file("spectra", "config.toml")
+    crate::xdg::app_config_dir().join("config.toml")
 }
 
 pub fn load_from_xdg() -> io::Result<AppConfig> {
@@ -92,7 +94,25 @@ pub fn load_from_xdg() -> io::Result<AppConfig> {
 }
 
 pub fn load_from_path(path: &Path) -> io::Result<AppConfig> {
-    crate::core_lib::config::load_toml_with_default(path)
+    load_toml_with_default(path)
+}
+
+fn load_toml_with_default<T>(path: &Path) -> io::Result<T>
+where
+    T: DeserializeOwned + Default,
+{
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(T::default()),
+        Err(err) => return Err(err),
+    };
+
+    toml::from_str::<T>(&content).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed parsing config {}: {err}", path.display()),
+        )
+    })
 }
 
 #[cfg(test)]

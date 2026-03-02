@@ -9,7 +9,7 @@ use crate::input::{CommandAction, KeyMapper};
 use crate::session::manager::SessionManager;
 use crate::session::terminal_state::{CellStyle, StyledCell};
 use crate::ui::window_manager::WindowId;
-use crate::core_lib::text::input::TextInput;
+use crate::input::text_input::TextInput;
 
 pub(super) struct ManagedSession {
     pub ordinal: usize,

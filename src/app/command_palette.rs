@@ -4,7 +4,7 @@ use std::mem;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::input::CommandAction;
-use crate::core_lib::filtering::fzf_style_match;
+use crate::filtering::fzf_style_match;
 
 use super::types::*;
 use super::{App, AppSignal};

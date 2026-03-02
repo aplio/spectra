@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core_lib::layout::engine;
+use crate::ui::layout as engine;
 
 pub type PaneId = usize;
 pub type WindowId = engine::WindowId;

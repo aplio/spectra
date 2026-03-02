@@ -18,7 +18,7 @@ use crate::ipc::protocol::{
     ServerMessage,
 };
 use crate::ipc::socket_path;
-use crate::core_lib::runtime::event_loop::poll_event_for;
+use crate::runtime::event_loop::poll_event_for;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);

@@ -9,7 +9,7 @@ pub struct CommandHistory {
 
 impl CommandHistory {
     pub fn from_xdg() -> Self {
-        Self::new_with_data_dir(crate::core_lib::xdg::app_data_dir("spectra"))
+        Self::new_with_data_dir(crate::xdg::app_data_dir())
     }
 
     pub fn new_with_data_dir(data_dir: PathBuf) -> Self {

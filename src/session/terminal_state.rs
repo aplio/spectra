@@ -2,7 +2,7 @@ use crossterm::style::Color;
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Parser, Perform};
 
-pub use crate::core_lib::ui::style::CellStyle;
+pub use crate::ui::style::CellStyle;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StyledCell {

@@ -26,7 +26,7 @@ use crate::session::manager::{PaneTerminalEvent, SessionManager};
 use crate::session::terminal_state::{CellStyle, TerminalEvent};
 use crate::storage::{DataStore, unix_time_now};
 use crate::ui::window_manager::{Direction, WindowId};
-use crate::core_lib::runtime::event_loop::{FRAME_DURATION_60_FPS, poll_event_for};
+use crate::runtime::event_loop::{FRAME_DURATION_60_FPS, poll_event_for};
 use types::*;
 
 pub type ClientId = u64;
