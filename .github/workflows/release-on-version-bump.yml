@@ -137,9 +137,20 @@ jobs:
           pattern: spectra-*
           merge-multiple: true
 
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+
+          : > artifacts/checksums.txt
+          while IFS= read -r -d '' file; do
+            sha256sum "$file" >> artifacts/checksums.txt
+          done < <(find artifacts -type f -name '*.tar.gz' -print0)
+
       - name: Publish to release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*.tar.gz
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/checksums.txt
           fail_on_unmatched_files: true
           generate_release_notes: true

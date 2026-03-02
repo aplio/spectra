@@ -17,6 +17,28 @@ Current POC scope:
 - status line and command prompts
 - XDG-based config and data persistence
 
+## Install
+
+Quick install (latest release):
+
+```bash
+curl -fsSL https://github.com/aplio/spectra/raw/refs/heads/main/install.sh | sh
+```
+
+Install a specific version:
+
+```bash
+SPECTRA_VERSION=v0.1.3 curl -fsSL https://github.com/aplio/spectra/raw/refs/heads/main/install.sh | sh
+```
+
+Install to a custom directory:
+
+```bash
+SPECTRA_BIN_DIR=$HOME/.bin curl -fsSL https://github.com/aplio/spectra/raw/refs/heads/main/install.sh | sh
+```
+
+Checksum verification is enabled by default. Set `SPECTRA_SKIP_VERIFY=1` to bypass verification.
+
 ## Run
 
 ```bash
