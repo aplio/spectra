@@ -2,7 +2,7 @@
 
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -448,9 +448,8 @@ fn spawn_server_process(cli: &Cli) -> io::Result<std::process::Child> {
     let exe = std::env::current_exe()?;
     let mut command = Command::new(exe);
     command.arg("--server");
-    if let Some(cwd) = &cli.cwd {
-        command.arg("--cwd").arg(cwd);
-    }
+    let cwd = bootstrap_server_cwd(cli)?;
+    command.arg("--cwd").arg(cwd);
     if let Some(shell) = &cli.shell {
         command.arg("--shell").arg(shell);
     }
@@ -463,6 +462,19 @@ fn spawn_server_process(cli: &Cli) -> io::Result<std::process::Child> {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     command.spawn()
+}
+
+fn bootstrap_server_cwd(cli: &Cli) -> io::Result<PathBuf> {
+    if let Some(cwd) = &cli.cwd {
+        return Ok(cwd.clone());
+    }
+
+    std::env::current_dir().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("failed to detect current directory for --cwd: {err}"),
+        )
+    })
 }
 
 fn send_client_message(stream: &mut UnixStream, message: &ClientMessage) -> io::Result<()> {
@@ -559,10 +571,11 @@ fn inside_spectra_session() -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
 
     use super::{client_identity_fingerprint, nested_session_warning};
-    use crate::cli::CliMode;
+    use crate::cli::{Cli, CliMode};
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -624,5 +637,58 @@ mod tests {
             // SAFETY: The test serializes environment updates with a process-wide mutex.
             unsafe { std::env::remove_var("SPECTRA") };
         }
+    }
+
+    struct CurrentDirGuard(PathBuf);
+
+    impl CurrentDirGuard {
+        fn capture() -> Self {
+            Self(std::env::current_dir().expect("current dir"))
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+
+    #[test]
+    fn bootstrap_server_cwd_uses_explicit_cli_value() {
+        let _guard = env_lock().lock().expect("env lock");
+        let explicit_cwd = PathBuf::from("/tmp");
+        let cli = Cli {
+            server: false,
+            attach: None,
+            cwd: Some(explicit_cwd.clone()),
+            shell: None,
+            subcommand: None,
+            command: Vec::new(),
+        };
+
+        let resolved = super::bootstrap_server_cwd(&cli).expect("resolve cwd");
+        assert_eq!(resolved, explicit_cwd);
+    }
+
+    #[test]
+    fn bootstrap_server_cwd_falls_back_to_current_dir() {
+        let _guard = env_lock().lock().expect("env lock");
+        let current_guard = CurrentDirGuard::capture();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let expected = temp.path().to_path_buf();
+        std::env::set_current_dir(&expected).expect("set temp cwd");
+
+        let cli = Cli {
+            server: false,
+            attach: None,
+            cwd: None,
+            shell: None,
+            subcommand: None,
+            command: Vec::new(),
+        };
+
+        let resolved = super::bootstrap_server_cwd(&cli).expect("resolve cwd");
+        assert_eq!(resolved, expected);
+        drop(current_guard);
     }
 }
