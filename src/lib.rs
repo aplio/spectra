@@ -10,6 +10,8 @@ pub mod io;
 pub mod ipc;
 #[cfg(unix)]
 pub mod runtime;
+#[cfg(unix)]
+pub mod upgrade;
 pub mod session;
 pub mod storage;
 pub mod ui;

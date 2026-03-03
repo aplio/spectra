@@ -26,6 +26,11 @@ const IO_RETRY_DELAY: Duration = Duration::from_millis(2);
 const IDLE_LOOP_BACKOFF: Duration = Duration::from_millis(1);
 const SPECTRA_NESTED_WARNING: &str = "sessions should be nested with care, unset $SPECTRA to force";
 
+pub fn server_is_active() -> bool {
+    let socket = socket_path::socket_path();
+    UnixStream::connect(&socket).is_ok()
+}
+
 pub fn nested_session_warning(mode: CliMode) -> Option<&'static str> {
     if mode != CliMode::AttachOrCreate {
         return None;
@@ -662,6 +667,7 @@ mod tests {
             attach: None,
             cwd: Some(explicit_cwd.clone()),
             shell: None,
+            update: false,
             subcommand: None,
             command: Vec::new(),
         };
@@ -683,6 +689,7 @@ mod tests {
             attach: None,
             cwd: None,
             shell: None,
+            update: false,
             subcommand: None,
             command: Vec::new(),
         };

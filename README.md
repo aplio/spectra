@@ -28,13 +28,13 @@ curl -fsSL https://github.com/aplio/spectra/raw/refs/heads/master/install.sh | s
 Install a specific version:
 
 ```bash
-SPECTRA_VERSION=v0.1.3 curl -fsSL https://github.com/aplio/spectra/raw/refs/heads/master/install.sh | sh
+curl -fsSL https://github.com/aplio/spectra/raw/refs/heads/master/install.sh | SPECTRA_VERSION=v0.1.3 sh
 ```
 
 Install to a custom directory:
 
 ```bash
-SPECTRA_BIN_DIR=$HOME/.bin curl -fsSL https://github.com/aplio/spectra/raw/refs/heads/master/install.sh | sh
+curl -fsSL https://github.com/aplio/spectra/raw/refs/heads/master/install.sh | SPECTRA_BIN_DIR=$HOME/.bin sh
 ```
 
 Checksum verification is enabled when a release includes `checksums.txt`. Set `SPECTRA_SKIP_VERIFY=1` to skip verification.

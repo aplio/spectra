@@ -7,6 +7,7 @@ pub enum CliMode {
     AttachOrCreate,
     RunServer,
     RunCommand,
+    Update,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -98,6 +99,10 @@ pub struct Cli {
     #[arg(long, value_name = "PATH")]
     pub shell: Option<String>,
 
+    /// Check for and install the latest spectra release from GitHub.
+    #[arg(long)]
+    pub update: bool,
+
     /// Optional subcommand command surface.
     #[command(subcommand)]
     pub subcommand: Option<CliCommand>,
@@ -115,6 +120,8 @@ impl Cli {
     pub fn mode(&self) -> CliMode {
         if self.server {
             CliMode::RunServer
+        } else if self.update {
+            CliMode::Update
         } else if matches!(self.subcommand, Some(CliCommand::AttachSession { .. }))
             || self.subcommand.is_none()
         {
@@ -142,6 +149,20 @@ impl Cli {
         if self.attach.is_some() && self.subcommand.is_some() {
             return Err("--attach cannot be used with subcommands".to_string());
         }
+        if self.update && self.server {
+            return Err("--update cannot be used with --server".to_string());
+        }
+        if self.update && self.attach.is_some() {
+            return Err("--update cannot be used with --attach".to_string());
+        }
+        if self.update && self.subcommand.is_some() {
+            return Err("--update cannot be used with subcommands".to_string());
+        }
+        if self.update
+            && (self.cwd.is_some() || self.shell.is_some() || !self.command.is_empty())
+        {
+            return Err("--update cannot be used with startup options".to_string());
+        }
         Ok(())
     }
 
@@ -164,6 +185,7 @@ mod tests {
         assert!(cli.attach.is_none());
         assert!(cli.cwd.is_none());
         assert!(cli.shell.is_none());
+        assert!(!cli.update);
         assert!(cli.subcommand.is_none());
         assert!(cli.command.is_empty());
         assert_eq!(cli.mode(), CliMode::AttachOrCreate);
@@ -189,6 +211,13 @@ mod tests {
         let cli = Cli::try_parse_from(["spectra", "--server"]).expect("parse server");
         assert!(cli.server);
         assert_eq!(cli.mode(), CliMode::RunServer);
+    }
+
+    #[test]
+    fn parses_update_flag() {
+        let cli = Cli::try_parse_from(["spectra", "--update"]).expect("parse update");
+        assert!(cli.update);
+        assert_eq!(cli.mode(), CliMode::Update);
     }
 
     #[test]
@@ -347,5 +376,19 @@ mod tests {
             }
             _ => panic!("expected source-file"),
         }
+    }
+
+    #[test]
+    fn rejects_update_with_startup_options() {
+        let cli = Cli::try_parse_from(["spectra", "--update", "--cwd", "/tmp"])
+            .expect("parse update startup option");
+        assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_update_with_command_subcommand() {
+        let cli = Cli::try_parse_from(["spectra", "--update", "new-session"])
+            .expect("parse update with command");
+        assert!(cli.validate().is_err());
     }
 }
