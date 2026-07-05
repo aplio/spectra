@@ -5,10 +5,12 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::thread;
+use std::time::Instant;
 
 use crossterm::event::{KeyEvent, MouseEvent};
+use polling::{Event, Events, Poller};
 
 use crate::app::{App, AppSignal, ClientId, LOCAL_CLIENT_ID};
 use crate::cli::Cli;
@@ -20,8 +22,71 @@ use crate::ui::render::FrameRenderer;
 
 const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
-const IDLE_LOOP_BACKOFF: std::time::Duration = std::time::Duration::from_millis(1);
 const API_MAX_LINE_BYTES: usize = 1024 * 1024;
+
+/// Upper bound on one poll wait. Deadlines computed by
+/// [`App::next_deadline`] normally wake the loop sooner; this cap is a
+/// safety net so that even a missed deadline source (or wall-clock work
+/// with no fd, like pane-exit detection via `try_wait`) is never delayed
+/// past 250ms. Idle cost: ~4 wakeups per second.
+const POLL_HEARTBEAT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Poller key of the main (client) listener.
+const POLL_KEY_CLIENT_LISTENER: usize = 0;
+/// Poller key of the JSON-RPC API listener.
+const POLL_KEY_API_LISTENER: usize = 1;
+/// First poller key handed to API connections; they use odd keys >= 3
+/// (client connections use even keys >= 2), so keys stay unique for the
+/// lifetime of the server without any shared registry.
+const POLL_KEY_API_FIRST: usize = 3;
+
+/// Poller key for a client connection: even keys >= 2, derived from the
+/// monotonically increasing client id (ids start at 1 and are never
+/// reused), so a key can never be confused with a listener or an API key.
+fn client_poll_key(id: ClientId) -> usize {
+    (id as usize).saturating_mul(2)
+}
+
+/// Poller interest for a connection: always readable, and additionally
+/// writable only while queued bytes could not be flushed (`WouldBlock`),
+/// so an idle wait never spins on always-writable sockets.
+fn poll_interest(key: usize, wants_write: bool) -> Event {
+    if wants_write {
+        Event::all(key)
+    } else {
+        Event::readable(key)
+    }
+}
+
+/// Re-arm poller interest for every live source. The `polling` crate
+/// delivers events in oneshot mode — a delivered event clears that source's
+/// interest — so instead of tracking which events fired, the loop re-arms
+/// everything right before each wait. A handful of `modify` calls per
+/// wakeup is negligible next to the alternative failure mode: one missed
+/// re-arm silently stalling a connection.
+fn rearm_poll_interest(
+    poller: &Poller,
+    listener: &UnixListener,
+    api_listener: &UnixListener,
+    clients: &[ClientConnection],
+    api_connections: &[ApiConnection],
+) -> io::Result<()> {
+    poller.modify(listener, Event::readable(POLL_KEY_CLIENT_LISTENER))?;
+    poller.modify(api_listener, Event::readable(POLL_KEY_API_LISTENER))?;
+    for client in clients {
+        poller.modify(
+            &client.stream,
+            poll_interest(client_poll_key(client.id), !client.write_queue.is_empty()),
+        )?;
+    }
+    for connection in api_connections {
+        poller.modify(
+            &connection.stream,
+            poll_interest(connection.poll_key, !connection.write_buffer.is_empty()),
+        )?;
+    }
+    Ok(())
+}
 
 pub fn run(cli: Cli) -> io::Result<()> {
     let socket = socket_path::socket_path();
@@ -35,6 +100,20 @@ pub fn run(cli: Cli) -> io::Result<()> {
     let api_listener = UnixListener::bind(&api_socket)?;
     api_listener.set_nonblocking(true)?;
     let _api_cleanup = SocketCleanupGuard::new(api_socket);
+
+    // Readiness-based loop core: the poller owns interest for both
+    // listeners and every connection stream; fd-less producers (PTY reader
+    // threads, the update-check thread) wake it through `wake::notify`.
+    // Install the waker before `App::new_with_size` so panes spawned during
+    // startup can already wake the loop.
+    let poller = Arc::new(Poller::new()?);
+    let _wake_guard = crate::runtime::wake::install(Arc::clone(&poller));
+    // SAFETY: both listeners outlive the poller registrations — they are
+    // dropped together at the end of this function.
+    unsafe {
+        poller.add(&listener, Event::readable(POLL_KEY_CLIENT_LISTENER))?;
+        poller.add(&api_listener, Event::readable(POLL_KEY_API_LISTENER))?;
+    }
 
     let mut app = App::new_with_size(cli.without_server_flag(), DEFAULT_COLS, DEFAULT_ROWS)?;
     app.request_render(true);
@@ -54,12 +133,25 @@ pub fn run(cli: Cli) -> io::Result<()> {
     let mut clients = Vec::new();
     let mut api_connections: Vec<ApiConnection> = Vec::new();
     let mut next_client_id: ClientId = 1;
+    let mut next_api_poll_key = POLL_KEY_API_FIRST;
+    let mut poll_events = Events::new();
     loop {
         let mut did_work = false;
 
-        did_work |= accept_clients(&listener, &mut clients, &mut app, &mut next_client_id)?;
+        did_work |= accept_clients(
+            &listener,
+            &mut clients,
+            &mut app,
+            &mut next_client_id,
+            &poller,
+        )?;
         did_work |= process_client_input(&mut clients, &mut app)?;
-        did_work |= accept_api_connections(&api_listener, &mut api_connections)?;
+        did_work |= accept_api_connections(
+            &api_listener,
+            &mut api_connections,
+            &poller,
+            &mut next_api_poll_key,
+        )?;
         did_work |= process_api_input(&mut api_connections, &mut app);
         did_work |= poll_update_check(&mut update_check_rx, &mut app);
 
@@ -86,15 +178,38 @@ pub fn run(cli: Cli) -> io::Result<()> {
                     reason: "spectra session ended".to_string(),
                 });
             }
-            let _ = flush_clients(&mut clients, &mut app);
+            let _ = flush_clients(&mut clients, &mut app, &poller);
             break;
         }
 
-        did_work |= flush_clients(&mut clients, &mut app)?;
-        did_work |= flush_api_connections(&mut api_connections);
-        if !did_work {
-            thread::sleep(IDLE_LOOP_BACKOFF);
+        did_work |= flush_clients(&mut clients, &mut app, &poller)?;
+        did_work |= flush_api_connections(&mut api_connections, &poller);
+        if did_work {
+            // Something progressed; more work may be immediately runnable
+            // (partial writes, renders released from a hold), so run the
+            // phases again before blocking.
+            continue;
         }
+
+        // Idle: sleep until fd readiness, a `wake::notify` from an fd-less
+        // producer thread, the next tick deadline, or the heartbeat cap —
+        // whichever comes first. Every phase above is written against
+        // nonblocking sockets and `try_recv`, so spurious wakeups are safe.
+        rearm_poll_interest(
+            &poller,
+            &listener,
+            &api_listener,
+            &clients,
+            &api_connections,
+        )?;
+        let now = Instant::now();
+        let timeout = app.next_deadline(now).map_or(POLL_HEARTBEAT, |deadline| {
+            deadline.saturating_duration_since(now).min(POLL_HEARTBEAT)
+        });
+        poll_events.clear();
+        // The events themselves are not inspected: the phases poll every
+        // source anyway, so readiness only needs to end the wait.
+        poller.wait(&mut poll_events, Some(timeout))?;
     }
 
     Ok(())
@@ -114,6 +229,9 @@ where
         .name("spectra-update-check".to_string())
         .spawn(move || {
             let _ = tx.send(checker());
+            // Wake the server loop so the result is applied immediately
+            // instead of on the next heartbeat.
+            crate::runtime::wake::notify();
         })
         .ok()
         .map(|_handle| rx)
@@ -144,13 +262,21 @@ fn poll_update_check(
 fn accept_api_connections(
     listener: &UnixListener,
     connections: &mut Vec<ApiConnection>,
+    poller: &Poller,
+    next_poll_key: &mut usize,
 ) -> io::Result<bool> {
     let mut accepted = false;
     loop {
         match listener.accept() {
             Ok((stream, _addr)) => {
                 stream.set_nonblocking(true)?;
-                connections.push(ApiConnection::new(stream));
+                let poll_key = *next_poll_key;
+                *next_poll_key = next_poll_key.saturating_add(2);
+                // SAFETY: the stream is owned by `connections` and is
+                // deleted from the poller before removal drops it
+                // (`flush_api_connections`).
+                unsafe { poller.add(&stream, Event::readable(poll_key))? };
+                connections.push(ApiConnection::new(stream, poll_key));
                 accepted = true;
             }
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
@@ -209,13 +335,14 @@ fn fan_out_api_events(connections: &mut [ApiConnection], app: &mut App) -> bool 
     queued
 }
 
-fn flush_api_connections(connections: &mut Vec<ApiConnection>) -> bool {
+fn flush_api_connections(connections: &mut Vec<ApiConnection>, poller: &Poller) -> bool {
     let mut progressed = false;
     let mut index = 0usize;
     while index < connections.len() {
         progressed |= connections[index].flush();
         if connections[index].disconnected {
-            connections.remove(index);
+            let removed = connections.remove(index);
+            let _ = poller.delete(&removed.stream);
             progressed = true;
         } else {
             index += 1;
@@ -226,6 +353,9 @@ fn flush_api_connections(connections: &mut Vec<ApiConnection>) -> bool {
 
 struct ApiConnection {
     stream: UnixStream,
+    /// Stable poller registration key (odd, assigned at accept and never
+    /// reused); vector indexes shift on removal so they cannot serve as keys.
+    poll_key: usize,
     read_buffer: Vec<u8>,
     write_buffer: Vec<u8>,
     /// Set by `events.subscribe`; when present, matching API events are
@@ -235,9 +365,10 @@ struct ApiConnection {
 }
 
 impl ApiConnection {
-    fn new(stream: UnixStream) -> Self {
+    fn new(stream: UnixStream, poll_key: usize) -> Self {
         Self {
             stream,
+            poll_key,
             read_buffer: Vec::new(),
             write_buffer: Vec::new(),
             subscription: None,
@@ -314,6 +445,7 @@ fn accept_clients(
     clients: &mut Vec<ClientConnection>,
     app: &mut App,
     next_client_id: &mut ClientId,
+    poller: &Poller,
 ) -> io::Result<bool> {
     let mut accepted = false;
     loop {
@@ -322,6 +454,9 @@ fn accept_clients(
                 stream.set_nonblocking(true)?;
                 let client_id = *next_client_id;
                 *next_client_id = client_id.saturating_add(1);
+                // SAFETY: the stream is owned by `clients` and is deleted
+                // from the poller before removal drops it (`flush_clients`).
+                unsafe { poller.add(&stream, Event::readable(client_poll_key(client_id)))? };
                 app.register_client(client_id, DEFAULT_COLS, DEFAULT_ROWS);
                 clients.push(ClientConnection::new(client_id, stream));
                 accepted = true;
@@ -565,13 +700,18 @@ impl QueuedMessage {
     }
 }
 
-fn flush_clients(clients: &mut Vec<ClientConnection>, app: &mut App) -> io::Result<bool> {
+fn flush_clients(
+    clients: &mut Vec<ClientConnection>,
+    app: &mut App,
+    poller: &Poller,
+) -> io::Result<bool> {
     let mut progressed = false;
     let mut index = 0usize;
     while index < clients.len() {
         progressed |= clients[index].flush()?;
         if clients[index].disconnected {
             let removed = clients.remove(index);
+            let _ = poller.delete(&removed.stream);
             app.unregister_client(removed.id);
             progressed = true;
         } else {

@@ -228,6 +228,13 @@ fn map_pty_error(err: impl std::fmt::Display) -> io::Error {
     io::Error::other(err.to_string())
 }
 
+/// Wake the server event loop (if this process runs one) so freshly queued
+/// PTY output is consumed immediately instead of on the next poll timeout.
+fn notify_server_loop() {
+    #[cfg(unix)]
+    crate::runtime::wake::notify();
+}
+
 fn pump_reader<R: Read + ?Sized>(reader: &mut R, tx: mpsc::Sender<Vec<u8>>) {
     let mut buf = [0u8; 8192];
     loop {
@@ -237,11 +244,15 @@ fn pump_reader<R: Read + ?Sized>(reader: &mut R, tx: mpsc::Sender<Vec<u8>>) {
                 if tx.send(buf[..n].to_vec()).is_err() {
                     break;
                 }
+                notify_server_loop();
             }
             Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         }
     }
+    // EOF or read error: the channel sender is about to drop, which is how
+    // pane exit is detected — wake the loop so cleanup runs promptly.
+    notify_server_loop();
 }
 
 impl PaneBackend for PtyPaneBackend {

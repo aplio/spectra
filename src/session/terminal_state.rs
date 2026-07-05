@@ -175,6 +175,14 @@ impl TerminalState {
             .is_some_and(|since| since.elapsed() < SYNC_OUTPUT_TIMEOUT)
     }
 
+    /// Instant at which the currently active synchronized-output hold times
+    /// out; `None` when no hold is active (never requested, released, or
+    /// already past [`SYNC_OUTPUT_TIMEOUT`]).
+    pub fn sync_output_deadline(&self) -> Option<std::time::Instant> {
+        let deadline = self.grid.sync_output_since? + SYNC_OUTPUT_TIMEOUT;
+        (std::time::Instant::now() < deadline).then_some(deadline)
+    }
+
     /// Mouse reporting level requested by the guest program.
     pub fn mouse_protocol(&self) -> MouseProtocol {
         self.grid.mouse_protocol

@@ -394,6 +394,17 @@ impl SessionManager {
             .any(Pane::synchronized_output_active)
     }
 
+    /// Earliest instant at which an active synchronized-output hold in the
+    /// active window times out; `None` when no pane is holding. Lets the
+    /// server loop wake exactly when a deferred render becomes flushable.
+    pub fn active_window_sync_output_deadline(&self) -> Option<std::time::Instant> {
+        self.active_window_pane_ids()
+            .iter()
+            .filter_map(|pane_id| self.panes.get(pane_id))
+            .filter_map(Pane::sync_output_deadline)
+            .min()
+    }
+
     /// Whether the pane's guest program requested mouse reporting.
     pub fn pane_wants_mouse_reporting(&self, pane_id: PaneId) -> bool {
         self.panes

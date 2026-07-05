@@ -502,6 +502,57 @@ impl App {
         self.current_session().active_window_sync_output_hold()
     }
 
+    /// Earliest future instant at which [`Self::tick`] has time-based work
+    /// to do: a synchronized-output hold expiring (releases a deferred
+    /// render), throttled agent detection becoming due for a pending pane,
+    /// or a status message expiring. `None` when no timed work is pending.
+    /// The server loop bounds its poll timeout by this so it sleeps until
+    /// readiness, a wake notification, or the next deadline — whichever
+    /// comes first.
+    pub fn next_deadline(&self, now: Instant) -> Option<Instant> {
+        let mut deadline: Option<Instant> = None;
+        let mut consider = |candidate: Instant| {
+            deadline = Some(deadline.map_or(candidate, |current| current.min(candidate)));
+        };
+
+        if self.needs_render
+            && let Some(hold_expiry) = self.current_session().active_window_sync_output_deadline()
+        {
+            consider(hold_expiry);
+        }
+
+        for managed in &self.sessions {
+            for pane_id in &managed.agents.pending {
+                // Mirrors the due-filter in `run_agent_detection`: throttled
+                // by the per-pane interval, and additionally suppressed while
+                // an external `agent.report` is fresh.
+                let mut due = managed
+                    .agents
+                    .last_run
+                    .get(pane_id)
+                    .map_or(now, |last| *last + AGENT_DETECT_INTERVAL);
+                if let Some(reported_at) = managed.agents.reported.get(pane_id) {
+                    let report_expiry = *reported_at + REPORTED_AGENT_TTL;
+                    if report_expiry > now {
+                        due = due.max(report_expiry);
+                    }
+                }
+                consider(due);
+            }
+        }
+
+        if let Some(message) = &self.view.status_message {
+            consider(message.expires_at);
+        }
+        for state in self.inactive_client_states.values() {
+            if let Some(message) = &state.status_message {
+                consider(message.expires_at);
+            }
+        }
+
+        deadline
+    }
+
     pub fn render_snapshot_for_client(&mut self, client_id: ClientId) -> Option<RenderSnapshot> {
         if !self.needs_render {
             return None;

@@ -10,7 +10,6 @@
 > 2. remote attachをherdr同等(バイナリ自動配布+checksum)まで作り込むか (P5)
 >
 > 判断済み・実装待ち (P6):
-> - イベントループepoll化 — ユーザー判断: 一番薄いもので可、どれも大差なければtokioでok
 > - god object分割 — ユーザー判断: yes、着手可(epoll化と合わせて計画推奨)
 > - SCM_RIGHTS live handoff — ユーザー判断: yes、採用
 >
@@ -164,8 +163,7 @@ spectraタスク:
 
 ## P6: アーキテクチャ改善（機能ではないがherdrに劣る点）
 
-- [ ] 判断済み・実装待ち **イベントループのepoll化** — 現状1ms sleepのbusy-poll (`src/runtime/server.rs:22,67`)。アイドル時CPUを常時食う。herdrはtokio multi-thread。
-      ユーザー判断(2026-07-05): 一番薄いもので可、どれも大差なければtokioでok
+- [x] DONE **イベントループのepoll化** — `polling` crate採用(tokioなし・最薄)。中央`Poller`が両listener+全client/API streamを監視し、fdを持たないmpsc生産者(PTY readerスレッド・update-checkスレッド)は`wake::notify()`(プロセスグローバルwaker)で起床。pollingはoneshot配送なので毎wait前に`rearm_poll_interest`ヘルパーで全ソースのinterestを一括再arm(再arm漏れによるstallを構造的に排除)、書き込みはWouldBlock時のみwritable監視。waitのtimeoutは`App::next_deadline`(sync-output hold期限・agent検知スロットル・status message期限)と250ms heartbeat上限のmin。アイドルCPU実測(release,10s): 152ms→3.2ms(~47倍改善)、`tests/idle_cpu_e2e.rs`で回帰ゲート(5sで50ms上限)
 - [x] DONE **unwrap/expect監査** — 実棚卸しでprod経路は6箇所のみ(~149はcfg(test)込みの過大見積り)。terminal::setup×2をio::Result化・reflowのunwrap×1をis_some_and化で修正、不変条件expect×3は理由付き#[allow]で意図明示、lock系prod使用ゼロ。lint gateはlib.rs/main.rsに`#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]`でcrate全体に適用(テストmodは非対象)
 - [ ] 判断済み・実装待ち **god object分割** — `app/mod.rs` 2838行 / `terminal_state.rs` 2685行。herdrの「AppState=純データ、render=純関数、runtime分離」規律 + `assert_invariants_for_test()` パターンが参考になる。
       ユーザー判断(2026-07-05): 着手可(epoll化と合わせて計画するのを推奨)

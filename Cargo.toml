@@ -17,6 +17,7 @@ unicode-width = "0.2"
 vte = { version = "0.15.0", features = ["ansi", "serde"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 base64 = "0.22.1"
+polling = "3"
 
 [dev-dependencies]
 tempfile = "3"

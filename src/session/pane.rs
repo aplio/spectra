@@ -158,6 +158,11 @@ impl Pane {
         self.terminal.synchronized_output_active()
     }
 
+    /// See [`crate::session::terminal_state::TerminalState::sync_output_deadline`].
+    pub fn sync_output_deadline(&self) -> Option<std::time::Instant> {
+        self.terminal.sync_output_deadline()
+    }
+
     pub fn take_terminal_events(&mut self) -> Vec<TerminalEvent> {
         std::mem::take(&mut self.pending_terminal_events)
     }
