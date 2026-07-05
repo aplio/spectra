@@ -183,10 +183,11 @@ impl App {
             return Ok(restored);
         }
 
+        let first_ordinal = 1;
+        options.session_id = session_id_for(&options.session_name, first_ordinal);
         let mut session = SessionManager::new(options.clone(), cols, rows)?;
         session.resize(cols, rows)?;
 
-        let first_ordinal = 1;
         let first_session_id = session_id_for(session.session_name(), first_ordinal);
 
         let sessions = vec![ManagedSession {
@@ -275,6 +276,7 @@ impl App {
         for session_state in state.sessions {
             let mut options = session_template.clone();
             options.session_name = session_state.session.session_name.clone();
+            options.session_id = session_state.session_id.clone();
             let session = match SessionManager::from_runtime_snapshot(
                 options,
                 session_state.session,
@@ -3154,6 +3156,7 @@ impl App {
 
         let mut options = self.session_template.clone();
         options.session_name = format!("{}-{ordinal}", self.session_template.session_name);
+        options.session_id = session_id_for(&options.session_name, ordinal);
 
         let (cols, rows) = self.current_effective_pane_dims();
         let mut session = SessionManager::new(options, cols, rows)

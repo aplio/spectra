@@ -364,6 +364,39 @@ printing pushed event lines until the server closes the connection or ctrl-c:
 spectra api --follow events.subscribe '{"events":["agent.changed"]}'
 ```
 
+## Claude Code integration
+
+```bash
+spectra integration install claude
+```
+
+One command wires Claude Code's hook system to spectra's agent detection:
+- copies an embedded POSIX-sh hook script to
+  `~/.local/share/spectra/integrations/claude/spectra-agent-state.sh`
+- registers it in `~/.claude/settings.json` for the `Stop`, `Notification`,
+  `PreToolUse`, and `UserPromptSubmit` hook events (existing settings are
+  preserved, the merge is idempotent, the write is atomic, and the
+  pre-modification file is kept as `settings.json.bak`)
+
+State flows like this: every pane spawned by spectra exports
+`SPECTRA_API_SOCKET`, `SPECTRA_PANE_ID`, and `SPECTRA_SESSION_ID`; when a
+Claude Code hook event fires, the script maps it to a semantic state
+(`Stop` → idle, `Notification` → blocked for permission requests / idle for
+"waiting for your input", `UserPromptSubmit`/`PreToolUse` → working) and sends
+one `agent.report` request to the API socket. The reported state overrides
+screen-based detection for ~30 seconds, driving the sidebar markers, the
+`{agent}` status token, and agent notifications with exact hook-level timing.
+Outside spectra the env vars are unset and the script exits silently, so the
+hooks are safe to keep installed globally.
+
+`spectra integration install claude --dry-run` prints the would-be settings
+diff without writing. Uninstall removes exactly the entries the installer
+added plus the script:
+
+```bash
+spectra integration uninstall claude
+```
+
 ## Development checks
 
 ```bash

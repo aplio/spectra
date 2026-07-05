@@ -56,6 +56,8 @@ fn spawn_uses_tty() {
             suppress_prompt_eol_marker: false,
             cols: 80,
             rows: 24,
+            pane_id: 1,
+            session_id: "main-1".to_string(),
         })
         .expect("spawn backend");
 
@@ -79,6 +81,8 @@ fn pty_roundtrip_input() {
             suppress_prompt_eol_marker: false,
             cols: 80,
             rows: 24,
+            pane_id: 1,
+            session_id: "main-1".to_string(),
         })
         .expect("spawn backend");
 
@@ -94,6 +98,37 @@ fn pty_roundtrip_input() {
 }
 
 #[test]
+fn spawned_pane_exports_spectra_agent_env() {
+    let factory = PtyPaneFactory;
+    let mut backend = factory
+        .spawn(&PaneSpawnConfig {
+            shell: shell_path(),
+            cwd: None,
+            command: vec![
+                "printf 'PANE=%s SESSION=%s SOCKET=%s\\n' \"$SPECTRA_PANE_ID\" \"$SPECTRA_SESSION_ID\" \"$SPECTRA_API_SOCKET\"".to_string(),
+            ],
+            suppress_prompt_eol_marker: false,
+            cols: 80,
+            rows: 24,
+            pane_id: 5,
+            session_id: "dev-2".to_string(),
+        })
+        .expect("spawn backend");
+
+    let output = collect_output_until(&mut *backend, Duration::from_secs(2), |text| {
+        text.contains("PANE=")
+    });
+    assert!(
+        output.contains("PANE=5 SESSION=dev-2 SOCKET="),
+        "expected agent env in child process, output was: {output:?}"
+    );
+    assert!(
+        output.contains("spectra-api.sock"),
+        "expected api socket path in child env, output was: {output:?}"
+    );
+}
+
+#[test]
 fn interactive_shell_exit_is_detected_as_closed() {
     let factory = PtyPaneFactory;
     let mut backend = factory
@@ -104,6 +139,8 @@ fn interactive_shell_exit_is_detected_as_closed() {
             suppress_prompt_eol_marker: false,
             cols: 80,
             rows: 24,
+            pane_id: 1,
+            session_id: "main-1".to_string(),
         })
         .expect("spawn backend");
 

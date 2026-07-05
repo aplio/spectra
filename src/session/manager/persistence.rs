@@ -80,6 +80,7 @@ impl SessionManager {
             let pane = spawn_pane(
                 &options,
                 &*pane_factory,
+                pane_id,
                 area.width.max(1),
                 area.height.max(1),
             )?;

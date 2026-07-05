@@ -52,6 +52,7 @@ fn main() {
         spectra::cli::CliMode::ApiRequest => spectra::runtime::api_client::run(cli),
         spectra::cli::CliMode::RemoteAttach => spectra::runtime::remote::run(cli),
         spectra::cli::CliMode::RemoteClientBridge => spectra::runtime::remote::run_bridge(&cli),
+        spectra::cli::CliMode::Integration => spectra::integration::run(cli),
     };
 
     if let Err(err) = result {

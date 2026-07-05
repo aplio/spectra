@@ -10,6 +10,7 @@ impl SessionManager {
         let mut new_pane = spawn_pane(
             &self.options,
             &*self.pane_factory,
+            new_pane_id,
             area.width.max(1),
             area.height.max(1),
         )
@@ -43,6 +44,7 @@ impl SessionManager {
         let new_pane = spawn_pane(
             &pane_options,
             &*self.pane_factory,
+            new_pane_id,
             area.width.max(1),
             area.height.max(1),
         )

@@ -12,6 +12,24 @@ pub enum CliMode {
     Check,
     RemoteAttach,
     RemoteClientBridge,
+    Integration,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum IntegrationAction {
+    /// Install the integration for TOOL (supported: claude).
+    Install {
+        #[arg(value_name = "TOOL")]
+        tool: String,
+        /// Print the would-be changes without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove a previously installed integration for TOOL (supported: claude).
+    Uninstall {
+        #[arg(value_name = "TOOL")]
+        tool: String,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -95,6 +113,11 @@ pub enum CliCommand {
         #[arg(long)]
         follow: bool,
     },
+    /// Manage integrations with external tools (e.g. Claude Code hooks).
+    Integration {
+        #[command(subcommand)]
+        action: IntegrationAction,
+    },
     /// Internal: relay stdio to the local client socket (remote end of --remote).
     #[command(hide = true)]
     RemoteClientBridge,
@@ -163,6 +186,8 @@ impl Cli {
             CliMode::RemoteAttach
         } else if matches!(self.subcommand, Some(CliCommand::Api { .. })) {
             CliMode::ApiRequest
+        } else if matches!(self.subcommand, Some(CliCommand::Integration { .. })) {
+            CliMode::Integration
         } else if matches!(self.subcommand, Some(CliCommand::AttachSession { .. }))
             || self.subcommand.is_none()
         {
@@ -571,6 +596,42 @@ mod tests {
         let err = Cli::try_parse_from(["spectra", "--help"]).expect_err("help exits parse");
         assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
         assert!(!err.to_string().contains("remote-client-bridge"));
+    }
+
+    #[test]
+    fn parses_integration_install_with_dry_run() {
+        let cli = Cli::try_parse_from(["spectra", "integration", "install", "claude", "--dry-run"])
+            .expect("parse integration install");
+        match &cli.subcommand {
+            Some(CliCommand::Integration {
+                action: super::IntegrationAction::Install { tool, dry_run },
+            }) => {
+                assert_eq!(tool, "claude");
+                assert!(*dry_run);
+            }
+            _ => panic!("expected integration install"),
+        }
+        assert_eq!(cli.mode(), CliMode::Integration);
+        assert!(cli.validate().is_ok());
+    }
+
+    #[test]
+    fn parses_integration_uninstall() {
+        let cli = Cli::try_parse_from(["spectra", "integration", "uninstall", "claude"])
+            .expect("parse integration uninstall");
+        match &cli.subcommand {
+            Some(CliCommand::Integration {
+                action: super::IntegrationAction::Uninstall { tool },
+            }) => assert_eq!(tool, "claude"),
+            _ => panic!("expected integration uninstall"),
+        }
+        assert_eq!(cli.mode(), CliMode::Integration);
+    }
+
+    #[test]
+    fn integration_requires_action() {
+        assert!(Cli::try_parse_from(["spectra", "integration"]).is_err());
+        assert!(Cli::try_parse_from(["spectra", "integration", "install"]).is_err());
     }
 
     #[test]

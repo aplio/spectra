@@ -15,6 +15,10 @@ pub struct PaneSpawnConfig {
     pub suppress_prompt_eol_marker: bool,
     pub cols: u16,
     pub rows: u16,
+    /// Pane id assigned by the session manager, exported as SPECTRA_PANE_ID.
+    pub pane_id: usize,
+    /// API-level session id (name-ordinal), exported as SPECTRA_SESSION_ID.
+    pub session_id: String,
 }
 
 pub trait PaneFactory: Send + Sync {
@@ -77,7 +81,17 @@ impl PtyPaneBackend {
 
 fn build_command(config: &PaneSpawnConfig) -> CommandBuilder {
     let mut command = CommandBuilder::new(&config.shell);
+    // SPECTRA is the nested-session detection marker; the SPECTRA_* triple
+    // lets programs inside the pane (e.g. the Claude Code hook script) send
+    // semantic state to the JSON-RPC API socket via `agent.report`.
     command.env("SPECTRA", "1");
+    command.env("SPECTRA_PANE_ID", config.pane_id.to_string());
+    command.env("SPECTRA_SESSION_ID", &config.session_id);
+    #[cfg(unix)]
+    command.env(
+        "SPECTRA_API_SOCKET",
+        crate::ipc::socket_path::api_socket_path(),
+    );
     if config.command.is_empty() {
         configure_interactive_shell(&mut command, config);
     } else {
@@ -311,6 +325,8 @@ mod tests {
             suppress_prompt_eol_marker: false,
             cols: 80,
             rows: 24,
+            pane_id: 7,
+            session_id: "main-1".to_string(),
         };
 
         assert_eq!(argv(&config), vec!["/bin/zsh", "-l"]);
@@ -325,6 +341,8 @@ mod tests {
             suppress_prompt_eol_marker: true,
             cols: 80,
             rows: 24,
+            pane_id: 7,
+            session_id: "main-1".to_string(),
         };
 
         let command = build_command(&config);
@@ -349,6 +367,8 @@ mod tests {
             suppress_prompt_eol_marker: true,
             cols: 80,
             rows: 24,
+            pane_id: 7,
+            session_id: "main-1".to_string(),
         };
 
         assert_eq!(argv(&config), vec!["/bin/zsh", "-lc", "echo hi"]);
@@ -363,12 +383,50 @@ mod tests {
             suppress_prompt_eol_marker: false,
             cols: 80,
             rows: 24,
+            pane_id: 7,
+            session_id: "main-1".to_string(),
         };
 
         let command = build_command(&config);
         assert_eq!(
             command.get_env("SPECTRA").and_then(|value| value.to_str()),
             Some("1")
+        );
+    }
+
+    #[test]
+    fn pane_command_exports_agent_integration_env() {
+        let config = PaneSpawnConfig {
+            shell: "/bin/bash".to_string(),
+            cwd: None,
+            command: vec![],
+            suppress_prompt_eol_marker: false,
+            cols: 80,
+            rows: 24,
+            pane_id: 42,
+            session_id: "dev-3".to_string(),
+        };
+
+        let command = build_command(&config);
+        assert_eq!(
+            command
+                .get_env("SPECTRA_PANE_ID")
+                .and_then(|value| value.to_str()),
+            Some("42")
+        );
+        assert_eq!(
+            command
+                .get_env("SPECTRA_SESSION_ID")
+                .and_then(|value| value.to_str()),
+            Some("dev-3")
+        );
+        let socket = command
+            .get_env("SPECTRA_API_SOCKET")
+            .and_then(|value| value.to_str())
+            .expect("SPECTRA_API_SOCKET must be exported");
+        assert!(
+            socket.ends_with("spectra-api.sock"),
+            "unexpected socket path: {socket}"
         );
     }
 
@@ -381,6 +439,8 @@ mod tests {
             suppress_prompt_eol_marker: false,
             cols: 80,
             rows: 24,
+            pane_id: 7,
+            session_id: "main-1".to_string(),
         };
 
         let command = build_command(&config);
@@ -396,6 +456,8 @@ mod tests {
             suppress_prompt_eol_marker: false,
             cols: 80,
             rows: 24,
+            pane_id: 7,
+            session_id: "main-1".to_string(),
         };
 
         let argv = argv(&config);

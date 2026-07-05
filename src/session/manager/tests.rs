@@ -325,6 +325,35 @@ fn new_window_with_command_uses_override_without_mutating_default() {
 }
 
 #[test]
+fn spawned_panes_receive_assigned_pane_and_session_ids() {
+    let configs = Arc::new(Mutex::new(Vec::new()));
+    let mut options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    options.session_id = "main-1".to_string();
+    let mut session = SessionManager::with_factory(
+        options,
+        Arc::new(SpawnConfigFactory {
+            configs: Arc::clone(&configs),
+        }),
+        80,
+        24,
+    )
+    .expect("create session");
+
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split pane");
+    session.new_window(80, 24).expect("create window");
+
+    let recorded = configs.lock().expect("spawn config lock");
+    let ids: Vec<usize> = recorded.iter().map(|config| config.pane_id).collect();
+    assert_eq!(ids, vec![1, 2, 3], "pane ids must follow assignment order");
+    assert!(
+        recorded.iter().all(|config| config.session_id == "main-1"),
+        "every spawn must carry the session id"
+    );
+}
+
+#[test]
 fn frame_follows_cursor_when_viewport_is_shorter_than_buffer() {
     let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
     let mut output = String::new();

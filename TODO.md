@@ -5,7 +5,7 @@
 
 > 進捗メモ (2026-07-05 20:35): **判断不要のタスクは全て実装完了**(13イテレーション・15コミット・テスト447→621・clippy 0維持)。
 > 残りは `⏸ 要判断` の項目のみ — 判断後に再開する。判断待ちリスト:
-> 1. plugin manifest形式 (P2) — API表面はherdr式で確定し実装済み(2026-07-05: `pane.send_keys`/`pane.split`/`agent.report`/`events.subscribe`)。残る判断はmanifest形式のみ。P3のhookスクリプト+integration installはAPI実装済みにつき着手可能
+> 1. plugin manifest形式 (P2) — API表面はherdr式で確定し実装済み(2026-07-05: `pane.send_keys`/`pane.split`/`agent.report`/`events.subscribe`)。残る判断はmanifest形式のみ。P3のhookスクリプト+integration installは実装完了(2026-07-05)
 > 2. sidebar 2段構成(専用agent panel)のUX (P4) — 現状はwindow list行のマーカーで代替済み
 > 3. remote attachをherdr同等(バイナリ自動配布+checksum)まで作り込むか (P5)
 > 4. イベントループepoll化の方針(mio/polling/tokio) (P6)
@@ -22,7 +22,7 @@
 | configでのkeybind | **実装済み**。`[prefix_bindings]`/`[global_bindings]` で上書き・unbind・prefix変更可 (`src/config.rs:28`, `src/input/keymap.rs:83`)。ただし固定enum約40アクションのみ、シェルコマンドは割当不可 |
 | sidebar | **実装済み**(window list)。`prefix e` の `SideWindowTree` (`src/ui/render.rs:40`)。左端固定・拡張には形になる下地あり |
 | herdrのremote attach | **簡易版実装済み**。`--remote <host>` がssh stdioトンネル+protocol versionハンドシェイクでリモートserverにattach(リモート設置済み前提・バイナリ自動配布は未) |
-| agent integration (plugin形式) | **検知コアあり**。manifest駆動のAgentState検知(`src/agent/`, Claude 1種)+done導出+status bar `{agent}`トークン+`pane.list` の `agent` フィールド+sidebarマーカー。hook/通知/plugin配布は未 |
+| agent integration (plugin形式) | **検知コアあり**。manifest駆動のAgentState検知(`src/agent/`, Claude 1種)+done導出+status bar `{agent}`トークン+`pane.list` の `agent` フィールド+sidebarマーカー+Claude Code hook統合(`spectra integration install claude`)。plugin配布は未 |
 
 ---
 
@@ -110,7 +110,8 @@ spectraタスク:
 - [x] DONE `AgentState` enum + pane毎の検知結果保持 — `unknown/idle/working/blocked` + `AgentStatus{kind,state,since}` を `ManagedSession` 毎に保持。tickで出力変化paneのみ・pane毎200msスロットルで再検知、`pane.list` の `agent` フィールドと status `{agent}` トークン(デフォルトformatには未追加)で露出
 - [x] DONE マニフェスト駆動ルールエンジン — TOML(`priority`+`contains/regex/any/all/not`× region `bottom_non_empty_lines(N)`/`osc_title`)を `src/agent/manifest.rs` で実装。Claude 1種の組み込みmanifest(`src/agent/manifests/claude.toml`, include_str!)のみ・ホットリロードと `agent explain` は未
 - [x] DONE プロセス名フォールバック検知 — Linux-only best effort。`PaneBackend::child_pid` → `/proc/<child>/stat` tpgid → `/proc/<tpgid>/cmdline` argv[0] basename を `process_names` と照合。失敗は全てNone(パニックなし)
-- [x] 一部DONE P2のAPI経由 `pane.report_agent` メソッド — `agent.report` として実装済み(2026-07-05): kindサニタイズ(小文字英数+dash・32字上限)、報告後30秒は画面検知を抑止して報告値を優先、期限後はmanifest検知が再開して上書き。seen/done導出・通知は検知経路と同一。Claude Code hookスクリプト+integration install コマンドは次タスク
+- [x] DONE P2のAPI経由 `pane.report_agent` メソッド+公式hook — `agent.report` として実装済み(2026-07-05): kindサニタイズ(小文字英数+dash・32字上限)、報告後30秒は画面検知を抑止して報告値を優先、期限後はmanifest検知が再開して上書き。seen/done導出・通知は検知経路と同一。
+      Claude Code hook統合も実装済み(2026-07-05): 全paneに `SPECTRA_API_SOCKET`/`SPECTRA_PANE_ID`/`SPECTRA_SESSION_ID` をexport、埋め込みPOSIX-shスクリプト(`src/integration/assets/claude/spectra-agent-state.sh`, Stop→idle/Notification→blocked(permission)or idle(入力待ち)/UserPromptSubmit・PreToolUse→working、transport は nc -U→python3 フォールバック・全失敗silent)+`spectra integration install/uninstall claude`(settings.jsonへ冪等マージ・atomic write・初回 .bak・--dry-run diff)
 - [x] DONE sidebar表示 + done(=idle&&未閲覧)導出 — herdr式に done は保存せず導出: working/blocked→idle 遷移を非フォーカスpaneで検知したら unseen、描画時にフォーカスpaneを seen 化(閲覧中のpaneは決してdoneにならない)。`AgentDisplayState`(unknown/idle/done/working/blocked)として `{agent}` トークンと `pane.list` の `state` にも露出
 - [x] DONE (任意)ホスト端末へのdesktop notification — agent状態変化でOSC 9 (`ESC ]9;msg BEL`)を全attachedクライアントへブロードキャスト。`[agent] notify = "off"|"blocked"|"all"`(default "blocked"、"all"はdone通知も追加)、
       閲覧中paneは通知せず・pane×state毎に1回debounce(状態が離れて戻ると再arm)。対応端末はghostty/iTerm2/wezterm(v1、herdr式の端末別出し分けは未)

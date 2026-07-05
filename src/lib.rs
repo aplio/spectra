@@ -12,6 +12,7 @@ pub mod command_history;
 pub mod config;
 pub mod filtering;
 pub mod input;
+pub mod integration;
 pub mod io;
 pub mod ipc;
 #[cfg(unix)]

@@ -27,6 +27,9 @@ pub struct SessionOptions {
     pub cwd: Option<PathBuf>,
     pub command: Vec<String>,
     pub session_name: String,
+    /// API-level session id (normalized name + ordinal, e.g. "main-1") set
+    /// by the App layer; exported to panes as SPECTRA_SESSION_ID.
+    pub session_id: String,
     pub suppress_prompt_eol_marker: bool,
     pub allow_passthrough: bool,
     /// Host terminal default fg/bg colors applied to new panes so guests
@@ -41,6 +44,7 @@ impl SessionOptions {
             cwd,
             command,
             session_name: "main".to_string(),
+            session_id: String::new(),
             suppress_prompt_eol_marker: false,
             allow_passthrough: true,
             host_colors: HostColors::default(),
@@ -176,6 +180,7 @@ impl SessionManager {
         let first_pane = spawn_pane(
             &options,
             &*pane_factory,
+            first_pane_id,
             area.width.max(1),
             area.height.max(1),
         )?;
@@ -575,6 +580,7 @@ impl SessionManager {
 pub(super) fn spawn_pane(
     options: &SessionOptions,
     pane_factory: &dyn PaneFactory,
+    pane_id: PaneId,
     width: usize,
     height: usize,
 ) -> io::Result<Pane> {
@@ -585,6 +591,8 @@ pub(super) fn spawn_pane(
         suppress_prompt_eol_marker: options.suppress_prompt_eol_marker,
         cols: width as u16,
         rows: height as u16,
+        pane_id,
+        session_id: options.session_id.clone(),
     })?;
     let mut pane = Pane::new(width, height, options.allow_passthrough, backend);
     pane.set_host_colors(options.host_colors);
