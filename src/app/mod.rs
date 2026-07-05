@@ -102,6 +102,7 @@ pub struct App {
     status_style: CellStyle,
     hooks: config::HooksConfig,
     editor_command: Option<String>,
+    agent_notify: config::AgentNotifyMode,
     editor_pane_close_targets: Vec<EditorPaneCloseTarget>,
     store: DataStore,
     command_history: CommandHistory,
@@ -159,6 +160,7 @@ impl App {
             status_style: status_style_from_config(&app_config.status),
             hooks: app_config.hooks.clone(),
             editor_command: normalize_editor_command(app_config.editor.clone()),
+            agent_notify: app_config.agent.notify,
         };
 
         if let Some(mut restored) = Self::restore_from_runtime_state(
@@ -220,6 +222,7 @@ impl App {
             status_style: runtime_ui.status_style,
             hooks: runtime_ui.hooks,
             editor_command: runtime_ui.editor_command,
+            agent_notify: runtime_ui.agent_notify,
             editor_pane_close_targets: Vec::new(),
             store,
             command_history,
@@ -326,6 +329,7 @@ impl App {
             status_style: runtime_ui.status_style,
             hooks: runtime_ui.hooks,
             editor_command: runtime_ui.editor_command,
+            agent_notify: runtime_ui.agent_notify,
             editor_pane_close_targets: Vec::new(),
             store: store.clone(),
             command_history,
@@ -830,6 +834,8 @@ impl App {
         }
 
         let mut changed = false;
+        let mut notifications = Vec::new();
+        let notify_mode = self.agent_notify;
         let active_session = self.view.active_session;
         for (session_index, managed) in self.sessions.iter_mut().enumerate() {
             if !managed.agents.statuses.is_empty()
@@ -862,8 +868,18 @@ impl App {
                 managed.agents.pending.remove(&pane_id);
                 managed.agents.last_run.insert(pane_id, now);
                 let viewing = session_index == active_session && focused_pane == Some(pane_id);
-                changed |= Self::detect_agent_for_pane(managed, pane_id, now, viewing);
+                changed |= Self::detect_agent_for_pane(
+                    managed,
+                    pane_id,
+                    now,
+                    viewing,
+                    notify_mode,
+                    &mut notifications,
+                );
             }
+        }
+        for message in notifications {
+            self.broadcast_notification_to_clients(&message);
         }
         changed
     }
@@ -878,9 +894,12 @@ impl App {
         pane_id: usize,
         now: Instant,
         viewing: bool,
+        notify_mode: config::AgentNotifyMode,
+        notifications: &mut Vec<String>,
     ) -> bool {
         let Some(screen_lines) = managed.session.pane_screen_lines(pane_id) else {
             managed.agents.seen.remove(&pane_id);
+            managed.agents.notified.remove(&pane_id);
             return managed.agents.statuses.remove(&pane_id).is_some();
         };
         let foreground_process = managed
@@ -899,20 +918,30 @@ impl App {
                 Some(status) => {
                     let previous = status.state;
                     *status = crate::agent::AgentStatus {
-                        kind,
+                        kind: kind.clone(),
                         state,
                         since: now,
                     };
                     managed
                         .agents
                         .note_status_change(pane_id, Some(previous), state, viewing);
+                    if let Some(display) = managed.agents.notifiable_transition(
+                        pane_id,
+                        Some(previous),
+                        state,
+                        viewing,
+                        notify_mode,
+                    ) {
+                        notifications
+                            .push(Self::agent_notification_message(&kind, display, pane_id));
+                    }
                     true
                 }
                 None => {
                     managed.agents.statuses.insert(
                         pane_id,
                         crate::agent::AgentStatus {
-                            kind,
+                            kind: kind.clone(),
                             state,
                             since: now,
                         },
@@ -920,14 +949,35 @@ impl App {
                     managed
                         .agents
                         .note_status_change(pane_id, None, state, viewing);
+                    if let Some(display) = managed.agents.notifiable_transition(
+                        pane_id,
+                        None,
+                        state,
+                        viewing,
+                        notify_mode,
+                    ) {
+                        notifications
+                            .push(Self::agent_notification_message(&kind, display, pane_id));
+                    }
                     true
                 }
             },
             None => {
                 managed.agents.seen.remove(&pane_id);
+                managed.agents.notified.remove(&pane_id);
                 managed.agents.statuses.remove(&pane_id).is_some()
             }
         }
+    }
+
+    /// Human-readable notification message for an agent state change, e.g.
+    /// `spectra: claude blocked (pane 3)`.
+    fn agent_notification_message(
+        kind: &str,
+        display: crate::agent::AgentDisplayState,
+        pane_id: usize,
+    ) -> String {
+        format!("spectra: {kind} {} (pane {pane_id})", display.as_str())
     }
 
     /// Mark the focused pane of the active window of the active session as
@@ -1012,6 +1062,18 @@ impl App {
         self.view.pending_clipboard_ansi.push(sequence.clone());
         for state in self.inactive_client_states.values_mut() {
             state.pending_clipboard_ansi.push(sequence.clone());
+        }
+    }
+
+    /// Queue an OSC 9 desktop-notification frame for every attached
+    /// client's host terminal, mirroring the OSC 52 clipboard broadcast.
+    /// Delivered over the passthrough channel, which the server loop
+    /// drains on every pass.
+    fn broadcast_notification_to_clients(&mut self, message: &str) {
+        let sequence = crate::io::terminal::osc9_notification_sequence(message);
+        self.view.pending_passthrough_ansi.push(sequence.clone());
+        for state in self.inactive_client_states.values_mut() {
+            state.pending_passthrough_ansi.push(sequence.clone());
         }
     }
 
@@ -2940,6 +3002,7 @@ impl App {
         self.status_style = status_style_from_config(&loaded.status);
         self.hooks = loaded.hooks.clone();
         self.editor_command = normalize_editor_command(loaded.editor.clone());
+        self.agent_notify = loaded.agent.notify;
 
         let suppress_prompt_eol_marker = loaded.shell.suppress_prompt_eol_marker;
         self.session_template.suppress_prompt_eol_marker = suppress_prompt_eol_marker;

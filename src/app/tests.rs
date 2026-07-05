@@ -312,6 +312,7 @@ fn build_app_for_resize_test() -> App {
         status_style: super::default_status_style(),
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
+        agent_notify: crate::config::AgentNotifyMode::default(),
         editor_pane_close_targets: Vec::new(),
         store: DataStore::from_base_dir_for_tests(data_dir.clone()),
         command_history: CommandHistory::new_with_data_dir(data_dir),
@@ -430,6 +431,7 @@ fn build_app_with_history() -> App {
         status_style: super::default_status_style(),
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
+        agent_notify: crate::config::AgentNotifyMode::default(),
         editor_pane_close_targets: Vec::new(),
         store: DataStore::from_base_dir_for_tests(data_dir.clone()),
         command_history: CommandHistory::new_with_data_dir(data_dir),
@@ -541,6 +543,7 @@ fn build_app_with_write_behavior(behavior: WriteBehavior) -> App {
         status_style: super::default_status_style(),
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
+        agent_notify: crate::config::AgentNotifyMode::default(),
         editor_pane_close_targets: Vec::new(),
         store: DataStore::from_base_dir_for_tests(data_dir.clone()),
         command_history: CommandHistory::new_with_data_dir(data_dir),
@@ -609,6 +612,7 @@ fn build_app_with_close_on_write_behavior(behavior: CloseOnWriteBehavior) -> App
         status_style: super::default_status_style(),
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
+        agent_notify: crate::config::AgentNotifyMode::default(),
         editor_pane_close_targets: Vec::new(),
         store: DataStore::from_base_dir_for_tests(data_dir.clone()),
         command_history: CommandHistory::new_with_data_dir(data_dir),
@@ -716,6 +720,7 @@ fn build_recording_app_one_session() -> (App, RecordedWrites) {
         status_style: super::default_status_style(),
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
+        agent_notify: crate::config::AgentNotifyMode::default(),
         editor_pane_close_targets: Vec::new(),
         store: DataStore::from_base_dir_for_tests(data_dir.clone()),
         command_history: CommandHistory::new_with_data_dir(data_dir),
@@ -805,6 +810,7 @@ fn build_recording_app_with_history() -> (App, RecordedWrites) {
         status_style: super::default_status_style(),
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
+        agent_notify: crate::config::AgentNotifyMode::default(),
         editor_pane_close_targets: Vec::new(),
         store: DataStore::from_base_dir_for_tests(data_dir.clone()),
         command_history: CommandHistory::new_with_data_dir(data_dir),
@@ -872,6 +878,7 @@ fn build_recording_app_with_output(output: Vec<Vec<u8>>) -> (App, RecordedWrites
         status_style: super::default_status_style(),
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
+        agent_notify: crate::config::AgentNotifyMode::default(),
         editor_pane_close_targets: Vec::new(),
         store: DataStore::from_base_dir_for_tests(data_dir.clone()),
         command_history: CommandHistory::new_with_data_dir(data_dir),
@@ -961,6 +968,7 @@ fn build_recording_app_multi_session() -> (App, RecordedWrites) {
         status_style: super::default_status_style(),
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
+        agent_notify: crate::config::AgentNotifyMode::default(),
         editor_pane_close_targets: Vec::new(),
         store: DataStore::from_base_dir_for_tests(data_dir.clone()),
         command_history: CommandHistory::new_with_data_dir(data_dir),
@@ -1066,6 +1074,7 @@ fn build_editor_command_app() -> (App, RecordedSpawnConfigs, BackendClosedFlags)
         status_style: super::default_status_style(),
         hooks: crate::config::HooksConfig::default(),
         editor_command: Some("vim".to_string()),
+        agent_notify: crate::config::AgentNotifyMode::default(),
         editor_pane_close_targets: Vec::new(),
         store: DataStore::from_base_dir_for_tests(data_dir.clone()),
         command_history: CommandHistory::new_with_data_dir(data_dir),
@@ -1171,6 +1180,7 @@ fn restore_from_runtime_state_recovers_multi_session_layout_and_focus() {
             status_style: app.status_style,
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
+            agent_notify: app.agent_notify,
         },
         app.view.cols,
         app.view.rows,
@@ -1254,6 +1264,7 @@ fn restore_from_runtime_state_returns_none_on_corrupt_json() {
             status_style: app.status_style,
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
+            agent_notify: app.agent_notify,
         },
         app.view.cols,
         app.view.rows,
@@ -1284,6 +1295,7 @@ fn restore_from_runtime_state_returns_none_on_invalid_snapshot() {
             status_style: app.status_style,
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
+            agent_notify: app.agent_notify,
         },
         app.view.cols,
         app.view.rows,
@@ -1630,6 +1642,7 @@ fn restore_from_runtime_state_restores_client_focus_profiles() {
             status_style: app.status_style,
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
+            agent_notify: app.agent_notify,
         },
         app.view.cols,
         app.view.rows,
@@ -1667,6 +1680,7 @@ fn attach_target_overrides_restored_profile_for_client() {
             status_style: app.status_style,
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
+            agent_notify: app.agent_notify,
         },
         app.view.cols,
         app.view.rows,
@@ -6161,4 +6175,154 @@ fn update_check_error_is_logged_and_never_cached() {
     let mut restarted = build_app_for_resize_test();
     restarted.store = DataStore::from_base_dir_for_tests(dir.path().to_path_buf());
     assert!(!restarted.load_cached_update_check());
+}
+
+fn osc9_frames(frames: &[String]) -> Vec<&String> {
+    frames
+        .iter()
+        .filter(|frame| frame.starts_with("\x1b]9;"))
+        .collect()
+}
+
+#[test]
+fn blocked_agent_on_unfocused_pane_broadcasts_osc9_to_attached_clients() {
+    let (mut app, _) = build_recording_app_with_output(claude_blocked_screen_output());
+    // A second window takes the focus away from pane 1 (default notify mode
+    // is "blocked").
+    app.current_session_mut()
+        .new_window(80, 24)
+        .expect("create second window");
+    let remote_client_id = 42;
+    app.register_client(remote_client_id, 80, 24);
+
+    app.tick();
+
+    let expected = "\x1b]9;spectra: claude blocked (pane 1)\x07".to_string();
+    let remote = app.take_pending_passthrough_ansi_for_client(remote_client_id);
+    assert_eq!(osc9_frames(&remote), vec![&expected], "remote: {remote:?}");
+    let local = app.take_pending_passthrough_ansi_for_client(super::LOCAL_CLIENT_ID);
+    assert_eq!(osc9_frames(&local), vec![&expected], "local: {local:?}");
+}
+
+#[test]
+fn blocked_agent_on_focused_pane_never_notifies() {
+    let (mut app, _) = build_recording_app_with_output(claude_blocked_screen_output());
+    let remote_client_id = 42;
+    app.register_client(remote_client_id, 80, 24);
+
+    // Pane 1 stays the focused pane of the active window.
+    app.tick();
+
+    let remote = app.take_pending_passthrough_ansi_for_client(remote_client_id);
+    assert!(osc9_frames(&remote).is_empty(), "remote: {remote:?}");
+    let local = app.take_pending_passthrough_ansi_for_client(super::LOCAL_CLIENT_ID);
+    assert!(osc9_frames(&local).is_empty(), "local: {local:?}");
+}
+
+#[test]
+fn agent_notify_off_silences_blocked_notifications() {
+    let (mut app, _) = build_recording_app_with_output(claude_blocked_screen_output());
+    app.agent_notify = crate::config::AgentNotifyMode::Off;
+    app.current_session_mut()
+        .new_window(80, 24)
+        .expect("create second window");
+    let remote_client_id = 42;
+    app.register_client(remote_client_id, 80, 24);
+
+    app.tick();
+
+    let remote = app.take_pending_passthrough_ansi_for_client(remote_client_id);
+    assert!(osc9_frames(&remote).is_empty(), "remote: {remote:?}");
+}
+
+#[test]
+fn agent_notify_all_notifies_when_unfocused_pane_becomes_done() {
+    use crate::agent::AgentState;
+
+    let (mut app, _) = build_recording_app_with_output(claude_idle_screen_output());
+    app.agent_notify = crate::config::AgentNotifyMode::All;
+    // Pane 1 is running a claude turn; focus moves to a second window
+    // before its screen settles on the idle prompt.
+    seed_agent_status(&mut app, 1, AgentState::Working);
+    app.current_session_mut()
+        .new_window(80, 24)
+        .expect("create second window");
+    let remote_client_id = 42;
+    app.register_client(remote_client_id, 80, 24);
+
+    app.tick();
+
+    let expected = "\x1b]9;spectra: claude done (pane 1)\x07".to_string();
+    let remote = app.take_pending_passthrough_ansi_for_client(remote_client_id);
+    assert_eq!(osc9_frames(&remote), vec![&expected], "remote: {remote:?}");
+}
+
+#[test]
+fn default_notify_mode_stays_silent_when_unfocused_pane_becomes_done() {
+    use crate::agent::AgentState;
+
+    let (mut app, _) = build_recording_app_with_output(claude_idle_screen_output());
+    seed_agent_status(&mut app, 1, AgentState::Working);
+    app.current_session_mut()
+        .new_window(80, 24)
+        .expect("create second window");
+    let remote_client_id = 42;
+    app.register_client(remote_client_id, 80, 24);
+
+    app.tick();
+
+    let remote = app.take_pending_passthrough_ansi_for_client(remote_client_id);
+    assert!(osc9_frames(&remote).is_empty(), "remote: {remote:?}");
+}
+
+#[test]
+fn agent_notification_debounces_per_pane_state_and_rearms_on_change() {
+    use crate::agent::{AgentDisplayState, AgentState};
+    use crate::config::AgentNotifyMode;
+
+    let mut tracking = AgentTracking::default();
+
+    // First blocked transition notifies.
+    assert_eq!(
+        tracking.notifiable_transition(
+            1,
+            Some(AgentState::Working),
+            AgentState::Blocked,
+            false,
+            AgentNotifyMode::Blocked,
+        ),
+        Some(AgentDisplayState::Blocked)
+    );
+    // The same state again (e.g. a kind re-detection) is debounced.
+    assert_eq!(
+        tracking.notifiable_transition(
+            1,
+            Some(AgentState::Working),
+            AgentState::Blocked,
+            false,
+            AgentNotifyMode::Blocked,
+        ),
+        None
+    );
+    // Moving away re-arms; entering blocked again notifies once more.
+    assert_eq!(
+        tracking.notifiable_transition(
+            1,
+            Some(AgentState::Blocked),
+            AgentState::Working,
+            false,
+            AgentNotifyMode::Blocked,
+        ),
+        None
+    );
+    assert_eq!(
+        tracking.notifiable_transition(
+            1,
+            Some(AgentState::Working),
+            AgentState::Blocked,
+            false,
+            AgentNotifyMode::Blocked,
+        ),
+        Some(AgentDisplayState::Blocked)
+    );
 }

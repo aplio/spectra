@@ -181,6 +181,9 @@ format = "session {session_index}/{session_count}:{session_name} | window {windo
 background = "#2E3440"
 foreground = "#D8DEE9"
 
+[agent]
+notify = "blocked"
+
 [hooks]
 session_created = ""
 session_killed = ""
@@ -208,6 +211,7 @@ Custom action name for bindings/command palette:
 - `next-window` / `prev-window` remain available for custom bindings and command palette usage
 - if `editor` is unset or blank, spectra uses `$EDITOR`; if both are missing, it defaults to `vi`
 - `[terminal].allow_passthrough` defaults to `true` and enables tmux-style DCS pass-through (`ESC Ptmux;...ESC \\`) plus direct OSC 8 hyperlink control-sequence passthrough to the outer terminal
+- `[agent].notify` sends an OSC 9 desktop notification (for example `spectra: claude blocked (pane 3)`) to every attached client's host terminal when a pane's AI agent changes state: `"off"` never notifies, `"blocked"` (default) notifies when an agent enters `blocked`, `"all"` also notifies when it becomes `done` (unseen idle). The currently focused pane never notifies, and each pane notifies at most once per state until the state changes away and back. Requires a host terminal that understands OSC 9 notifications (ghostty, iTerm2, WezTerm)
 
 ## Data storage
 

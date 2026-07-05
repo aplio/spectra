@@ -104,7 +104,8 @@ spectraタスク:
 - [x] DONE プロセス名フォールバック検知 — Linux-only best effort。`PaneBackend::child_pid` → `/proc/<child>/stat` tpgid → `/proc/<tpgid>/cmdline` argv[0] basename を `process_names` と照合。失敗は全てNone(パニックなし)
 - [ ] P2のAPI経由 `pane.report_agent` メソッド + Claude Code hookスクリプト(integration install コマンド)
 - [x] DONE sidebar表示 + done(=idle&&未閲覧)導出 — herdr式に done は保存せず導出: working/blocked→idle 遷移を非フォーカスpaneで検知したら unseen、描画時にフォーカスpaneを seen 化(閲覧中のpaneは決してdoneにならない)。`AgentDisplayState`(unknown/idle/done/working/blocked)として `{agent}` トークンと `pane.list` の `state` にも露出
-- [ ] (任意)ホスト端末へのdesktop notification は未(herdr `src/terminal_notify.rs` は端末種別ごとにOSC通知方式を出し分け)
+- [x] DONE (任意)ホスト端末へのdesktop notification — agent状態変化でOSC 9 (`ESC ]9;msg BEL`)を全attachedクライアントへブロードキャスト。`[agent] notify = "off"|"blocked"|"all"`(default "blocked"、"all"はdone通知も追加)、
+      閲覧中paneは通知せず・pane×state毎に1回debounce(状態が離れて戻ると再arm)。対応端末はghostty/iTerm2/wezterm(v1、herdr式の端末別出し分けは未)
 - [ ] plugin形式にするなら: 検知マニフェスト+hookスクリプトを plugin manifest に同梱して配布、という切り方が自然
 
 ---

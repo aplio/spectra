@@ -23,6 +23,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub status: StatusConfig,
     #[serde(default)]
+    pub agent: AgentConfig,
+    #[serde(default)]
     pub hooks: HooksConfig,
     #[serde(default)]
     pub prefix_bindings: HashMap<String, String>,
@@ -73,6 +75,26 @@ pub struct StatusConfig {
     pub format: Option<String>,
     pub background: Option<String>,
     pub foreground: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct AgentConfig {
+    #[serde(default)]
+    pub notify: AgentNotifyMode,
+}
+
+/// When to send an OSC 9 desktop notification to attached clients on an
+/// agent state change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentNotifyMode {
+    /// Never notify.
+    Off,
+    /// Notify only when a pane's agent enters `blocked`.
+    #[default]
+    Blocked,
+    /// Also notify when a pane's agent becomes `done` (unseen idle).
+    All,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -136,6 +158,7 @@ mod tests {
         assert!(config.status.format.is_none());
         assert!(config.status.background.is_none());
         assert!(config.status.foreground.is_none());
+        assert_eq!(config.agent.notify, super::AgentNotifyMode::Blocked);
         assert!(config.hooks.session_created.is_none());
         assert!(config.prefix_bindings.is_empty());
         assert!(config.global_bindings.is_empty());
@@ -167,6 +190,9 @@ format = "session {session_index}"
 background = "#2E3440"
 foreground = "#D8DEE9"
 
+[agent]
+notify = "all"
+
 [hooks]
 session_created = "echo created"
 config_reloaded = "echo reloaded"
@@ -194,6 +220,7 @@ C-w = "window-list"
         );
         assert_eq!(config.status.background.as_deref(), Some("#2E3440"));
         assert_eq!(config.status.foreground.as_deref(), Some("#D8DEE9"));
+        assert_eq!(config.agent.notify, super::AgentNotifyMode::All);
         assert_eq!(
             config.hooks.session_created.as_deref(),
             Some("echo created")

@@ -38,6 +38,9 @@ pub(super) struct AgentTracking {
     /// Panes viewed since their last agent state change. An idle agent whose
     /// pane is not in this set displays as "done" (derived, never stored).
     pub seen: HashSet<usize>,
+    /// Last state each pane raised a host notification for (debounce); an
+    /// entry is removed when the pane leaves notifiable states, re-arming it.
+    pub notified: HashMap<usize, crate::agent::AgentDisplayState>,
 }
 
 impl AgentTracking {
@@ -49,6 +52,7 @@ impl AgentTracking {
         self.last_run.retain(|pane_id, _| pane_exists(*pane_id));
         self.pending.retain(|pane_id| pane_exists(*pane_id));
         self.seen.retain(|pane_id| pane_exists(*pane_id));
+        self.notified.retain(|pane_id, _| pane_exists(*pane_id));
         self.statuses.len() != before
     }
 
@@ -84,6 +88,54 @@ impl AgentTracking {
         } else {
             self.seen.insert(pane_id);
         }
+    }
+
+    /// Decide whether a stored agent state change should raise a
+    /// host-terminal notification, updating the per-pane debounce.
+    ///
+    /// Notifiable states are `Blocked` (modes "blocked" and "all") and the
+    /// derived `Done` — a Working/Blocked → Idle transition on an unviewed
+    /// pane (mode "all" only). The pane the user is looking at never
+    /// notifies, and a pane re-notifies for a state only after its stored
+    /// state moved away and back.
+    pub fn notifiable_transition(
+        &mut self,
+        pane_id: usize,
+        previous: Option<crate::agent::AgentState>,
+        next: crate::agent::AgentState,
+        viewing: bool,
+        mode: config::AgentNotifyMode,
+    ) -> Option<crate::agent::AgentDisplayState> {
+        use crate::agent::{AgentDisplayState, AgentState};
+        let display = match next {
+            AgentState::Blocked => Some(AgentDisplayState::Blocked),
+            AgentState::Idle
+                if matches!(
+                    previous,
+                    Some(AgentState::Working) | Some(AgentState::Blocked)
+                ) && !viewing =>
+            {
+                Some(AgentDisplayState::Done)
+            }
+            _ => None,
+        };
+        let Some(display) = display else {
+            self.notified.remove(&pane_id);
+            return None;
+        };
+        if viewing || self.notified.get(&pane_id) == Some(&display) {
+            return None;
+        }
+        let wanted = match mode {
+            config::AgentNotifyMode::Off => false,
+            config::AgentNotifyMode::Blocked => display == AgentDisplayState::Blocked,
+            config::AgentNotifyMode::All => true,
+        };
+        if !wanted {
+            return None;
+        }
+        self.notified.insert(pane_id, display);
+        Some(display)
     }
 }
 
@@ -309,6 +361,7 @@ pub(super) struct RuntimeUiConfig {
     pub status_style: CellStyle,
     pub hooks: config::HooksConfig,
     pub editor_command: Option<String>,
+    pub agent_notify: config::AgentNotifyMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
