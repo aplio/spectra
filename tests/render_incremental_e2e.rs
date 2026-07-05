@@ -1,7 +1,12 @@
+#[allow(dead_code)]
+mod support;
+
 use spectra::session::manager::{RenderFrame, RenderPane};
 use spectra::session::terminal_state::StyledCell;
 use spectra::ui::render::FrameRenderer;
-use spectra::ui::window_manager::PaneRect;
+use spectra::ui::window_manager::{Divider, DividerOrientation, PaneRect};
+
+use support::render_snapshot::ansi_bytes_to_rows;
 
 #[test]
 fn full_clear_only_on_full_clear_render() {
@@ -198,4 +203,150 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
         .any(|window| window == needle)
+}
+
+/// Invariant: replaying any accumulated incremental diff stream onto a blank
+/// terminal must produce exactly the screen a fresh full-frame render of the
+/// final frame produces. Runs a few scripted frame sequences that exercise
+/// shrinking rows, cursor-only moves and multi-pane updates.
+#[test]
+fn incremental_diff_stream_replays_to_the_final_full_frame() {
+    const COLS: usize = 14;
+    const ROWS: usize = 4;
+
+    let scenarios: Vec<(&str, Vec<RenderFrame>)> = vec![
+        (
+            "shrinking row leaves no residue",
+            vec![
+                tall_frame(COLS, &["hello world!", "second line", "third"], (0, 0)),
+                tall_frame(COLS, &["hi", "second line", "third"], (2, 0)),
+                tall_frame(COLS, &["hi", "s", ""], (1, 1)),
+            ],
+        ),
+        (
+            "cursor-only moves keep content stable",
+            vec![
+                tall_frame(COLS, &["alpha", "beta", "gamma"], (0, 0)),
+                tall_frame(COLS, &["alpha", "beta", "gamma"], (4, 2)),
+                tall_frame(COLS, &["alpha", "beta!", "gamma"], (5, 1)),
+            ],
+        ),
+        (
+            "two panes with divider update independently",
+            vec![
+                split_frame(COLS, &["left1", "left2"], &["right1", "right2"], (0, 0)),
+                split_frame(COLS, &["LEFT1", "left2"], &["right1", "right2"], (1, 0)),
+                split_frame(COLS, &["LEFT1", "left2"], &["r", "right2"], (1, 1)),
+            ],
+        ),
+    ];
+
+    for (name, frames) in scenarios {
+        let mut incremental = FrameRenderer::new();
+        let mut stream = Vec::new();
+        for (index, frame) in frames.iter().enumerate() {
+            incremental
+                .render_to_writer(
+                    &mut stream,
+                    frame,
+                    "status",
+                    COLS as u16,
+                    ROWS as u16,
+                    index == 0,
+                    None,
+                    None,
+                )
+                .expect("incremental render");
+        }
+
+        let mut full = FrameRenderer::new();
+        let mut full_out = Vec::new();
+        full.render_to_writer(
+            &mut full_out,
+            frames.last().expect("non-empty scenario"),
+            "status",
+            COLS as u16,
+            ROWS as u16,
+            true,
+            None,
+            None,
+        )
+        .expect("full render");
+
+        assert_eq!(
+            ansi_bytes_to_rows(&stream, COLS, ROWS),
+            ansi_bytes_to_rows(&full_out, COLS, ROWS),
+            "diff replay diverged from full render in scenario: {name}"
+        );
+    }
+}
+
+fn tall_frame(cols: usize, rows: &[&str], cursor: (u16, u16)) -> RenderFrame {
+    RenderFrame {
+        panes: vec![RenderPane {
+            pane_id: 1,
+            rect: PaneRect {
+                x: 0,
+                y: 0,
+                width: cols,
+                height: rows.len(),
+            },
+            view_row_origin: 0,
+            rows: rows.iter().map(|row| plain_cells(row)).collect(),
+            cursor: (0, 0),
+            focused: true,
+        }],
+        dividers: vec![],
+        focused_cursor: Some(cursor),
+        cursor_style: crossterm::cursor::SetCursorStyle::DefaultUserShape,
+    }
+}
+
+fn split_frame(
+    cols: usize,
+    left_rows: &[&str],
+    right_rows: &[&str],
+    cursor: (u16, u16),
+) -> RenderFrame {
+    let left_width = cols / 2 - 1;
+    let divider_x = left_width;
+    let right_x = divider_x + 1;
+    RenderFrame {
+        panes: vec![
+            RenderPane {
+                pane_id: 1,
+                rect: PaneRect {
+                    x: 0,
+                    y: 0,
+                    width: left_width,
+                    height: left_rows.len(),
+                },
+                view_row_origin: 0,
+                rows: left_rows.iter().map(|row| plain_cells(row)).collect(),
+                cursor: (0, 0),
+                focused: true,
+            },
+            RenderPane {
+                pane_id: 2,
+                rect: PaneRect {
+                    x: right_x,
+                    y: 0,
+                    width: cols - right_x,
+                    height: right_rows.len(),
+                },
+                view_row_origin: 0,
+                rows: right_rows.iter().map(|row| plain_cells(row)).collect(),
+                cursor: (0, 0),
+                focused: false,
+            },
+        ],
+        dividers: vec![Divider {
+            orientation: DividerOrientation::Vertical,
+            x: divider_x,
+            y: 0,
+            len: left_rows.len(),
+        }],
+        focused_cursor: Some(cursor),
+        cursor_style: crossterm::cursor::SetCursorStyle::DefaultUserShape,
+    }
 }

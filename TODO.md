@@ -21,7 +21,7 @@
 - [x] DONE cursor mode の `v` anchor toggle が効かない疑い — 原因判明: 移動キーが無条件に selection_anchor をクリアしていた。`visual` フラグ導入で v 選択は移動で伸長し、y はヤンク後 Normal へ戻る(vi 準拠)
 - [x] DONE windowtree(SideWindowTree)の左端固定(x=0)ジオメトリのhardcode修正(P4の既知項目) — `SidebarRect`(origin+width)を導入し、compose・クリックhit-testing・pane xオフセット・reserve計算(effective_pane_cols)を全て同一rect経由に統一。挙動は従来どおり左端のみ(`SidebarRect::left_edge`が唯一の構成)、位置はパラメータ化済みで将来の右端/可変位置はrect生成の差し替えだけで済む
 - [x] DONE enter/leave cursor mode のアクションを command palette で文脈フィルタ — `CommandPaletteContext` 導入でエントリ毎に表示可否を判定。palette は Normal からしか開けないため通常は enter のみ表示・leave は非表示(lock mode の enter/leave も同機構に統合)
-- [ ] アーキテクチャ+テストカバレッジの再確認。カバレッジの穴にテストを実装(最後に実施)
+- [x] DONE アーキテクチャ+テストカバレッジの再確認。カバレッジの穴にテストを実装(最後に実施) — テスト19本追加(cross-feature/failure path/persistence/renderer不変条件、計790本)・実バグ1件修正(synchronize-panes中のbracketed paste が focused pane の ?2004 状態で全paneに配られていた→pane毎にwrap)・アーキテクチャ所見5件(ui⇔session循環・handoffプロトコル定数の層違反ほか、詳細はcommit message)・dead code 11関数削除
 - [x] DONE spectra内でClaude Codeを開くと下線が無駄に残ることがある(スクショ確認済み: プロンプト行に下線残留)。
       原因判明: SGRパーサがコロン下位パラメータを平坦化していた — `4:3`(波下線)が下線+イタリック、`4:0`(下線オフ)が「下線オン→全リセット」、`58:5:n`(下線色)の引数が独立コード(5=blink、4=下線!)として誤解釈され下線が固着。
       修正: vteのparamスライスを保ったままSGR解釈(`4:0`=off/`4:1..5`=on/`21`=二重下線(ECMA-48・xterm/kitty/ghostty準拠)/`38:48:58`のコロン・セミコロン両形式consume/`59` no-op)。レンダラ側は全リセット+再構築方式で元々正しいことをテストで確認

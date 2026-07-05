@@ -169,6 +169,28 @@ mod tests {
     }
 
     #[test]
+    fn display_width_combining_marks_are_zero_width() {
+        // "e" + U+0301 combining acute renders in one column.
+        assert_eq!(display_width("e\u{301}"), 1);
+        assert_eq!(display_width("か\u{3099}"), 2); // dakuten on a wide kana
+    }
+
+    #[test]
+    fn truncate_keeps_combining_mark_attached_to_base_char() {
+        let (s, w) = truncate_to_width("e\u{301}x", 1);
+        assert_eq!(s, "e\u{301}", "combining mark must not be split off");
+        assert_eq!(w, 1);
+    }
+
+    #[test]
+    fn slice_display_window_with_combining_marks_stays_on_char_boundaries() {
+        let text = "ae\u{301}い";
+        let window = slice_display_window(text, 1, 3);
+        assert_eq!(window.visible, "e\u{301}い");
+        assert_eq!(window.used_width, 3);
+    }
+
+    #[test]
     fn display_width_cjk() {
         assert_eq!(display_width("あいう"), 6);
     }

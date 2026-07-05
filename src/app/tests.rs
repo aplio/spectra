@@ -7259,3 +7259,274 @@ fn config_reload_rescans_plugin_directories() {
     assert_eq!(plugins.len(), 1);
     assert_eq!(plugins[0].name, "keep");
 }
+
+// --- Cross-feature interaction coverage (2026-07 audit) ---
+
+#[test]
+fn sync_paste_wraps_per_pane_by_bracketed_paste_state() {
+    // Two synchronized panes disagree on DECSET 2004: only the pane that
+    // enabled bracketed paste receives the wrapped payload.
+    let (mut app, writes) = build_recording_app_one_session();
+    app.current_session_mut()
+        .split_focused(crate::ui::window_manager::SplitAxis::Vertical, 80, 24)
+        .expect("split focused pane");
+    assert!(
+        app.current_session_mut()
+            .feed_pane_replay(2, b"\x1b[?2004h"),
+        "feed bracketed paste enable into pane 2"
+    );
+    let _ = app.handle_action(CommandAction::ToggleSynchronizePanes);
+    take_recorded_writes(&writes);
+
+    app.handle_paste_text("hello\r".to_string())
+        .expect("synchronized paste");
+
+    let mut recorded = take_recorded_writes(&writes);
+    recorded.sort_by_key(|(backend_id, _)| *backend_id);
+    assert_eq!(
+        recorded,
+        vec![
+            (1, b"hello\r".to_vec()),
+            (2, b"\x1b[200~hello\r\x1b[201~".to_vec()),
+        ]
+    );
+}
+
+#[test]
+fn sync_paste_strips_embedded_end_marker_in_wrapped_panes() {
+    let (mut app, writes) = build_recording_app_one_session();
+    app.current_session_mut()
+        .split_focused(crate::ui::window_manager::SplitAxis::Vertical, 80, 24)
+        .expect("split focused pane");
+    assert!(
+        app.current_session_mut()
+            .feed_pane_replay(1, b"\x1b[?2004h")
+    );
+    assert!(
+        app.current_session_mut()
+            .feed_pane_replay(2, b"\x1b[?2004h")
+    );
+    let _ = app.handle_action(CommandAction::ToggleSynchronizePanes);
+    take_recorded_writes(&writes);
+
+    app.handle_paste_text("evil\x1b[201~rm -rf /\r".to_string())
+        .expect("synchronized paste");
+
+    let recorded = take_recorded_writes(&writes);
+    assert_eq!(recorded.len(), 2);
+    for (_, bytes) in recorded {
+        assert_eq!(bytes, b"\x1b[200~evilrm -rf /\r\x1b[201~".to_vec());
+    }
+}
+
+#[test]
+fn sync_key_fanout_uses_focused_pane_kitty_encoding() {
+    // Documented v1 simplification (see App::kitty_encode_for_focused):
+    // with synchronize-panes active, the focused pane's kitty keyboard
+    // flags decide the encoding sent to every pane in the window.
+    let (mut app, writes) = build_recording_app_one_session();
+    app.current_session_mut()
+        .split_focused(crate::ui::window_manager::SplitAxis::Vertical, 80, 24)
+        .expect("split focused pane");
+    let focused = app
+        .current_session()
+        .focused_pane_id()
+        .expect("focused pane");
+    assert!(
+        app.current_session_mut()
+            .feed_pane_replay(focused, b"\x1b[>1u"),
+        "enable kitty disambiguate on the focused pane only"
+    );
+    let _ = app.handle_action(CommandAction::ToggleSynchronizePanes);
+    take_recorded_writes(&writes);
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .expect("send esc");
+
+    let recorded = take_recorded_writes(&writes);
+    assert_eq!(recorded.len(), 2, "both panes receive the key");
+    for (_, bytes) in recorded {
+        assert_eq!(bytes, b"\x1b[27;1u".to_vec());
+    }
+}
+
+#[test]
+fn osc52_broadcast_reaches_every_attached_client_independently() {
+    let (mut app, _writes) =
+        build_recording_app_with_output(vec![b"\x1b]52;c;aGVsbG8=\x07".to_vec()]);
+    app.register_client(7, 80, 24);
+    app.register_client(8, 80, 24);
+
+    app.tick();
+
+    let local = app.take_pending_clipboard_ansi_for_client(super::LOCAL_CLIENT_ID);
+    let first = app.take_pending_clipboard_ansi_for_client(7);
+    let second = app.take_pending_clipboard_ansi_for_client(8);
+    for (who, ansi) in [
+        ("local", &local),
+        ("client 7", &first),
+        ("client 8", &second),
+    ] {
+        assert_eq!(ansi.len(), 1, "{who} should get exactly one frame");
+        assert!(
+            ansi[0].contains("52;c;aGVsbG8="),
+            "{who} got unexpected clipboard frame: {:?}",
+            ansi[0]
+        );
+    }
+    assert!(
+        app.take_pending_clipboard_ansi_for_client(7).is_empty(),
+        "draining one client must not re-queue its frames"
+    );
+}
+
+#[test]
+fn mouse_forwarding_uses_sidebar_shifted_pane_geometry() {
+    let (mut app, writes) = build_recording_app_with_output(vec![b"\x1b[?1002;1006h".to_vec()]);
+    app.tick();
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
+        .expect("enter prefix");
+    app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
+        .expect("toggle side window tree");
+    assert!(app.side_window_tree_is_open());
+    let snapshot = app.take_render_snapshot().expect("render snapshot");
+    let pane = snapshot.frame.panes.first().expect("pane in frame");
+    assert!(pane.rect.x > 0, "sidebar must shift the pane right");
+    take_recorded_writes(&writes);
+
+    // Click 5 columns / 3 rows into the pane's shifted rect: the guest
+    // must see pane-local coordinates, not screen coordinates.
+    app.handle_mouse_event(mouse_event_with_modifiers(
+        MouseEventKind::Down(MouseButton::Left),
+        (pane.rect.x + 5) as u16,
+        (pane.rect.y + 3) as u16,
+        KeyModifiers::NONE,
+    ))
+    .expect("mouse event inside pane");
+    let recorded = take_recorded_writes(&writes);
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].1, b"\x1b[<0;6;4M".to_vec());
+
+    // A click inside the sidebar itself is not inside any pane rect and
+    // must never be forwarded to the guest.
+    app.handle_mouse_event(mouse_event_with_modifiers(
+        MouseEventKind::Down(MouseButton::Left),
+        0,
+        1,
+        KeyModifiers::NONE,
+    ))
+    .expect("mouse event inside sidebar");
+    assert!(
+        take_recorded_writes(&writes).is_empty(),
+        "sidebar clicks must stay host-side"
+    );
+}
+
+#[test]
+fn mouse_forwarding_targets_zoomed_pane_with_full_size_coordinates() {
+    let (mut app, writes) = build_recording_app_with_output(vec![b"\x1b[?1000;1006h".to_vec()]);
+    app.current_session_mut()
+        .split_focused(crate::ui::window_manager::SplitAxis::Vertical, 80, 24)
+        .expect("split focused pane");
+    app.tick();
+    let focused = app
+        .current_session()
+        .focused_pane_id()
+        .expect("focused pane");
+    let _ = app.handle_action(CommandAction::ToggleZoom);
+    take_recorded_writes(&writes);
+
+    // Far-right click: pre-zoom this column belonged to the other pane;
+    // zoomed it must reach the focused pane with full-width local coords.
+    app.handle_mouse_event(mouse_event_with_modifiers(
+        MouseEventKind::Down(MouseButton::Left),
+        70,
+        2,
+        KeyModifiers::NONE,
+    ))
+    .expect("mouse event on zoomed pane");
+
+    let recorded = take_recorded_writes(&writes);
+    assert_eq!(recorded.len(), 1, "only the zoomed pane receives the click");
+    assert_eq!(recorded[0].0, focused, "click goes to the zoomed pane");
+    assert_eq!(recorded[0].1, b"\x1b[<0;71;3M".to_vec());
+}
+
+#[test]
+fn resize_to_one_by_one_and_back_keeps_split_panes_renderable() {
+    let mut app = build_app_for_resize_test();
+    app.current_session_mut()
+        .split_focused(crate::ui::window_manager::SplitAxis::Vertical, 80, 24)
+        .expect("split focused pane");
+
+    app.handle_client_resize_event(super::LOCAL_CLIENT_ID, 1, 1)
+        .expect("resize to 1x1");
+    let snapshot = app.take_render_snapshot().expect("snapshot at 1x1");
+    for pane in &snapshot.frame.panes {
+        assert!(pane.rect.width >= 1, "pane width must stay positive");
+        assert!(pane.rect.height >= 1, "pane height must stay positive");
+    }
+
+    app.handle_client_resize_event(super::LOCAL_CLIENT_ID, 80, 24)
+        .expect("resize back to 80x24");
+    let snapshot = app.take_render_snapshot().expect("snapshot at 80x24");
+    assert_eq!(snapshot.frame.panes.len(), 2);
+    let total_width: usize = snapshot
+        .frame
+        .panes
+        .iter()
+        .map(|pane| pane.rect.width)
+        .sum();
+    assert!(
+        total_width >= 78,
+        "restored layout should span the viewport (got {total_width})"
+    );
+}
+
+#[test]
+fn mouse_selection_over_wide_chars_copies_clean_text_for_remote_client() {
+    let (mut app, _writes) = build_recording_app_with_output(vec!["日本語abc".as_bytes().to_vec()]);
+    app.mouse_enabled = true;
+    app.register_client(7, 80, 24);
+    app.tick();
+
+    // Select the full run: 3 CJK chars (2 cells each) plus "abc".
+    app.handle_mouse_event_for_client(
+        7,
+        mouse_event_with_modifiers(
+            MouseEventKind::Down(MouseButton::Left),
+            0,
+            0,
+            KeyModifiers::NONE,
+        ),
+    )
+    .expect("mouse down");
+    app.handle_mouse_event_for_client(
+        7,
+        mouse_event_with_modifiers(
+            MouseEventKind::Drag(MouseButton::Left),
+            8,
+            0,
+            KeyModifiers::NONE,
+        ),
+    )
+    .expect("mouse drag");
+    app.handle_mouse_event_for_client(
+        7,
+        mouse_event_with_modifiers(
+            MouseEventKind::Up(MouseButton::Left),
+            8,
+            0,
+            KeyModifiers::NONE,
+        ),
+    )
+    .expect("mouse up");
+
+    let ansi = app.take_pending_clipboard_ansi_for_client(7);
+    assert_eq!(ansi.len(), 1, "selection should queue one clipboard frame");
+    assert_eq!(
+        ansi[0],
+        crate::clipboard::osc52_sequence("日本語abc"),
+        "wide-char continuation cells must not leak into the copied text"
+    );
+}

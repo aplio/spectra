@@ -1100,3 +1100,50 @@ fn socket_attach_with_missing_target_returns_error_and_keeps_other_clients_attac
         thread::sleep(Duration::from_millis(20));
     }
 }
+
+#[test]
+fn client_that_disconnects_before_hello_does_not_disturb_the_server() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime_dir = dir.path().join("runtime");
+    let data_home = dir.path().join("data");
+    std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+    std::fs::create_dir_all(&data_home).expect("create data dir");
+
+    let mut server = spawn_server(&runtime_dir, &data_home).expect("spawn server");
+    let socket = socket_path(&runtime_dir);
+    wait_for_socket(&socket).expect("wait for socket");
+
+    // Connect raw sockets and drop them without ever sending Hello — once
+    // instantly, once after a partial frame.
+    {
+        let ghost = std::os::unix::net::UnixStream::connect(&socket).expect("ghost connect");
+        drop(ghost);
+    }
+    {
+        let mut partial =
+            std::os::unix::net::UnixStream::connect(&socket).expect("partial connect");
+        partial
+            .write_all(b"{\"type\":\"hel")
+            .expect("write partial frame");
+        drop(partial);
+    }
+
+    // The server must keep accepting and serving well-behaved clients.
+    let mut client = TestClient::connect(&socket, 80, 24).expect("connect real client");
+    client
+        .wait_for_message(WAIT_TIMEOUT, |message| {
+            matches!(message, ServerMessage::Render { .. })
+        })
+        .expect("render after ghost clients");
+
+    assert!(
+        server.child.try_wait().expect("poll server").is_none(),
+        "server must still be running"
+    );
+    client.send_quit().expect("quit server");
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    while server.child.try_wait().expect("poll server").is_none() {
+        assert!(Instant::now() < deadline, "server did not exit after quit");
+        thread::sleep(Duration::from_millis(20));
+    }
+}

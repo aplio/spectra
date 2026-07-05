@@ -357,3 +357,81 @@ fn bridge_subcommand_relays_ndjson_between_stdio_and_server() {
     assert!(status.success(), "bridge exited unsuccessfully: {status}");
     reader_thread.join().expect("join reader thread");
 }
+
+#[test]
+fn bridge_exits_when_the_server_dies_mid_session() {
+    let (_dir, runtime_dir, data_home) = setup_server_env();
+    let mut server = spawn_server(&runtime_dir, &data_home).expect("spawn server");
+    let socket = socket_path(&runtime_dir);
+    wait_for_socket(&socket).expect("wait for socket");
+
+    let bin = resolve_spectra_binary().expect("resolve binary");
+    let config_home = data_home.join("config-home");
+    let mut bridge = Command::new(bin)
+        .arg("remote-client-bridge")
+        .env("XDG_RUNTIME_DIR", &runtime_dir)
+        .env("XDG_DATA_HOME", &data_home)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn bridge subcommand");
+
+    let mut bridge_stdin = bridge.stdin.take().expect("bridge stdin");
+    let bridge_stdout = bridge.stdout.take().expect("bridge stdout");
+
+    let (sender, receiver) = mpsc::channel::<ServerMessage>();
+    let reader_thread = thread::spawn(move || {
+        let reader = BufReader::new(bridge_stdout);
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(message) = serde_json::from_str::<ServerMessage>(&line) else {
+                break;
+            };
+            if sender.send(message).is_err() {
+                break;
+            }
+        }
+    });
+
+    let encoded = encode_message(&hello(Some(PROTOCOL_VERSION))).expect("encode hello");
+    bridge_stdin.write_all(&encoded).expect("write hello line");
+    bridge_stdin.flush().expect("flush hello line");
+
+    // The session is live once a render crosses the bridge.
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            panic!("timed out waiting for a render through the bridge");
+        }
+        match receiver.recv_timeout(remaining) {
+            Ok(ServerMessage::Render { .. }) => break,
+            Ok(_other) => continue,
+            Err(err) => panic!("bridge stdout closed before a render arrived: {err}"),
+        }
+    }
+
+    // Kill the server out from under the bridge: the socket EOF must
+    // terminate the bridge process instead of leaving it hanging.
+    server.child.kill().expect("kill server");
+    let _ = server.child.wait();
+
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        if bridge.try_wait().expect("poll bridge exit").is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = bridge.kill();
+            panic!("bridge did not exit after the server died");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    drop(bridge_stdin);
+    reader_thread.join().expect("join reader thread");
+}

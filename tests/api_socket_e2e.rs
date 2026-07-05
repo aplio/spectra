@@ -438,3 +438,66 @@ fn api_cli_follow_prints_pushed_event_lines() {
     let _ = follower.wait();
     let _ = reader_thread.join();
 }
+
+#[test]
+fn api_socket_disconnects_oversized_single_line_but_keeps_serving() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime_dir = dir.path().join("runtime");
+    let data_home = dir.path().join("data");
+    std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+    std::fs::create_dir_all(&data_home).expect("create data dir");
+
+    let _server = spawn_server(&runtime_dir, &data_home).expect("spawn server");
+    let api_socket = api_socket_path(&runtime_dir);
+    wait_for_socket(&api_socket).expect("wait for api socket");
+
+    // Stream >1MiB without a newline: the server must drop the connection
+    // instead of buffering an unbounded request line.
+    let mut hostile = ApiClient::connect(&api_socket).expect("connect hostile client");
+    let chunk = vec![b'a'; 64 * 1024];
+    let mut sent = 0usize;
+    let target = 1024 * 1024 + 128 * 1024;
+    let disconnected_on_write = loop {
+        if sent >= target {
+            break false;
+        }
+        match hostile.reader.get_mut().write_all(&chunk) {
+            Ok(()) => sent += chunk.len(),
+            // The server may have already torn the socket down mid-stream.
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+                ) =>
+            {
+                break true;
+            }
+            Err(err) => panic!("unexpected write error: {err}"),
+        }
+    };
+
+    if !disconnected_on_write {
+        // Not yet torn down while writing: the read side must observe EOF
+        // (or a reset) rather than a response.
+        let mut line = String::new();
+        match hostile.reader.read_line(&mut line) {
+            Ok(0) => {}
+            Ok(_) => panic!("server answered an oversized line: {line:?}"),
+            Err(err) => assert!(
+                matches!(
+                    err.kind(),
+                    io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+                ),
+                "expected disconnect, got: {err}"
+            ),
+        }
+    }
+
+    // The API socket itself must survive and serve a fresh connection.
+    let mut client = ApiClient::connect(&api_socket).expect("connect fresh client");
+    let sessions = client
+        .request(r#"{"id":1,"method":"session.list"}"#)
+        .expect("session.list after hostile client");
+    assert_eq!(sessions["id"], 1);
+    assert!(sessions["result"].is_array());
+}

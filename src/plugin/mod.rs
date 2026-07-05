@@ -491,6 +491,27 @@ mod tests {
     }
 
     #[test]
+    fn missing_agent_manifest_file_disables_only_that_capability() {
+        let base = tempfile::tempdir().expect("tempdir");
+        write_plugin(
+            base.path(),
+            "ghost",
+            "name = \"ghost\"\n[agent_manifest]\npath = \"does-not-exist.toml\"",
+        );
+
+        let (host, report) = load_host(vec![base.path().to_path_buf()]);
+
+        assert_eq!(host.plugins().len(), 1, "plugin itself must still load");
+        assert!(host.plugins()[0].agent_manifest.is_none());
+        assert!(
+            report.iter().any(|line| line.contains("agent manifest")
+                && line.contains("ignored")
+                && line.contains("read failed")),
+            "report should explain the ignored capability: {report:?}"
+        );
+    }
+
+    #[test]
     fn dispatch_event_runs_command_with_stdin_placeholder_and_env() {
         let base = tempfile::tempdir().expect("tempdir");
         let dir = write_plugin(

@@ -908,3 +908,125 @@ fn focused_pane_closed_detects_terminated_backend() {
 
     assert!(session.focused_pane_closed());
 }
+
+#[test]
+fn restore_accepts_legacy_snapshot_missing_optional_window_fields() {
+    // Snapshots written before zoom/sync persistence lack `zoomed`,
+    // `synchronize_panes` and `zoom_snapshot`; restoring one must fall back
+    // to serde defaults instead of failing.
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options.clone(), Arc::new(FakeFactory), 80, 24)
+        .expect("create session");
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split window");
+
+    let mut value = serde_json::to_value(session.runtime_snapshot()).expect("serialize snapshot");
+    for window in value["windows"]
+        .as_array_mut()
+        .expect("windows array")
+        .iter_mut()
+    {
+        let map = window.as_object_mut().expect("window object");
+        map.remove("zoomed");
+        map.remove("synchronize_panes");
+        map.remove("zoom_snapshot");
+    }
+    let legacy: SessionRuntimeSnapshot =
+        serde_json::from_value(value).expect("legacy snapshot must deserialize");
+
+    let restored = SessionManager::with_factory_from_runtime_snapshot(
+        options,
+        Arc::new(FakeFactory),
+        legacy,
+        80,
+        24,
+    )
+    .expect("restore legacy snapshot");
+    assert_eq!(restored.pane_count(), 2);
+    assert!(!restored.active_window_zoomed());
+    assert!(!restored.active_window_synchronize_panes());
+}
+
+#[test]
+fn restore_clamps_out_of_range_active_window_index() {
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let session = SessionManager::with_factory(options.clone(), Arc::new(FakeFactory), 80, 24)
+        .expect("create session");
+
+    let mut snapshot = session.runtime_snapshot();
+    snapshot.active_window = 9;
+
+    let restored = SessionManager::with_factory_from_runtime_snapshot(
+        options,
+        Arc::new(FakeFactory),
+        snapshot,
+        80,
+        24,
+    )
+    .expect("restore snapshot with bogus active window");
+    assert_eq!(restored.focused_window_number(), Some(1));
+}
+
+#[test]
+fn send_paste_to_active_window_wraps_only_bracketed_panes() {
+    type PasteWrites = std::sync::Arc<std::sync::Mutex<Vec<(usize, Vec<u8>)>>>;
+    struct PasteRecordingBackend {
+        pane_id: usize,
+        writes: PasteWrites,
+    }
+    impl PaneBackend for PasteRecordingBackend {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
+            self.writes
+                .lock()
+                .expect("paste writes lock")
+                .push((self.pane_id, bytes.to_vec()));
+            Ok(())
+        }
+        fn resize(&mut self, _cols: u16, _rows: u16) -> io::Result<()> {
+            Ok(())
+        }
+        fn poll_output(&mut self) -> Vec<Vec<u8>> {
+            Vec::new()
+        }
+    }
+    struct PasteRecordingFactory {
+        writes: PasteWrites,
+    }
+    impl PaneFactory for PasteRecordingFactory {
+        fn spawn(&self, config: &PaneSpawnConfig) -> io::Result<Box<dyn PaneBackend>> {
+            Ok(Box::new(PasteRecordingBackend {
+                pane_id: config.pane_id,
+                writes: std::sync::Arc::clone(&self.writes),
+            }))
+        }
+    }
+
+    let writes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(
+        options,
+        Arc::new(PasteRecordingFactory {
+            writes: std::sync::Arc::clone(&writes),
+        }),
+        80,
+        24,
+    )
+    .expect("create session");
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split window");
+    assert!(session.feed_pane_replay(2, b"\x1b[?2004h"));
+
+    let sent = session
+        .send_paste_to_active_window("txt")
+        .expect("paste to window");
+
+    assert_eq!(sent, 2);
+    let mut by_pane = writes.lock().expect("paste writes lock").clone();
+    by_pane.sort_by_key(|(pane, _)| *pane);
+    assert_eq!(
+        by_pane,
+        vec![(1, b"txt".to_vec()), (2, b"\x1b[200~txt\x1b[201~".to_vec()),]
+    );
+}
