@@ -122,6 +122,12 @@ impl Pane {
         self.terminal.bracketed_paste()
     }
 
+    /// Kitty keyboard protocol flags enabled by the guest for the active
+    /// screen (0 when the protocol is not in use).
+    pub fn kitty_keyboard_flags(&self) -> u8 {
+        self.terminal.kitty_keyboard_flags()
+    }
+
     pub fn wants_mouse_reporting(&self) -> bool {
         self.terminal.mouse_protocol() != crate::session::terminal_state::MouseProtocol::None
     }

@@ -6,12 +6,13 @@
 > 進捗メモ (2026-07-05 20:35): **判断不要のタスクは全て実装完了**(13イテレーション・15コミット・テスト447→621・clippy 0維持)。
 > 残りは `⏸ 要判断` の項目のみ — 判断後に再開する。判断待ちリスト:
 > 1. OSC 10/11 の応答戦略 (P1)
-> 2. kitty keyboard / kitty graphics の採否 (P1)
-> 3. 書き込み系APIメソッド(`pane.send_keys`/`pane.split`/`events.subscribe`)とplugin manifest形式 (P2) — これが決まるとP3のhook(`pane.report_agent`+integration install)とplugin配布も進められる
-> 4. sidebar 2段構成(専用agent panel)のUX (P4) — 現状はwindow list行のマーカーで代替済み
-> 5. remote attachをherdr同等(バイナリ自動配布+checksum)まで作り込むか (P5)
-> 6. イベントループepoll化の方針(mio/polling/tokio) (P6)
-> 7. SCM_RIGHTS live handoff の採否 (P6)
+> 2. 書き込み系APIメソッド(`pane.send_keys`/`pane.split`/`events.subscribe`)とplugin manifest形式 (P2) — これが決まるとP3のhook(`pane.report_agent`+integration install)とplugin配布も進められる
+> 3. sidebar 2段構成(専用agent panel)のUX (P4) — 現状はwindow list行のマーカーで代替済み
+> 4. remote attachをherdr同等(バイナリ自動配布+checksum)まで作り込むか (P5)
+> 5. イベントループepoll化の方針(mio/polling/tokio) (P6)
+> 6. SCM_RIGHTS live handoff の採否 (P6)
+>
+> (2026-07-05 判断済み: kitty keyboard はパススルー相当で実装済み・kitty graphics は不採用)
 > なおP6のgod object分割は大工事につき、epoll化の方針と合わせて着手判断を推奨。
 
 ## 現状サマリ（希望機能の実在チェック）
@@ -60,11 +61,12 @@ herdrはlibghostty-vt(vendored, Zig FFI)に委譲し、足りない分を `src/p
       (`last_prompt_abs_row`)。P3 agent検知の「最後のプロンプト以降」region計算に使う。B/C/Dマークは必要になったら
 - [ ] ⏸ 要判断 OSC 10/11 (fg/bg色 query) — 応答戦略の判断待ち: (a)固定デフォルト応答(ダーク/ライト誤検知リスク),
       (b)ホスト端末へ問い合わせ中継(実装複雑・非同期), (c)現状維持(無応答=アプリ側タイムアウト)。推奨は(b)だが工数大
+      -> b
 - [x] DONE **OSC 8 hyperlink をgridで解釈** — `StyledCell` に `link: Option<Arc<str>>` を追加し、OSC 8 の
       URIをアクティブリンクとして追跡して印字セルにスタンプ(URI上限2083B・passthrough転送は従来通り維持)。
       レンダラはセルリンクを自前URL検知より優先してOSC 8でラップ出力
-- [ ] ⏸ 要判断 kitty keyboard protocol (herdr `src/pane/kitty_keyboard.rs`) — 対応範囲(パススルーのみか完全実装か)の判断待ち
-- [ ] ⏸ 要判断 kitty graphics — herdrはフルサポート(`src/kitty_graphics.rs`, 32MBフレーム上限)だが実装コスト大。採否の判断待ち
+- [x] DONE kitty keyboard protocol — パススルー相当の軽量実装: pane毎(main/alt画面別)のflagスタック(push/pop/set/上限16)+`CSI ? u` クエリ応答+bit1(disambiguate)/bit8(report-all)のCSI-uエンコード(bit2/4/16は追跡のみ)。クライアントは `supports_keyboard_enhancement` 検出時のみ DISAMBIGUATE|REPORT_ALTERNATE_KEYS をpush。フル実装(イベント種別/associated text等)ではない
+- [x] 不採用 kitty graphics — ユーザー判断で不採用(2026-07-05)。必要になったら再検討
 
 herdr方式の学び: OSCトラッカーを**VTパーサと分離した独立のバイトストリーム監視**として実装している(パーサに手を入れずに追加できる)。spectraでもterminal_state.rsを肥大化させず `session/osc_tracker.rs` 的に分けるのが良い。
 
@@ -75,6 +77,7 @@ herdr方式の学び: OSCトラッカーを**VTパーサと分離した独立の
 > ⏸ 一部要判断: APIメソッド表面とplugin manifest形式は互換性を縛る設計判断なので、
 > 着手前に方針確認したい(herdr式の「CLI=APIラッパー・manifest+argvコマンド」方式で良いか)。
 > `pane.read`/`pane.list` 等の読み取り系メソッドは判断不要と思われるため先行実装可。
+-> それでok. まぁcoreと切り離せていれば良い
 
 herdrの拡張モデルが秀逸: **TUI用のバイナリprotocolとは別に、改行区切りJSON-RPCのsocket APIを立てる** (`src/api/server.rs`)。
 plugin = 「`herdr-plugin.toml` マニフェスト + 任意言語のargvコマンド」で、SDK不要。CLI自体がAPIのラッパー。
@@ -155,10 +158,13 @@ spectraタスク:
 ## P6: アーキテクチャ改善（機能ではないがherdrに劣る点）
 
 - [ ] ⏸ 要判断 **イベントループのepoll化** — 現状1ms sleepのbusy-poll (`src/runtime/server.rs:22,67`)。アイドル時CPUを常時食う。mio/pollingへ。herdrはtokio multi-thread。依存追加(mio/polling/tokioのどれか)と改修範囲が大きいため方針確認したい
+  -> 一番薄いもので. どれも大差ないならtokioでok
 - [x] DONE **unwrap/expect監査** — 実棚卸しでprod経路は6箇所のみ(~149はcfg(test)込みの過大見積り)。terminal::setup×2をio::Result化・reflowのunwrap×1をis_some_and化で修正、不変条件expect×3は理由付き#[allow]で意図明示、lock系prod使用ゼロ。lint gateはlib.rs/main.rsに`#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]`でcrate全体に適用(テストmodは非対象)
 - [ ] **god object分割** — `app/mod.rs` 2838行 / `terminal_state.rs` 2685行。herdrの「AppState=純データ、render=純関数、runtime分離」規律 + `assert_invariants_for_test()` パターンが参考になる
+  -> yes please
 - [x] DONE alt-screen resizeがnaive(reflowなし) — 保存中のprimary画面をalt中のresizeでも通常経路と同じsoft-wrap reflowで追随(`reflow_saved_screen`)・alt画面自体はclip/pad維持・連続resize合成もtwin-grid同値でテスト
 - [ ] ⏸ 要判断 (面白い候補) **SCM_RIGHTSによるlive handoff** — herdrはPTYのfdをUnix socket越しに新serverへ渡してpaneを殺さずserver更新 (`src/server/handoff.rs`)。self-updateと組み合わせると「動作中に無停止アップグレード」が可能に。採否の判断待ち
+  -> yes please
 - [ ] IPCのバイナリ化(bincode+length-prefix)は**急がない** — NDJSONで困ってから。protocol versionフィールドはP5(remote attach)で導入済み
 - [x] DONE keybindの拡張 — `run:` プレフィクスで任意シェルコマンドをbind可・hooks実行基盤を流用・paletteには出さない
 

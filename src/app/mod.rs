@@ -20,7 +20,10 @@ use crate::attach_target::AttachTarget;
 use crate::cli::Cli;
 use crate::command_history::CommandHistory;
 use crate::config;
-use crate::input::{CommandAction, InputAction, KeyMapper, encode_key_to_bytes};
+use crate::input::{
+    CommandAction, InputAction, KITTY_FLAG_DISAMBIGUATE, KITTY_FLAG_REPORT_ALL, KeyMapper,
+    encode_key_to_bytes, encode_key_to_bytes_kitty,
+};
 use crate::runtime::event_loop::{FRAME_DURATION_60_FPS, poll_event_for};
 use crate::session::manager::SessionOptions;
 use crate::session::manager::{PaneTerminalEvent, SessionManager};
@@ -1840,7 +1843,10 @@ impl App {
                 self.needs_render = true;
                 return Ok(AppSignal::None);
             }
-            return match encode_key_to_bytes(key) {
+            return match self
+                .kitty_encode_for_focused(key)
+                .or_else(|| encode_key_to_bytes(key))
+            {
                 Some(bytes) => self.handle_send_bytes(bytes),
                 None => Ok(AppSignal::None),
             };
@@ -1861,6 +1867,9 @@ impl App {
                 if self.view.keys.prefix_active() != prefix_active_before {
                     self.needs_render = true;
                 }
+                // Keys destined for the pane are re-encoded in kitty form
+                // when its guest enabled the kitty keyboard protocol.
+                let bytes = self.kitty_encode_for_focused(key).unwrap_or(bytes);
                 self.handle_send_bytes(bytes)
             }
             InputAction::Ignore => {
@@ -1895,6 +1904,19 @@ impl App {
             }
             Err(err) => Err(err),
         }
+    }
+
+    /// Encode `key` in kitty CSI-u form when the focused pane's guest
+    /// enabled the kitty keyboard protocol with a flag we implement (bit 1
+    /// disambiguate, bit 8 report-all). `None` means "use the legacy
+    /// encoding". With pane synchronization active this still keys off the
+    /// focused pane (v1 simplification).
+    fn kitty_encode_for_focused(&self, key: KeyEvent) -> Option<Vec<u8>> {
+        let flags = self.current_session().focused_kitty_keyboard_flags();
+        if flags & (KITTY_FLAG_DISAMBIGUATE | KITTY_FLAG_REPORT_ALL) == 0 {
+            return None;
+        }
+        encode_key_to_bytes_kitty(key, flags)
     }
 
     fn send_input_to_active_window(&mut self, bytes: &[u8]) -> io::Result<()> {

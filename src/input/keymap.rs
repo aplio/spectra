@@ -582,6 +582,91 @@ pub(crate) fn encode_key_to_bytes(key: KeyEvent) -> Option<Vec<u8>> {
     }
 }
 
+/// Kitty keyboard protocol flag: disambiguate escape codes (bit 1).
+pub(crate) const KITTY_FLAG_DISAMBIGUATE: u8 = 0b1;
+/// Kitty keyboard protocol flag: report all keys as escape codes (bit 8).
+pub(crate) const KITTY_FLAG_REPORT_ALL: u8 = 0b1000;
+
+/// Encode a key for a pane whose guest enabled the kitty keyboard protocol.
+///
+/// Lightweight subset following the spec's progressive-enhancement rules:
+///
+/// - bit 1 (disambiguate escape codes): Esc and keys whose legacy encodings
+///   were ambiguous (ctrl+key C0 bytes, alt+key ESC prefixes, modified
+///   Enter/Tab/Backspace) are reported as `CSI code;mods u`. Plain text keys
+///   keep producing their text, plain Enter/Tab/Backspace keep their C0
+///   encodings ("the only exceptions are the Enter, Tab and Backspace keys"),
+///   and functional keys keep their legacy `CSI 1;mods{ABCDHF}` /
+///   `CSI num;mods~` encodings per the spec.
+/// - bit 8 (report all keys as escape codes): additionally, plain text keys
+///   and plain Enter/Tab/Backspace are reported as `CSI code;mods u`.
+/// - bits 2 (event types), 4 (alternate keys) and 16 (associated text) are
+///   tracked by the per-pane state machine but intentionally not encoded in
+///   this v1 (release/repeat events are filtered out before reaching the
+///   server, and crossterm key events carry no alternate-key payload).
+///
+/// The modifier field is always emitted explicitly (`;1` for none), which
+/// the protocol permits since the field defaults to 1.
+pub(crate) fn encode_key_to_bytes_kitty(key: KeyEvent, kitty_flags: u8) -> Option<Vec<u8>> {
+    if kitty_flags & (KITTY_FLAG_DISAMBIGUATE | KITTY_FLAG_REPORT_ALL) == 0 {
+        return encode_key_to_bytes(key);
+    }
+    let report_all = kitty_flags & KITTY_FLAG_REPORT_ALL != 0;
+    let mods = key.modifiers;
+    let m = kitty_modifier(mods);
+
+    match key.code {
+        // Under disambiguation, Esc always gets a CSI u encoding so it can
+        // never be confused with the start of another escape sequence.
+        KeyCode::Esc => Some(kitty_csi_u(27, m)),
+
+        // Enter/Tab/Backspace keep their legacy C0 encodings while
+        // unmodified, unless report-all-keys upgrades them to CSI u.
+        KeyCode::Enter if m == 1 && !report_all => Some(vec![b'\r']),
+        KeyCode::Tab if m == 1 && !report_all => Some(vec![b'\t']),
+        KeyCode::Backspace if m == 1 && !report_all => Some(vec![0x7f]),
+        KeyCode::Enter => Some(kitty_csi_u(13, m)),
+        KeyCode::Tab => Some(kitty_csi_u(9, m)),
+        KeyCode::Backspace => Some(kitty_csi_u(127, m)),
+        // Shift+Tab is Tab with the shift modifier in kitty terms.
+        KeyCode::BackTab => Some(kitty_csi_u(9, kitty_modifier(mods | KeyModifiers::SHIFT))),
+
+        KeyCode::Char(c) => {
+            if mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER) {
+                // Modified text keys had ambiguous legacy encodings, so they
+                // are disambiguated as CSI u. The code is the lowercase
+                // codepoint per the spec's unicode-key-code rule.
+                let code = c.to_lowercase().next().unwrap_or(c);
+                Some(kitty_csi_u(code as u32, m))
+            } else if report_all {
+                Some(kitty_csi_u(c as u32, m))
+            } else {
+                // Plain (or shift-only) text keys still produce their text.
+                Some(c.to_string().into_bytes())
+            }
+        }
+
+        // Arrows/Home/End keep `CSI 1;mods{ABCDHF}` and Insert/Delete/Page*
+        // and F-keys keep `CSI num;mods~` — the legacy encoder already emits
+        // these kitty-compatible forms.
+        _ => encode_key_to_bytes(key),
+    }
+}
+
+fn kitty_csi_u(code: u32, modifier: u8) -> Vec<u8> {
+    format!("\x1b[{code};{modifier}u").into_bytes()
+}
+
+/// Kitty modifier field value: the xterm value plus the kitty-defined
+/// super bit.
+fn kitty_modifier(mods: KeyModifiers) -> u8 {
+    let mut n = xterm_modifier(mods);
+    if mods.contains(KeyModifiers::SUPER) {
+        n += 8;
+    }
+    n
+}
+
 /// Compute the xterm modifier parameter value (1 = no modifiers).
 fn xterm_modifier(mods: KeyModifiers) -> u8 {
     let mut n = 1u8;
@@ -603,7 +688,10 @@ mod tests {
 
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use super::{CommandAction, InputAction, KeyMapper, parse_action};
+    use super::{
+        CommandAction, InputAction, KITTY_FLAG_DISAMBIGUATE, KITTY_FLAG_REPORT_ALL, KeyMapper,
+        encode_key_to_bytes, encode_key_to_bytes_kitty, parse_action,
+    };
     use crate::ui::window_manager::{Direction, SplitAxis};
 
     #[test]
@@ -1003,5 +1091,125 @@ mod tests {
         let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         assert_eq!(action, InputAction::SendBytes(vec![b'a']));
         assert!(!mapper.prefix_active());
+    }
+
+    #[test]
+    fn kitty_esc_is_csi_u_under_disambiguate() {
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(
+            encode_key_to_bytes_kitty(key, KITTY_FLAG_DISAMBIGUATE),
+            Some(b"\x1b[27;1u".to_vec())
+        );
+    }
+
+    #[test]
+    fn kitty_ctrl_letter_is_csi_u_under_disambiguate() {
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(
+            encode_key_to_bytes_kitty(key, KITTY_FLAG_DISAMBIGUATE),
+            Some(b"\x1b[99;5u".to_vec())
+        );
+    }
+
+    #[test]
+    fn kitty_alt_letter_is_csi_u_under_disambiguate() {
+        let key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT);
+        assert_eq!(
+            encode_key_to_bytes_kitty(key, KITTY_FLAG_DISAMBIGUATE),
+            Some(b"\x1b[120;3u".to_vec())
+        );
+    }
+
+    #[test]
+    fn kitty_plain_text_stays_text_under_disambiguate() {
+        let plain = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(
+            encode_key_to_bytes_kitty(plain, KITTY_FLAG_DISAMBIGUATE),
+            Some(b"a".to_vec())
+        );
+        // Shift-only text keys keep producing their (shifted) text.
+        let shifted = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT);
+        assert_eq!(
+            encode_key_to_bytes_kitty(shifted, KITTY_FLAG_DISAMBIGUATE),
+            Some(b"A".to_vec())
+        );
+    }
+
+    #[test]
+    fn kitty_plain_text_is_csi_u_under_report_all() {
+        let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(
+            encode_key_to_bytes_kitty(key, KITTY_FLAG_REPORT_ALL),
+            Some(b"\x1b[97;1u".to_vec())
+        );
+    }
+
+    #[test]
+    fn kitty_enter_tab_backspace_keep_c0_unless_modified() {
+        let flags = KITTY_FLAG_DISAMBIGUATE;
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(encode_key_to_bytes_kitty(enter, flags), Some(vec![b'\r']));
+        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(encode_key_to_bytes_kitty(tab, flags), Some(vec![b'\t']));
+        let backspace = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(
+            encode_key_to_bytes_kitty(backspace, flags),
+            Some(vec![0x7f])
+        );
+
+        let ctrl_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
+        assert_eq!(
+            encode_key_to_bytes_kitty(ctrl_enter, flags),
+            Some(b"\x1b[13;5u".to_vec())
+        );
+        let shift_tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT);
+        assert_eq!(
+            encode_key_to_bytes_kitty(shift_tab, flags),
+            Some(b"\x1b[9;2u".to_vec())
+        );
+        let alt_backspace = KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT);
+        assert_eq!(
+            encode_key_to_bytes_kitty(alt_backspace, flags),
+            Some(b"\x1b[127;3u".to_vec())
+        );
+
+        // Report-all upgrades even the unmodified C0 keys to CSI u.
+        assert_eq!(
+            encode_key_to_bytes_kitty(enter, KITTY_FLAG_REPORT_ALL),
+            Some(b"\x1b[13;1u".to_vec())
+        );
+    }
+
+    #[test]
+    fn kitty_arrows_keep_legacy_csi_forms() {
+        let flags = KITTY_FLAG_DISAMBIGUATE;
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(
+            encode_key_to_bytes_kitty(up, flags),
+            Some(b"\x1b[A".to_vec())
+        );
+        let ctrl_up = KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL);
+        assert_eq!(
+            encode_key_to_bytes_kitty(ctrl_up, flags),
+            Some(b"\x1b[1;5A".to_vec())
+        );
+        let shift_alt_right =
+            KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT | KeyModifiers::ALT);
+        assert_eq!(
+            encode_key_to_bytes_kitty(shift_alt_right, flags),
+            Some(b"\x1b[1;4C".to_vec())
+        );
+    }
+
+    #[test]
+    fn kitty_zero_flags_falls_back_to_legacy_encoding() {
+        for key in [
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
+        ] {
+            assert_eq!(encode_key_to_bytes_kitty(key, 0), encode_key_to_bytes(key));
+        }
     }
 }

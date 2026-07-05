@@ -1,12 +1,21 @@
 use std::io::stdout;
 use std::panic;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::{
     cursor::{self, SetCursorStyle},
-    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
+    event::{
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
     execute,
     terminal::{self, ClearType},
 };
+
+/// Whether kitty keyboard-enhancement flags were pushed to the host
+/// terminal during [`setup`] and must be popped again on teardown (and in
+/// the panic-hook restore path).
+static KEYBOARD_ENHANCEMENT_PUSHED: AtomicBool = AtomicBool::new(false);
 
 /// Enter raw mode, alternate screen, and install panic hook.
 ///
@@ -27,8 +36,29 @@ pub fn setup() -> std::io::Result<std::io::Stdout> {
         return Err(err);
     }
 
+    // Ask the host terminal for kitty-keyboard disambiguated key reports so
+    // richer key information reaches the server for panes whose guests
+    // enable the kitty keyboard protocol. Guarded: pushed only when the
+    // host terminal advertises support (e.g. ghostty/kitty), best-effort
+    // otherwise.
+    if matches!(terminal::supports_keyboard_enhancement(), Ok(true))
+        && execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+            )
+        )
+        .is_ok()
+    {
+        KEYBOARD_ENHANCEMENT_PUSHED.store(true, Ordering::SeqCst);
+    }
+
     let default_hook = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
+        if KEYBOARD_ENHANCEMENT_PUSHED.load(Ordering::SeqCst) {
+            let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+        }
         let _ = terminal::disable_raw_mode();
         let _ = execute!(
             std::io::stdout(),
@@ -45,6 +75,9 @@ pub fn setup() -> std::io::Result<std::io::Stdout> {
 
 /// Restore terminal to normal state.
 pub fn teardown(mut stdout: std::io::Stdout) {
+    if KEYBOARD_ENHANCEMENT_PUSHED.swap(false, Ordering::SeqCst) {
+        let _ = execute!(stdout, PopKeyboardEnhancementFlags);
+    }
     let _ = terminal::disable_raw_mode();
     let _ = execute!(
         stdout,

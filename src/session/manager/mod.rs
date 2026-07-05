@@ -345,6 +345,15 @@ impl SessionManager {
         self.panes.get(&pane_id).map(Pane::scrollback_text)
     }
 
+    /// Kitty keyboard protocol flags enabled by the focused pane's guest
+    /// (0 when the protocol is not in use or no pane has focus).
+    pub fn focused_kitty_keyboard_flags(&self) -> u8 {
+        self.focused_pane_id()
+            .and_then(|pane_id| self.panes.get(&pane_id))
+            .map(Pane::kitty_keyboard_flags)
+            .unwrap_or(0)
+    }
+
     /// Whether the focused pane's guest program enabled bracketed paste.
     pub fn focused_bracketed_paste(&self) -> bool {
         self.focused_pane_id()

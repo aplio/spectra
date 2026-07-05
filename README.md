@@ -17,6 +17,15 @@ Current POC scope:
 - status line and command prompts
 - XDG-based config and data persistence
 
+Kitty keyboard protocol: spectra ships lightweight, passthrough-level support. Each pane tracks
+the guest's kitty keyboard flag stack (push/pop/set, separate stacks for main and alternate
+screens) and answers `CSI ? u` queries so guests detect support. For panes that enabled the
+protocol, keys are re-encoded in kitty CSI-u form for the "disambiguate escape codes" (bit 1) and
+"report all keys as escape codes" (bit 8) enhancements; event types, alternate keys, and
+associated text (bits 2/4/16) are tracked but not reported. When the host terminal supports it,
+the spectra client also enables keyboard enhancement (disambiguate + alternate keys) so richer
+key info reaches the server. Kitty graphics is intentionally not supported.
+
 ## Install
 
 Quick install (latest release):

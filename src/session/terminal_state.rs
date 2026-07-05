@@ -168,6 +168,12 @@ impl TerminalState {
         self.grid.mouse_protocol
     }
 
+    /// Kitty keyboard protocol flags currently in effect for the active
+    /// screen (`0` when the guest never enabled the protocol).
+    pub fn kitty_keyboard_flags(&self) -> u8 {
+        self.grid.kitty_keyboard_flags()
+    }
+
     /// Absolute row (scrollback + viewport) of the most recent OSC 133;A
     /// shell prompt mark, if the guest shell reports semantic prompts.
     pub fn last_prompt_abs_row(&self) -> Option<usize> {
@@ -439,6 +445,73 @@ struct TerminalGrid {
     /// Hyperlink target opened by OSC 8 and not yet closed. Newly printed
     /// cells are stamped with this link.
     active_link: Option<Arc<str>>,
+    /// Kitty keyboard protocol flag stack for the main screen.
+    kitty_kbd_main: KittyKeyboardStack,
+    /// Kitty keyboard protocol flag stack for the alternate screen. The
+    /// kitty spec keeps separate stacks for the main and alternate screens
+    /// so a fullscreen app enabling the protocol cannot leak flags back to
+    /// the shell when it exits.
+    kitty_kbd_alt: KittyKeyboardStack,
+}
+
+/// Per-screen kitty keyboard protocol state (`CSI > u` push, `CSI < u` pop,
+/// `CSI = u` set, `CSI ? u` query).
+///
+/// This is a lightweight subset: all five defined flag bits are tracked
+/// verbatim, but the key-encoding side only acts on bit 1 (disambiguate
+/// escape codes) and bit 8 (report all keys as escape codes). Bits 2/4/16
+/// (event types / alternate keys / associated text) are stored so queries
+/// round-trip but are intentionally not honoured when encoding keys.
+#[derive(Debug, Default, Clone)]
+struct KittyKeyboardStack {
+    /// Entries pushed with `CSI > flags u`, newest last.
+    stack: Vec<u8>,
+    /// Flags in effect when the stack is empty; only `CSI = flags ; mode u`
+    /// can make this non-zero.
+    base: u8,
+}
+
+/// All flag bits defined by the kitty keyboard protocol (1|2|4|8|16).
+const KITTY_KBD_ALL_FLAGS: u16 = 0b1_1111;
+
+/// Cap on pushed entries so a hostile guest cannot grow the stack without
+/// bound. The kitty spec instructs terminals to evict the oldest entry when
+/// the stack is full.
+const KITTY_KBD_STACK_CAP: usize = 16;
+
+impl KittyKeyboardStack {
+    fn current(&self) -> u8 {
+        self.stack.last().copied().unwrap_or(self.base)
+    }
+
+    fn push(&mut self, flags: u8) {
+        if self.stack.len() >= KITTY_KBD_STACK_CAP {
+            self.stack.remove(0);
+        }
+        self.stack.push(flags);
+    }
+
+    fn pop(&mut self, count: usize) {
+        for _ in 0..count {
+            if self.stack.pop().is_none() {
+                // Popping below the bottom of the stack resets to defaults.
+                self.base = 0;
+                break;
+            }
+        }
+    }
+
+    fn set(&mut self, flags: u8, mode: usize) {
+        let new = match mode {
+            2 => self.current() | flags,  // mode 2: set the given bits
+            3 => self.current() & !flags, // mode 3: clear the given bits
+            _ => flags,                   // mode 1 (default): assign all bits
+        };
+        match self.stack.last_mut() {
+            Some(top) => *top = new,
+            None => self.base = new,
+        }
+    }
 }
 
 const MAX_SCROLLBACK_LINES: usize = 10_000;
@@ -494,6 +567,26 @@ impl TerminalGrid {
             passthrough_queue: Vec::new(),
             terminal_events: Vec::new(),
             active_link: None,
+            kitty_kbd_main: KittyKeyboardStack::default(),
+            kitty_kbd_alt: KittyKeyboardStack::default(),
+        }
+    }
+
+    /// Kitty keyboard stack for the screen currently in use.
+    fn kitty_kbd_mut(&mut self) -> &mut KittyKeyboardStack {
+        if self.saved_screen.is_some() {
+            &mut self.kitty_kbd_alt
+        } else {
+            &mut self.kitty_kbd_main
+        }
+    }
+
+    /// Currently effective kitty keyboard flags (active screen's stack top).
+    fn kitty_keyboard_flags(&self) -> u8 {
+        if self.saved_screen.is_some() {
+            self.kitty_kbd_alt.current()
+        } else {
+            self.kitty_kbd_main.current()
         }
     }
 
@@ -1398,6 +1491,18 @@ impl TerminalGrid {
             .unwrap_or(default)
     }
 
+    /// Like [`Self::csi_param`] but keeps explicit zeros. Needed for kitty
+    /// keyboard flags where 0 is a meaningful value (and vte reports an
+    /// omitted parameter as 0, matching the spec's "defaults to zero").
+    fn kitty_flags_param(params: &Params) -> u8 {
+        params
+            .iter()
+            .next()
+            .and_then(|values| values.first().copied())
+            .map(|value| (value & KITTY_KBD_ALL_FLAGS) as u8)
+            .unwrap_or(0)
+    }
+
     fn to_u8(value: Option<u16>) -> Option<u8> {
         value.and_then(|v| u8::try_from(v).ok())
     }
@@ -1929,6 +2034,33 @@ impl Perform for TerminalGrid {
             'u' if intermediates.is_empty() => {
                 self.restore_cursor();
             }
+            // Kitty keyboard protocol (progressive enhancement) state
+            // machine. Only the flag stack lives here; the key-encoding
+            // side reads the current flags via `kitty_keyboard_flags`.
+            'u' if intermediates == [b'?'] => {
+                // Query: reply with the flags in effect for the active screen
+                // so guests can detect support.
+                let flags = self.kitty_keyboard_flags();
+                self.response_queue
+                    .push(format!("\x1b[?{flags}u").into_bytes());
+            }
+            'u' if intermediates == [b'>'] => {
+                // Push the given flags (omitted flags default to zero).
+                let flags = Self::kitty_flags_param(params);
+                self.kitty_kbd_mut().push(flags);
+            }
+            'u' if intermediates == [b'<'] => {
+                // Pop `n` entries (default 1).
+                let count = Self::csi_param(params, 0, 1);
+                self.kitty_kbd_mut().pop(count);
+            }
+            'u' if intermediates == [b'='] => {
+                // Set flags without pushing: mode 1 assigns all bits
+                // (default), mode 2 sets the given bits, mode 3 clears them.
+                let flags = Self::kitty_flags_param(params);
+                let mode = Self::csi_param(params, 1, 1);
+                self.kitty_kbd_mut().set(flags, mode);
+            }
             'q' if intermediates == [b' '] => {
                 // DECSCUSR — Set Cursor Style
                 let ps = Self::csi_param(params, 0, 0);
@@ -1975,6 +2107,111 @@ mod tests {
         assert!(state.bracketed_paste());
         state.feed(b"\x1b[?2004l");
         assert!(!state.bracketed_paste());
+    }
+
+    #[test]
+    fn kitty_keyboard_push_pop_tracks_flags() {
+        let mut state = TerminalState::new(10, 2);
+        assert_eq!(state.kitty_keyboard_flags(), 0);
+
+        state.feed(b"\x1b[>1u");
+        assert_eq!(state.kitty_keyboard_flags(), 1);
+        state.feed(b"\x1b[>5u");
+        assert_eq!(state.kitty_keyboard_flags(), 5);
+
+        state.feed(b"\x1b[<1u");
+        assert_eq!(state.kitty_keyboard_flags(), 1);
+        // Pop with omitted count defaults to 1.
+        state.feed(b"\x1b[<u");
+        assert_eq!(state.kitty_keyboard_flags(), 0);
+    }
+
+    #[test]
+    fn kitty_keyboard_pop_below_stack_resets_to_zero() {
+        let mut state = TerminalState::new(10, 2);
+        state.feed(b"\x1b[>1u\x1b[>2u\x1b[<5u");
+        assert_eq!(state.kitty_keyboard_flags(), 0);
+    }
+
+    #[test]
+    fn kitty_keyboard_push_with_omitted_flags_pushes_zero() {
+        let mut state = TerminalState::new(10, 2);
+        state.feed(b"\x1b[>31u\x1b[>u");
+        assert_eq!(state.kitty_keyboard_flags(), 0);
+        state.feed(b"\x1b[<u");
+        assert_eq!(state.kitty_keyboard_flags(), 31);
+    }
+
+    #[test]
+    fn kitty_keyboard_set_mode_variants() {
+        let mut state = TerminalState::new(10, 2);
+        // Mode 1 (assign all bits) is the default.
+        state.feed(b"\x1b[=5u");
+        assert_eq!(state.kitty_keyboard_flags(), 5);
+        // Mode 2 sets the given bits.
+        state.feed(b"\x1b[=2;2u");
+        assert_eq!(state.kitty_keyboard_flags(), 7);
+        // Mode 3 clears the given bits.
+        state.feed(b"\x1b[=4;3u");
+        assert_eq!(state.kitty_keyboard_flags(), 3);
+        // Explicit mode 1 assigns.
+        state.feed(b"\x1b[=8;1u");
+        assert_eq!(state.kitty_keyboard_flags(), 8);
+        // Set acts on the stack top when entries were pushed.
+        state.feed(b"\x1b[>1u\x1b[=2;2u");
+        assert_eq!(state.kitty_keyboard_flags(), 3);
+        state.feed(b"\x1b[<u");
+        assert_eq!(state.kitty_keyboard_flags(), 8);
+    }
+
+    #[test]
+    fn kitty_keyboard_query_reports_current_flags() {
+        let mut state = TerminalState::new(10, 2);
+        state.feed(b"\x1b[?u");
+        assert_eq!(state.drain_responses(), vec![b"\x1b[?0u".to_vec()]);
+
+        state.feed(b"\x1b[>13u\x1b[?u");
+        assert_eq!(state.drain_responses(), vec![b"\x1b[?13u".to_vec()]);
+    }
+
+    #[test]
+    fn kitty_keyboard_stack_cap_evicts_oldest_entry() {
+        let mut state = TerminalState::new(10, 2);
+        // Push 17 entries (values 1..=17 masked to the defined bits); the
+        // cap of 16 evicts the oldest entry (1).
+        for flags in 1..=17u8 {
+            state.feed(format!("\x1b[>{}u", flags & 0b1_1111).as_bytes());
+        }
+        assert_eq!(state.kitty_keyboard_flags(), 17);
+        // Pop 15 entries: the survivor is entry 2 (entry 1 was evicted).
+        state.feed(b"\x1b[<15u");
+        assert_eq!(state.kitty_keyboard_flags(), 2);
+        state.feed(b"\x1b[<1u");
+        assert_eq!(state.kitty_keyboard_flags(), 0);
+    }
+
+    #[test]
+    fn kitty_keyboard_alt_screen_has_separate_stack() {
+        let mut state = TerminalState::new(10, 2);
+        state.feed(b"\x1b[>1u");
+        assert_eq!(state.kitty_keyboard_flags(), 1);
+
+        // Entering the alternate screen switches to its own (empty) stack.
+        state.feed(b"\x1b[?1049h");
+        assert_eq!(state.kitty_keyboard_flags(), 0);
+        state.feed(b"\x1b[>8u");
+        assert_eq!(state.kitty_keyboard_flags(), 8);
+
+        // Leaving the alternate screen restores the main screen's flags.
+        state.feed(b"\x1b[?1049l");
+        assert_eq!(state.kitty_keyboard_flags(), 1);
+    }
+
+    #[test]
+    fn kitty_keyboard_flags_are_masked_to_defined_bits() {
+        let mut state = TerminalState::new(10, 2);
+        state.feed(b"\x1b[>255u");
+        assert_eq!(state.kitty_keyboard_flags(), 0b1_1111);
     }
 
     #[test]

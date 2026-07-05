@@ -4900,6 +4900,49 @@ fn normal_send_bytes_marks_render_when_manual_scroll_is_reset() {
 }
 
 #[test]
+fn kitty_enabled_pane_receives_csi_u_encoded_keys() {
+    // The guest pushes kitty keyboard flags (bit 1: disambiguate).
+    let (mut app, writes) = build_recording_app_with_output(vec![b"\x1b[>1u".to_vec()]);
+    app.tick();
+    take_recorded_writes(&writes);
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .expect("send esc");
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+        .expect("send ctrl+c");
+    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))
+        .expect("send plain a");
+
+    assert_eq!(
+        take_recorded_writes(&writes),
+        vec![
+            (1, b"\x1b[27;1u".to_vec()),
+            (1, b"\x1b[99;5u".to_vec()),
+            // Plain text keys stay plain under disambiguate-only.
+            (1, b"a".to_vec()),
+        ]
+    );
+}
+
+#[test]
+fn kitty_pop_reverts_pane_to_legacy_key_encoding() {
+    // Push then pop: the pane ends up back on the legacy encoding.
+    let (mut app, writes) = build_recording_app_with_output(vec![b"\x1b[>1u\x1b[<u".to_vec()]);
+    app.tick();
+    take_recorded_writes(&writes);
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .expect("send esc");
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+        .expect("send ctrl+c");
+
+    assert_eq!(
+        take_recorded_writes(&writes),
+        vec![(1, vec![0x1b]), (1, vec![0x03])]
+    );
+}
+
+#[test]
 fn entering_prefix_marks_render_without_forwarding_input() {
     let (mut app, writes) = build_recording_app_one_session();
     app.needs_render = false;
