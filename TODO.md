@@ -3,8 +3,16 @@
 2026-07-05 時点の spectra / herdr / gargo コードベース調査に基づく。
 参照: spectra v0.1.5 (~26k LoC), herdr v0.7.1, gargo v0.2.14。
 
-> 進捗メモ (2026-07-05): P0 完了。`⏸ 要判断` マークの項目は設計/採否の判断が必要なため
-> ユーザー確認まで後回し。それ以外は上から順に実装を継続中。
+> 進捗メモ (2026-07-05 20:35): **判断不要のタスクは全て実装完了**(13イテレーション・15コミット・テスト447→621・clippy 0維持)。
+> 残りは `⏸ 要判断` の項目のみ — 判断後に再開する。判断待ちリスト:
+> 1. OSC 10/11 の応答戦略 (P1)
+> 2. kitty keyboard / kitty graphics の採否 (P1)
+> 3. 書き込み系APIメソッド(`pane.send_keys`/`pane.split`/`events.subscribe`)とplugin manifest形式 (P2) — これが決まるとP3のhook(`pane.report_agent`+integration install)とplugin配布も進められる
+> 4. sidebar 2段構成(専用agent panel)のUX (P4) — 現状はwindow list行のマーカーで代替済み
+> 5. remote attachをherdr同等(バイナリ自動配布+checksum)まで作り込むか (P5)
+> 6. イベントループepoll化の方針(mio/polling/tokio) (P6)
+> 7. SCM_RIGHTS live handoff の採否 (P6)
+> なおP6のgod object分割は大工事につき、epoll化の方針と合わせて着手判断を推奨。
 
 ## 現状サマリ（希望機能の実在チェック）
 
