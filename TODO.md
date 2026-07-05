@@ -52,7 +52,9 @@ herdrはlibghostty-vt(vendored, Zig FFI)に委譲し、足りない分を `src/p
       (`last_prompt_abs_row`)。P3 agent検知の「最後のプロンプト以降」region計算に使う。B/C/Dマークは必要になったら
 - [ ] ⏸ 要判断 OSC 10/11 (fg/bg色 query) — 応答戦略の判断待ち: (a)固定デフォルト応答(ダーク/ライト誤検知リスク),
       (b)ホスト端末へ問い合わせ中継(実装複雑・非同期), (c)現状維持(無応答=アプリ側タイムアウト)。推奨は(b)だが工数大
-- [ ] OSC 8 hyperlink をgridで解釈(現状passthrough転送のみ、自前URL検知でのemitはあり)
+- [x] DONE **OSC 8 hyperlink をgridで解釈** — `StyledCell` に `link: Option<Arc<str>>` を追加し、OSC 8 の
+      URIをアクティブリンクとして追跡して印字セルにスタンプ(URI上限2083B・passthrough転送は従来通り維持)。
+      レンダラはセルリンクを自前URL検知より優先してOSC 8でラップ出力
 - [ ] ⏸ 要判断 kitty keyboard protocol (herdr `src/pane/kitty_keyboard.rs`) — 対応範囲(パススルーのみか完全実装か)の判断待ち
 - [ ] ⏸ 要判断 kitty graphics — herdrはフルサポート(`src/kitty_graphics.rs`, 32MBフレーム上限)だが実装コスト大。採否の判断待ち
 

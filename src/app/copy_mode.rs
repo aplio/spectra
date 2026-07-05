@@ -652,7 +652,7 @@ impl App {
         let mut cells = Vec::with_capacity(width);
         let mut index = 0usize;
         while index < line.len() && cells.len() < width {
-            let cell = line[index];
+            let cell = line[index].clone();
             if cell.ch == '\0' {
                 cells.push(StyledCell::default());
                 index += 1;
@@ -664,7 +664,7 @@ impl App {
                 if cells.len() + 1 >= width {
                     break;
                 }
-                let Some(continuation) = line.get(index + 1).copied() else {
+                let Some(continuation) = line.get(index + 1).cloned() else {
                     break;
                 };
                 if continuation.ch != '\0' {

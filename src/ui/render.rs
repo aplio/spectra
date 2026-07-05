@@ -402,6 +402,7 @@ fn compose_side_window_tree(
                 dim: true,
                 ..CellStyle::default()
             },
+            link: None,
         },
     );
 
@@ -858,9 +859,25 @@ fn draw_text_with_style(
     let mut col = 0;
     for ch in text.chars() {
         let w = UnicodeWidthChar::width(ch).unwrap_or(1);
-        frame.set(x + col, y, StyledCell { ch, style });
+        frame.set(
+            x + col,
+            y,
+            StyledCell {
+                ch,
+                style,
+                link: None,
+            },
+        );
         if w == 2 {
-            frame.set(x + col + 1, y, StyledCell { ch: '\0', style });
+            frame.set(
+                x + col + 1,
+                y,
+                StyledCell {
+                    ch: '\0',
+                    style,
+                    link: None,
+                },
+            );
         }
         col += w;
     }
@@ -883,7 +900,7 @@ fn fixed_width_cells(cells: &[StyledCell], width: usize) -> Vec<StyledCell> {
     let mut out = Vec::with_capacity(width);
     let mut index = 0usize;
     while index < cells.len() && out.len() < width {
-        let cell = cells[index];
+        let cell = cells[index].clone();
         if cell.ch == '\0' {
             out.push(StyledCell::default());
             index += 1;
@@ -895,7 +912,7 @@ fn fixed_width_cells(cells: &[StyledCell], width: usize) -> Vec<StyledCell> {
             if out.len() + 1 >= width {
                 break;
             }
-            let Some(continuation) = cells.get(index + 1).copied() else {
+            let Some(continuation) = cells.get(index + 1).cloned() else {
                 break;
             };
             if continuation.ch != '\0' {
@@ -1017,7 +1034,9 @@ fn write_styled_cells<W: Write>(
         if cell.ch == '\0' {
             continue; // skip wide char continuation cell
         }
-        let url_for_cell = row_urls.url_for_col(idx);
+        // Explicit OSC 8 links from the guest take priority over URLs
+        // auto-detected from the row text.
+        let url_for_cell = cell.link.as_deref().or_else(|| row_urls.url_for_col(idx));
         if cell.style != current_style || active_url.as_deref() != url_for_cell {
             if !run.is_empty() {
                 queue!(writer, Print(run.as_str()))?;
@@ -1780,10 +1799,12 @@ mod tests {
                 fg: Some(Color::Cyan),
                 ..CellStyle::default()
             },
+            link: None,
         };
         let plain = StyledCell {
             ch: 'b',
             style: CellStyle::default(),
+            link: None,
         };
 
         write_styled_cells(&mut out, &[colored], 0).expect("write colored cell");
@@ -1824,6 +1845,25 @@ mod tests {
                 "\u{1b}]8;;https://example.com/path\u{1b}\\ttps://example.com/path\u{1b}]8;;\u{1b}\\"
             ),
             "expected hyperlink sequence when rendering from URL start, got: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn write_styled_cells_emits_osc8_for_cell_level_links() {
+        let mut row = plain_cells("open docs now");
+        let link: std::sync::Arc<str> = std::sync::Arc::from("https://example.com");
+        for cell in row.iter_mut().take(4) {
+            cell.link = Some(link.clone());
+        }
+
+        let mut out = Vec::new();
+        write_styled_cells(&mut out, &row, 0).expect("write row");
+        let rendered = String::from_utf8(out).expect("utf8");
+
+        assert!(
+            rendered
+                .contains("\u{1b}]8;;https://example.com\u{1b}\\open\u{1b}]8;;\u{1b}\\ docs now"),
+            "expected OSC 8 wrapping only the linked cells, got: {rendered:?}"
         );
     }
 
@@ -1902,7 +1942,11 @@ mod tests {
     }
 
     fn styled_cell(ch: char, style: CellStyle) -> StyledCell {
-        StyledCell { ch, style }
+        StyledCell {
+            ch,
+            style,
+            link: None,
+        }
     }
 
     fn plain_cells(text: &str) -> Vec<StyledCell> {

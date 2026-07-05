@@ -1,13 +1,17 @@
+use std::sync::Arc;
+
 use crossterm::style::Color;
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Parser, Perform};
 
 pub use crate::ui::style::CellStyle;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StyledCell {
     pub ch: char,
     pub style: CellStyle,
+    /// Explicit hyperlink target set by the guest via OSC 8, if any.
+    pub link: Option<Arc<str>>,
 }
 
 impl Default for StyledCell {
@@ -15,6 +19,7 @@ impl Default for StyledCell {
         Self {
             ch: ' ',
             style: CellStyle::default(),
+            link: None,
         }
     }
 }
@@ -82,6 +87,10 @@ enum TmuxPassthroughState {
 /// accumulates OSC payloads in an unbounded Vec, so the cap is enforced at
 /// dispatch time.
 const MAX_OSC52_BASE64_LEN: usize = 256 * 1024 * 4 / 3 + 4;
+
+/// Upper bound for an OSC 8 hyperlink URI (the conventional maximum URL
+/// length). Longer URIs are dropped rather than truncated.
+const MAX_OSC8_URI_LEN: usize = 2083;
 
 pub struct TerminalState {
     parser: Parser,
@@ -427,6 +436,9 @@ struct TerminalGrid {
     allow_passthrough: bool,
     passthrough_queue: Vec<Vec<u8>>,
     terminal_events: Vec<TerminalEvent>,
+    /// Hyperlink target opened by OSC 8 and not yet closed. Newly printed
+    /// cells are stamped with this link.
+    active_link: Option<Arc<str>>,
 }
 
 const MAX_SCROLLBACK_LINES: usize = 10_000;
@@ -481,6 +493,7 @@ impl TerminalGrid {
             allow_passthrough,
             passthrough_queue: Vec::new(),
             terminal_events: Vec::new(),
+            active_link: None,
         }
     }
 
@@ -526,7 +539,7 @@ impl TerminalGrid {
         let copy_h = old_height.min(new_height);
         for y in 0..copy_h {
             for x in 0..copy_w {
-                self.cells[y * new_width + x] = old_cells[y * old_width + x];
+                self.cells[y * new_width + x] = old_cells[y * old_width + x].clone();
             }
             self.row_boundaries[y] = old_boundaries.get(y).copied().unwrap_or(RowBoundary::None);
         }
@@ -630,7 +643,7 @@ impl TerminalGrid {
         for (row_idx, (cells, boundary)) in all_rows[visible_start..].iter().enumerate() {
             let dst = row_idx * new_width;
             let len = cells.len().min(new_width);
-            new_cells[dst..dst + len].copy_from_slice(&cells[..len]);
+            new_cells[dst..dst + len].clone_from_slice(&cells[..len]);
             new_boundaries[row_idx] = *boundary;
         }
 
@@ -738,7 +751,7 @@ impl TerminalGrid {
                 return (row, col);
             }
 
-            let cell = cells[i];
+            let cell = &cells[i];
             if cell.ch == '\0' {
                 // Continuation cell — skip in rewrap, but still a valid target
                 i += 1;
@@ -789,7 +802,7 @@ impl TerminalGrid {
         let mut i = 0usize;
 
         while i < line.cells.len() {
-            let cell = line.cells[i];
+            let cell = line.cells[i].clone();
 
             // Skip continuation cells — we regenerate them
             if cell.ch == '\0' {
@@ -809,11 +822,13 @@ impl TerminalGrid {
                     current_row = Vec::with_capacity(new_width);
                     col = 0;
                 }
-                current_row.push(cell);
-                current_row.push(StyledCell {
+                let continuation = StyledCell {
                     ch: '\0',
                     style: cell.style,
-                });
+                    link: cell.link.clone(),
+                };
+                current_row.push(cell);
+                current_row.push(continuation);
                 col += 2;
                 i += 1;
             } else {
@@ -965,7 +980,7 @@ impl TerminalGrid {
         let mut out = Vec::with_capacity(width);
         let mut index = 0usize;
         while index < cells.len() && out.len() < width {
-            let cell = cells[index];
+            let cell = cells[index].clone();
             if cell.ch == '\0' {
                 out.push(StyledCell::default());
                 index += 1;
@@ -977,7 +992,7 @@ impl TerminalGrid {
                 if out.len() + 1 >= width {
                     break;
                 }
-                let Some(continuation) = cells.get(index + 1).copied() else {
+                let Some(continuation) = cells.get(index + 1).cloned() else {
                     break;
                 };
                 if continuation.ch != '\0' {
@@ -1020,8 +1035,9 @@ impl TerminalGrid {
         }
         let src_start = src * self.width;
         let dst_start = dst * self.width;
-        self.cells
-            .copy_within(src_start..src_start + self.width, dst_start);
+        for x in 0..self.width {
+            self.cells[dst_start + x] = self.cells[src_start + x].clone();
+        }
         self.row_boundaries[dst] = self.row_boundary_to_next(src);
     }
 
@@ -1161,7 +1177,7 @@ impl TerminalGrid {
             for x in (self.cursor_x..end).rev() {
                 let dst = x + ch_width;
                 if dst < end {
-                    self.cells[row_start + dst] = self.cells[row_start + x];
+                    self.cells[row_start + dst] = self.cells[row_start + x].clone();
                 }
                 if x < self.cursor_x + ch_width {
                     self.cells[row_start + x] = StyledCell::default();
@@ -1189,6 +1205,7 @@ impl TerminalGrid {
         self.cells[idx] = StyledCell {
             ch,
             style: self.active_style,
+            link: self.active_link.clone(),
         };
 
         // Place continuation cell for wide characters
@@ -1210,6 +1227,7 @@ impl TerminalGrid {
             self.cells[cont_idx] = StyledCell {
                 ch: '\0',
                 style: self.active_style,
+                link: self.active_link.clone(),
             };
         }
 
@@ -1608,6 +1626,14 @@ impl Perform for TerminalGrid {
                     self.passthrough_queue
                         .push(Self::encode_osc_sequence(params, bell_terminated));
                 }
+                // OSC 8 ; params ; uri — an empty URI closes the hyperlink,
+                // a non-empty one opens it for subsequently printed cells.
+                let uri = Self::osc_payload_bytes(params, 2);
+                self.active_link = if uri.is_empty() || uri.len() > MAX_OSC8_URI_LEN {
+                    None
+                } else {
+                    String::from_utf8(uri).ok().map(Arc::from)
+                };
             }
             b"0" | b"2" => {
                 let payload = Self::osc_payload_bytes(params, 1);
@@ -1785,7 +1811,7 @@ impl Perform for TerminalGrid {
                 for x in self.cursor_x..end {
                     let src = x + count;
                     self.cells[row_start + x] = if src < end {
-                        self.cells[row_start + src]
+                        self.cells[row_start + src].clone()
                     } else {
                         StyledCell::default()
                     };
@@ -1799,7 +1825,7 @@ impl Perform for TerminalGrid {
                 for x in (self.cursor_x..end).rev() {
                     let dst = x + count;
                     if dst < end {
-                        self.cells[row_start + dst] = self.cells[row_start + x];
+                        self.cells[row_start + dst] = self.cells[row_start + x].clone();
                     }
                     if x < self.cursor_x + count {
                         self.cells[row_start + x] = StyledCell::default();
@@ -1926,11 +1952,12 @@ impl Perform for TerminalGrid {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::time::Duration;
 
     use crossterm::style::Color;
 
-    use super::{CellStyle, StyledCell, TerminalEvent, TerminalState};
+    use super::{CellStyle, MAX_OSC8_URI_LEN, StyledCell, TerminalEvent, TerminalState};
 
     #[test]
     fn writes_and_wraps() {
@@ -2233,7 +2260,8 @@ mod tests {
             row[1],
             StyledCell {
                 ch: 'B',
-                style: CellStyle::default()
+                style: CellStyle::default(),
+                link: None,
             }
         );
     }
@@ -2265,14 +2293,16 @@ mod tests {
             row[0],
             StyledCell {
                 ch: 'A',
-                style: CellStyle::default()
+                style: CellStyle::default(),
+                link: None,
             }
         );
         assert_eq!(
             row[1],
             StyledCell {
                 ch: 'B',
-                style: CellStyle::default()
+                style: CellStyle::default(),
+                link: None,
             }
         );
     }
@@ -2301,6 +2331,7 @@ mod tests {
                     hidden: false,
                     crossed_out: false,
                 },
+                link: None,
             }
         );
     }
@@ -2889,6 +2920,54 @@ mod tests {
         let mut state = TerminalState::new_with_passthrough(16, 2, false);
         state.feed(b"\x1b]8;;https://example.com\x07link\x1b]8;;\x07");
         assert!(state.drain_passthrough().is_empty());
+    }
+
+    #[test]
+    fn osc8_marks_printed_cells_with_hyperlink() {
+        let mut state = TerminalState::new(16, 2);
+        state.feed(b"\x1b]8;;https://example.com\x1b\\text\x1b]8;;\x1b\\plain");
+
+        let row = state.row_cells(0);
+        for (col, cell) in row.iter().enumerate().take(4) {
+            assert_eq!(
+                cell.link.as_deref(),
+                Some("https://example.com"),
+                "cell {col} should carry the OSC 8 link"
+            );
+        }
+        for (col, cell) in row.iter().enumerate().take(9).skip(4) {
+            assert_eq!(cell.link, None, "cell {col} should be unlinked");
+        }
+        // Consecutive cells share the same allocation instead of re-allocating.
+        assert!(Arc::ptr_eq(
+            row[0].link.as_ref().expect("link"),
+            row[3].link.as_ref().expect("link")
+        ));
+    }
+
+    #[test]
+    fn osc8_link_survives_scroll_into_history() {
+        let mut state = TerminalState::new(16, 2);
+        state.feed(b"\x1b]8;;https://example.com\x1b\\text\x1b]8;;\x1b\\\r\nb\r\nc\r\nd");
+
+        let row = state.absolute_row_cells(0);
+        assert_eq!(row[0].ch, 't');
+        assert_eq!(row[0].link.as_deref(), Some("https://example.com"));
+        assert_eq!(row[3].link.as_deref(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn osc8_uri_longer_than_cap_is_dropped() {
+        let mut state = TerminalState::new(16, 2);
+        let sequence = format!(
+            "\x1b]8;;https://example.com/{}\x1b\\x",
+            "a".repeat(MAX_OSC8_URI_LEN)
+        );
+        state.feed(sequence.as_bytes());
+
+        let row = state.row_cells(0);
+        assert_eq!(row[0].ch, 'x');
+        assert_eq!(row[0].link, None);
     }
 
     #[test]
