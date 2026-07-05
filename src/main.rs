@@ -1,3 +1,6 @@
+// Regression gate: production code must not panic via unwrap/expect.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use clap::Parser;
 
 #[cfg(unix)]

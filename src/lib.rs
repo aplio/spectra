@@ -1,3 +1,7 @@
+// Regression gate: production code must not panic via unwrap/expect. Test
+// builds (unit-test modules live inside src files) are exempt via cfg(test).
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod agent;
 pub mod api;
 pub mod app;

@@ -9,18 +9,23 @@ use crossterm::{
 };
 
 /// Enter raw mode, alternate screen, and install panic hook.
-pub fn setup() -> std::io::Stdout {
+///
+/// On failure the terminal is restored to cooked mode before the error is
+/// returned, so callers can simply propagate it.
+pub fn setup() -> std::io::Result<std::io::Stdout> {
     let mut stdout = stdout();
-    terminal::enable_raw_mode().expect("Failed to enable raw mode");
-    execute!(
+    terminal::enable_raw_mode()?;
+    if let Err(err) = execute!(
         stdout,
         terminal::EnterAlternateScreen,
         terminal::Clear(ClearType::All),
         EnableBracketedPaste,
         EnableMouseCapture,
         cursor::Show,
-    )
-    .expect("Failed to setup terminal");
+    ) {
+        let _ = terminal::disable_raw_mode();
+        return Err(err);
+    }
 
     let default_hook = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
@@ -35,7 +40,7 @@ pub fn setup() -> std::io::Stdout {
         default_hook(info);
     }));
 
-    stdout
+    Ok(stdout)
 }
 
 /// Restore terminal to normal state.

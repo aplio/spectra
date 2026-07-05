@@ -20,6 +20,10 @@ impl AttachTarget {
 impl FromStr for AttachTarget {
     type Err = String;
 
+    #[allow(
+        clippy::expect_used,
+        reason = "splitn/split iterators always yield a first segment"
+    )]
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
         let target = raw.trim();
         if target.is_empty() {

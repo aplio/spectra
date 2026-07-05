@@ -98,7 +98,7 @@ pub fn run_command(cli: Cli) -> io::Result<()> {
 }
 
 fn run_client(mut stream: UnixStream, attach_target: Option<AttachTarget>) -> io::Result<()> {
-    let mut stdout = terminal::setup();
+    let mut stdout = terminal::setup()?;
     let result = run_client_loop(&mut stream, &mut stdout, attach_target);
     terminal::teardown(stdout);
     result

@@ -118,6 +118,10 @@ pub fn detect(
 static BUILTIN_MANIFESTS: OnceLock<Vec<AgentManifest>> = OnceLock::new();
 
 /// Built-in agent manifests, parsed once on first use.
+#[allow(
+    clippy::expect_used,
+    reason = "compile-time embedded manifest; parse failure is a build defect, not a runtime input"
+)]
 pub fn builtin_manifests() -> &'static [AgentManifest] {
     BUILTIN_MANIFESTS.get_or_init(|| {
         vec![

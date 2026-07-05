@@ -600,11 +600,11 @@ impl TerminalGrid {
 
         // Strip trailing blank rows (any boundary — blank SoftWrap rows from
         // rewrapping empty logical lines are also meaningless)
-        while all_rows.len() > 1 {
-            let (cells, _) = all_rows.last().unwrap();
-            if !cells.iter().all(|c| *c == StyledCell::default()) {
-                break;
-            }
+        while all_rows.len() > 1
+            && all_rows
+                .last()
+                .is_some_and(|(cells, _)| cells.iter().all(|c| *c == StyledCell::default()))
+        {
             all_rows.pop();
         }
 
