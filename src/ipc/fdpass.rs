@@ -22,6 +22,14 @@ const CMSG_BUFFER_LEN: usize = 512;
 #[repr(C, align(8))]
 struct CmsgBuffer([u8; CMSG_BUFFER_LEN]);
 
+/// `recvmsg` flag that atomically opens received fds close-on-exec. Linux and
+/// the BSDs provide `MSG_CMSG_CLOEXEC`; Apple platforms lack it, so there we
+/// pass no flag and set `FD_CLOEXEC` by hand after the descriptors arrive.
+#[cfg(not(target_vendor = "apple"))]
+const RECV_CLOEXEC_FLAG: libc::c_int = libc::MSG_CMSG_CLOEXEC;
+#[cfg(target_vendor = "apple")]
+const RECV_CLOEXEC_FLAG: libc::c_int = 0;
+
 /// Duplicate a raw fd into an owned close-on-exec descriptor. The clone is
 /// what gets sent over the handoff socket, so the original stays untouched
 /// no matter how the transfer ends.
@@ -122,7 +130,7 @@ pub fn recv_with_fds(stream: &UnixStream, buf: &mut [u8]) -> io::Result<(usize, 
 
     let received = loop {
         let received =
-            unsafe { libc::recvmsg(stream.as_raw_fd(), &mut msg, libc::MSG_CMSG_CLOEXEC) };
+            unsafe { libc::recvmsg(stream.as_raw_fd(), &mut msg, RECV_CLOEXEC_FLAG) };
         if received < 0 {
             let err = io::Error::last_os_error();
             if err.kind() == io::ErrorKind::Interrupted {
@@ -151,6 +159,16 @@ pub fn recv_with_fds(stream: &UnixStream, buf: &mut [u8]) -> io::Result<(usize, 
                         mem::size_of::<RawFd>(),
                     );
                     if fd >= 0 {
+                        // Apple platforms have no MSG_CMSG_CLOEXEC, so the fd
+                        // arrived without close-on-exec. Set it now, before the
+                        // OwnedFd owns it, so nothing leaks across a fork+exec.
+                        #[cfg(target_vendor = "apple")]
+                        {
+                            let flags = libc::fcntl(fd, libc::F_GETFD);
+                            if flags >= 0 {
+                                libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+                            }
+                        }
                         fds.push(OwnedFd::from_raw_fd(fd));
                     }
                 }
