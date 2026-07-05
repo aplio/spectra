@@ -140,6 +140,91 @@ impl TerminalState {
             .is_some_and(|since| since.elapsed() < SYNC_OUTPUT_TIMEOUT)
     }
 
+    /// Mouse reporting level requested by the guest program.
+    pub fn mouse_protocol(&self) -> MouseProtocol {
+        self.grid.mouse_protocol
+    }
+
+    /// Encode a mouse event for the guest according to its requested mouse
+    /// protocol and encoding. `col`/`row` are 0-based pane-local cell
+    /// coordinates. Returns `None` when the guest did not ask for this kind
+    /// of event (or any mouse reporting at all).
+    pub fn encode_mouse_event(
+        &self,
+        kind: crossterm::event::MouseEventKind,
+        modifiers: crossterm::event::KeyModifiers,
+        col: usize,
+        row: usize,
+    ) -> Option<Vec<u8>> {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+
+        let protocol = self.grid.mouse_protocol;
+        if protocol == MouseProtocol::None {
+            return None;
+        }
+
+        let button_code = |button: MouseButton| match button {
+            MouseButton::Left => 0u16,
+            MouseButton::Middle => 1,
+            MouseButton::Right => 2,
+        };
+
+        let (mut code, is_release) = match kind {
+            MouseEventKind::Down(button) => (button_code(button), false),
+            MouseEventKind::Up(button) => (button_code(button), true),
+            MouseEventKind::Drag(button) => (button_code(button) + 32, false),
+            MouseEventKind::Moved => (32 + 3, false),
+            MouseEventKind::ScrollUp => (64, false),
+            MouseEventKind::ScrollDown => (65, false),
+            MouseEventKind::ScrollLeft => (66, false),
+            MouseEventKind::ScrollRight => (67, false),
+        };
+
+        let wanted = match protocol {
+            MouseProtocol::None => false,
+            // X10 reports button presses only, without modifiers.
+            MouseProtocol::X10 => matches!(kind, MouseEventKind::Down(_)),
+            MouseProtocol::Normal => {
+                !matches!(kind, MouseEventKind::Drag(_) | MouseEventKind::Moved)
+            }
+            MouseProtocol::ButtonEvent => !matches!(kind, MouseEventKind::Moved),
+            MouseProtocol::AnyEvent => true,
+        };
+        if !wanted {
+            return None;
+        }
+
+        if protocol != MouseProtocol::X10 {
+            if modifiers.contains(KeyModifiers::SHIFT) {
+                code += 4;
+            }
+            if modifiers.contains(KeyModifiers::ALT) {
+                code += 8;
+            }
+            if modifiers.contains(KeyModifiers::CONTROL) {
+                code += 16;
+            }
+        }
+
+        if self.grid.mouse_sgr {
+            let suffix = if is_release { 'm' } else { 'M' };
+            return Some(format!("\x1b[<{};{};{}{}", code, col + 1, row + 1, suffix).into_bytes());
+        }
+
+        // Legacy X10 byte encoding: release replaces the button bits with 3
+        // and coordinates saturate at 223 (255 - 32).
+        let code = if is_release { (code & !0b11) | 3 } else { code };
+        let encode_coord = |value: usize| -> u8 { (value + 1).min(223) as u8 + 32 };
+        Some(vec![
+            0x1b,
+            b'[',
+            b'M',
+            (code as u8).saturating_add(32),
+            encode_coord(col),
+            encode_coord(row),
+        ])
+    }
+
     pub fn row_text(&self, row: usize) -> String {
         self.grid.row_text(row)
     }
@@ -311,6 +396,11 @@ struct TerminalGrid {
     /// flushed to clients. The timestamp bounds the hold so a misbehaving
     /// guest cannot freeze rendering.
     sync_output_since: Option<std::time::Instant>,
+    /// Mouse reporting level requested via DECSET 9/1000/1002/1003.
+    mouse_protocol: MouseProtocol,
+    /// SGR mouse encoding (DECSET 1006). Without it the legacy X10 byte
+    /// encoding is used, which caps coordinates at 223.
+    mouse_sgr: bool,
     allow_passthrough: bool,
     passthrough_queue: Vec<Vec<u8>>,
     terminal_events: Vec<TerminalEvent>,
@@ -322,6 +412,21 @@ const MAX_SCROLLBACK_LINES: usize = 10_000;
 /// suppress rendering. Mirrors the ~150 ms cap used by other terminals so a
 /// guest that never sends the reset cannot freeze the UI.
 pub const SYNC_OUTPUT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// Mouse reporting level requested by the guest program via DECSET.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MouseProtocol {
+    #[default]
+    None,
+    /// DECSET 9: button presses only, no modifiers.
+    X10,
+    /// DECSET 1000: presses, releases and scroll.
+    Normal,
+    /// DECSET 1002: normal plus drag motion while a button is held.
+    ButtonEvent,
+    /// DECSET 1003: all motion events.
+    AnyEvent,
+}
 
 impl TerminalGrid {
     fn new(width: usize, height: usize, allow_passthrough: bool) -> Self {
@@ -347,6 +452,8 @@ impl TerminalGrid {
             insert_mode: false,
             bracketed_paste: false,
             sync_output_since: None,
+            mouse_protocol: MouseProtocol::None,
+            mouse_sgr: false,
             allow_passthrough,
             passthrough_queue: Vec::new(),
             terminal_events: Vec::new(),
@@ -1647,6 +1754,11 @@ impl Perform for TerminalGrid {
                 for param in params.iter() {
                     match param[0] {
                         47 | 1047 | 1049 => self.enter_alternate_screen(),
+                        9 => self.mouse_protocol = MouseProtocol::X10,
+                        1000 => self.mouse_protocol = MouseProtocol::Normal,
+                        1002 => self.mouse_protocol = MouseProtocol::ButtonEvent,
+                        1003 => self.mouse_protocol = MouseProtocol::AnyEvent,
+                        1006 => self.mouse_sgr = true,
                         2004 => self.bracketed_paste = true,
                         2026 => self.sync_output_since = Some(std::time::Instant::now()),
                         _ => {}
@@ -1657,6 +1769,8 @@ impl Perform for TerminalGrid {
                 for param in params.iter() {
                     match param[0] {
                         47 | 1047 | 1049 => self.leave_alternate_screen(),
+                        9 | 1000 | 1002 | 1003 => self.mouse_protocol = MouseProtocol::None,
+                        1006 => self.mouse_sgr = false,
                         2004 => self.bracketed_paste = false,
                         2026 => self.sync_output_since = None,
                         _ => {}
@@ -1798,6 +1912,145 @@ mod tests {
             std::time::Instant::now() - (super::SYNC_OUTPUT_TIMEOUT + Duration::from_millis(50)),
         );
         assert!(!state.synchronized_output_active());
+    }
+
+    #[test]
+    fn mouse_protocol_tracks_decset_modes() {
+        use super::MouseProtocol;
+        let mut state = TerminalState::new(10, 2);
+        assert_eq!(state.mouse_protocol(), MouseProtocol::None);
+        state.feed(b"\x1b[?1000h");
+        assert_eq!(state.mouse_protocol(), MouseProtocol::Normal);
+        state.feed(b"\x1b[?1002h");
+        assert_eq!(state.mouse_protocol(), MouseProtocol::ButtonEvent);
+        state.feed(b"\x1b[?1003h");
+        assert_eq!(state.mouse_protocol(), MouseProtocol::AnyEvent);
+        state.feed(b"\x1b[?1003l");
+        assert_eq!(state.mouse_protocol(), MouseProtocol::None);
+        state.feed(b"\x1b[?9h");
+        assert_eq!(state.mouse_protocol(), MouseProtocol::X10);
+    }
+
+    #[test]
+    fn mouse_sgr_encoding_produces_csi_less_than_sequences() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+        let mut state = TerminalState::new(80, 24);
+        state.feed(b"\x1b[?1002;1006h");
+
+        let press = state
+            .encode_mouse_event(
+                MouseEventKind::Down(MouseButton::Left),
+                KeyModifiers::NONE,
+                5,
+                3,
+            )
+            .expect("press encodes");
+        assert_eq!(press, b"\x1b[<0;6;4M".to_vec());
+
+        let release = state
+            .encode_mouse_event(
+                MouseEventKind::Up(MouseButton::Left),
+                KeyModifiers::NONE,
+                5,
+                3,
+            )
+            .expect("release encodes");
+        assert_eq!(release, b"\x1b[<0;6;4m".to_vec());
+
+        let drag = state
+            .encode_mouse_event(
+                MouseEventKind::Drag(MouseButton::Right),
+                KeyModifiers::NONE,
+                0,
+                0,
+            )
+            .expect("drag encodes");
+        assert_eq!(drag, b"\x1b[<34;1;1M".to_vec());
+
+        let scroll = state
+            .encode_mouse_event(MouseEventKind::ScrollUp, KeyModifiers::CONTROL, 2, 2)
+            .expect("scroll encodes");
+        assert_eq!(scroll, b"\x1b[<80;3;3M".to_vec());
+    }
+
+    #[test]
+    fn mouse_legacy_encoding_uses_byte_triplets() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+        let mut state = TerminalState::new(80, 24);
+        state.feed(b"\x1b[?1000h");
+
+        let press = state
+            .encode_mouse_event(
+                MouseEventKind::Down(MouseButton::Left),
+                KeyModifiers::NONE,
+                5,
+                3,
+            )
+            .expect("press encodes");
+        assert_eq!(press, vec![0x1b, b'[', b'M', 32, 38, 36]);
+
+        let release = state
+            .encode_mouse_event(
+                MouseEventKind::Up(MouseButton::Left),
+                KeyModifiers::NONE,
+                5,
+                3,
+            )
+            .expect("release encodes");
+        assert_eq!(release, vec![0x1b, b'[', b'M', 35, 38, 36]);
+    }
+
+    #[test]
+    fn mouse_protocol_filters_event_kinds() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+        let mut state = TerminalState::new(80, 24);
+
+        state.feed(b"\x1b[?9h");
+        assert!(
+            state
+                .encode_mouse_event(
+                    MouseEventKind::Up(MouseButton::Left),
+                    KeyModifiers::NONE,
+                    0,
+                    0
+                )
+                .is_none(),
+            "x10 must not report releases"
+        );
+        assert!(
+            state
+                .encode_mouse_event(MouseEventKind::ScrollUp, KeyModifiers::NONE, 0, 0)
+                .is_none(),
+            "x10 must not report scroll"
+        );
+
+        state.feed(b"\x1b[?1000h");
+        assert!(
+            state
+                .encode_mouse_event(
+                    MouseEventKind::Drag(MouseButton::Left),
+                    KeyModifiers::NONE,
+                    0,
+                    0
+                )
+                .is_none(),
+            "normal protocol must not report drags"
+        );
+
+        state.feed(b"\x1b[?1002h");
+        assert!(
+            state
+                .encode_mouse_event(MouseEventKind::Moved, KeyModifiers::NONE, 0, 0)
+                .is_none(),
+            "button-event protocol must not report plain motion"
+        );
+        state.feed(b"\x1b[?1003h");
+        assert!(
+            state
+                .encode_mouse_event(MouseEventKind::Moved, KeyModifiers::NONE, 0, 0)
+                .is_some(),
+            "any-event protocol reports plain motion"
+        );
     }
 
     #[test]

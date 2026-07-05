@@ -5421,6 +5421,97 @@ fn bracketed_paste_strips_embedded_end_marker() {
     assert_eq!(recorded[0].1, b"\x1b[200~evilrm -rf /\r\x1b[201~".to_vec());
 }
 
+fn mouse_event_with_modifiers(
+    kind: MouseEventKind,
+    column: u16,
+    row: u16,
+    modifiers: KeyModifiers,
+) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers,
+    }
+}
+
+#[test]
+fn mouse_press_forwards_to_guest_with_mouse_reporting() {
+    let (mut app, writes) = build_recording_app_with_output(vec![b"\x1b[?1002;1006h".to_vec()]);
+    app.tick();
+    take_recorded_writes(&writes);
+
+    app.handle_mouse_event(mouse_event_with_modifiers(
+        MouseEventKind::Down(MouseButton::Left),
+        5,
+        3,
+        KeyModifiers::NONE,
+    ))
+    .expect("mouse event");
+
+    let recorded = take_recorded_writes(&writes);
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].1, b"\x1b[<0;6;4M".to_vec());
+}
+
+#[test]
+fn mouse_scroll_forwards_to_guest_instead_of_view_scroll() {
+    let (mut app, writes) = build_recording_app_with_output(vec![b"\x1b[?1000;1006h".to_vec()]);
+    app.tick();
+    take_recorded_writes(&writes);
+
+    app.handle_mouse_event(mouse_event_with_modifiers(
+        MouseEventKind::ScrollUp,
+        2,
+        2,
+        KeyModifiers::NONE,
+    ))
+    .expect("mouse event");
+
+    let recorded = take_recorded_writes(&writes);
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].1, b"\x1b[<64;3;3M".to_vec());
+}
+
+#[test]
+fn shift_bypasses_guest_mouse_forwarding() {
+    let (mut app, writes) = build_recording_app_with_output(vec![b"\x1b[?1002;1006h".to_vec()]);
+    app.tick();
+    take_recorded_writes(&writes);
+
+    app.handle_mouse_event(mouse_event_with_modifiers(
+        MouseEventKind::Down(MouseButton::Left),
+        5,
+        3,
+        KeyModifiers::SHIFT,
+    ))
+    .expect("mouse event");
+
+    let recorded = take_recorded_writes(&writes);
+    assert!(recorded.is_empty(), "shift-click must stay host-side");
+}
+
+#[test]
+fn mouse_events_are_not_forwarded_without_guest_request() {
+    let (mut app, writes) = build_recording_app_with_output(vec![b"plain output".to_vec()]);
+    app.tick();
+    take_recorded_writes(&writes);
+
+    app.handle_mouse_event(mouse_event_with_modifiers(
+        MouseEventKind::Down(MouseButton::Left),
+        5,
+        3,
+        KeyModifiers::NONE,
+    ))
+    .expect("mouse event");
+
+    let recorded = take_recorded_writes(&writes);
+    assert!(
+        recorded.is_empty(),
+        "no guest mouse mode, nothing forwarded"
+    );
+}
+
 #[test]
 fn sync_output_hold_follows_guest_requests() {
     let (mut app, _writes) = build_recording_app_with_output(vec![b"\x1b[?2026h".to_vec()]);

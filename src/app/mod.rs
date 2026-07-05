@@ -1518,7 +1518,28 @@ impl App {
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) {
-        if !self.mouse_enabled || self.view.locked_input {
+        if self.view.locked_input {
+            self.view.mouse_drag = None;
+            return;
+        }
+
+        // Forward mouse input to the guest program when the pane under the
+        // cursor requested mouse reporting (DECSET 9/1000/1002/1003). This
+        // works regardless of spectra's own [mouse] config. Shift bypasses
+        // forwarding (the conventional escape hatch for host-side handling),
+        // and an in-flight spectra drag/selection keeps priority.
+        if matches!(self.view.input_mode, InputMode::Normal)
+            && !mouse
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::SHIFT)
+            && self.view.mouse_drag.is_none()
+            && self.view.text_selection.is_none()
+            && self.forward_mouse_to_guest(&mouse)
+        {
+            return;
+        }
+
+        if !self.mouse_enabled {
             self.view.mouse_drag = None;
             return;
         }
@@ -1717,6 +1738,58 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Try to deliver a mouse event to the guest program in the pane under
+    /// the cursor. Returns `true` when the event was consumed (delivered, or
+    /// intentionally swallowed because the guest owns mouse interaction).
+    fn forward_mouse_to_guest(&mut self, mouse: &MouseEvent) -> bool {
+        let side_window_tree = self.side_window_tree_overlay();
+        let frame = self.pane_frame_for_current_view_with_sidebar(side_window_tree.as_ref());
+        let Some(pane) = Self::mouse_pane_info_at(&frame, mouse.column, mouse.row) else {
+            return false;
+        };
+        let pane_id = pane.pane_id;
+        let (rect_x, rect_y) = (pane.rect.x, pane.rect.y);
+        let (rect_w, rect_h) = (pane.rect.width, pane.rect.height);
+        if !self.current_session().pane_wants_mouse_reporting(pane_id) {
+            return false;
+        }
+
+        let local_col = usize::from(mouse.column)
+            .saturating_sub(rect_x)
+            .min(rect_w.saturating_sub(1));
+        let local_row = usize::from(mouse.row)
+            .saturating_sub(rect_y)
+            .min(rect_h.saturating_sub(1));
+        let report = self.current_session().pane_mouse_report(
+            pane_id,
+            mouse.kind,
+            mouse.modifiers,
+            local_col,
+            local_row,
+        );
+        let Some(report) = report else {
+            // The guest owns mouse interaction but did not ask for this
+            // event kind. Swallow motion/drag/release so they don't fall
+            // back to spectra's selection handling; let presses and scroll
+            // fall through (e.g. view scroll over an X10-only guest).
+            return matches!(
+                mouse.kind,
+                MouseEventKind::Drag(_) | MouseEventKind::Moved | MouseEventKind::Up(_)
+            );
+        };
+
+        if matches!(mouse.kind, MouseEventKind::Down(_))
+            && self.current_session().focused_pane_id() != Some(pane_id)
+            && self.current_session_mut().focus_pane_id(pane_id).is_ok()
+        {
+            self.record_focus_for_active_session();
+            self.persist_active_session_info();
+            self.needs_render = true;
+        }
+        let _ = self.current_session_mut().send_to_pane(pane_id, &report);
+        true
     }
 
     fn mouse_pane_info_at(

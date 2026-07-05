@@ -353,6 +353,29 @@ impl SessionManager {
             .any(Pane::synchronized_output_active)
     }
 
+    /// Whether the pane's guest program requested mouse reporting.
+    pub fn pane_wants_mouse_reporting(&self, pane_id: PaneId) -> bool {
+        self.panes
+            .get(&pane_id)
+            .is_some_and(Pane::wants_mouse_reporting)
+    }
+
+    /// Encode a mouse event for the pane's guest program, honouring its
+    /// requested protocol/encoding. Returns `None` when the guest did not
+    /// ask for this kind of event.
+    pub fn pane_mouse_report(
+        &self,
+        pane_id: PaneId,
+        kind: crossterm::event::MouseEventKind,
+        modifiers: crossterm::event::KeyModifiers,
+        col: usize,
+        row: usize,
+    ) -> Option<Vec<u8>> {
+        self.panes
+            .get(&pane_id)
+            .and_then(|pane| pane.encode_mouse_event(kind, modifiers, col, row))
+    }
+
     pub fn focused_history_lines(&self) -> Option<Vec<String>> {
         let pane_id = self.focused_pane_id()?;
         self.panes.get(&pane_id).map(Pane::history_lines)

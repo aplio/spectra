@@ -117,6 +117,20 @@ impl Pane {
         self.terminal.bracketed_paste()
     }
 
+    pub fn wants_mouse_reporting(&self) -> bool {
+        self.terminal.mouse_protocol() != crate::session::terminal_state::MouseProtocol::None
+    }
+
+    pub fn encode_mouse_event(
+        &self,
+        kind: crossterm::event::MouseEventKind,
+        modifiers: crossterm::event::KeyModifiers,
+        col: usize,
+        row: usize,
+    ) -> Option<Vec<u8>> {
+        self.terminal.encode_mouse_event(kind, modifiers, col, row)
+    }
+
     pub fn synchronized_output_active(&self) -> bool {
         self.terminal.synchronized_output_active()
     }

@@ -38,7 +38,9 @@
 spectra最大の機能ギャップ。VT処理は `src/session/terminal_state.rs` (自前grid + vte crate)。
 herdrはlibghostty-vt(vendored, Zig FFI)に委譲し、足りない分を `src/pane/osc.rs` のトラッカーで補う構成。
 
-- [ ] **ゲストのmouse mode (?1000/1002/1003/1006) を尊重** — 現状ホストのmouse captureを常時ONにして自前消費するだけで、pane内TUIにマウスが届かない。実害が一番大きい
+- [x] DONE **ゲストのmouse mode (?9/1000/1002/1003/1006) を尊重** — pane毎に追跡し、カーソル下のpaneが
+      mouse reportingを要求していればSGR/レガシー両エンコードで転送(spectraの[mouse]設定と独立に動作)。
+      Shift押下はホスト側処理へのバイパス(xterm/tmux慣行)。プロトコル毎のイベント種フィルタ実装済み(X10=pressのみ等)
 - [x] DONE **bracketed paste (?2004) をpane毎に追跡** — TerminalGridで?2004h/lを追跡し、
       ゲストが有効化した時のみpasteを `ESC[200~`/`ESC[201~` でラップ。埋め込みend markerは除去(paste injection対策)
 - [x] DONE **synchronized output (?2026)** — pane毎に追跡し、active windowのpaneがhold中は
