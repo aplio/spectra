@@ -13,7 +13,7 @@ use crate::app::{App, AppSignal, ClientId, LOCAL_CLIENT_ID};
 use crate::cli::Cli;
 use crate::io::terminal;
 use crate::ipc::codec::{DecodeResult, decode_messages, encode_message};
-use crate::ipc::protocol::{ClientMessage, ServerMessage};
+use crate::ipc::protocol::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
 use crate::ipc::socket_path;
 use crate::ui::render::FrameRenderer;
 
@@ -279,7 +279,21 @@ fn handle_client_message(
             rows,
             attach_target,
             client_identity,
+            protocol_version,
         } => {
+            // `None` marks a legacy client that predates version negotiation
+            // and is still accepted; an explicit mismatch is rejected.
+            if let Some(version) = protocol_version
+                && version != PROTOCOL_VERSION
+            {
+                client.queue_control_message(&ServerMessage::Error {
+                    message: format!(
+                        "protocol version mismatch (client {version}, server {PROTOCOL_VERSION}) — update spectra on both ends"
+                    ),
+                })?;
+                client.close_after_flush = true;
+                return Ok(());
+            }
             app.register_client_identity(client.id, client_identity);
             if let Some(target) = attach_target
                 && let Err(err) = app.apply_attach_target_for_client(client.id, &target)

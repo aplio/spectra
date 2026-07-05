@@ -9,6 +9,8 @@ pub enum CliMode {
     RunCommand,
     Update,
     Check,
+    RemoteAttach,
+    RemoteClientBridge,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -79,6 +81,9 @@ pub enum CliCommand {
         #[arg(value_name = "PATH")]
         path: Option<PathBuf>,
     },
+    /// Internal: relay stdio to the local client socket (remote end of --remote).
+    #[command(hide = true)]
+    RemoteClientBridge,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -95,6 +100,11 @@ pub struct Cli {
     /// Attach to a specific target: session[:window[.pane]].
     #[arg(long, value_name = "TARGET")]
     pub attach: Option<String>,
+
+    /// Attach to a spectra server on a remote host over ssh (experimental).
+    /// HOST is `user@host`, `host`, or `ssh://user@host`.
+    #[arg(long, value_name = "HOST", conflicts_with_all = ["server", "update", "check"])]
+    pub remote: Option<String>,
 
     /// Start panes in this working directory.
     #[arg(long, value_name = "DIR")]
@@ -133,6 +143,10 @@ impl Cli {
             CliMode::Update
         } else if self.check {
             CliMode::Check
+        } else if matches!(self.subcommand, Some(CliCommand::RemoteClientBridge)) {
+            CliMode::RemoteClientBridge
+        } else if self.remote.is_some() {
+            CliMode::RemoteAttach
         } else if matches!(self.subcommand, Some(CliCommand::AttachSession { .. }))
             || self.subcommand.is_none()
         {
@@ -159,6 +173,9 @@ impl Cli {
         }
         if self.attach.is_some() && self.subcommand.is_some() {
             return Err("--attach cannot be used with subcommands".to_string());
+        }
+        if self.remote.is_some() && self.subcommand.is_some() {
+            return Err("--remote cannot be used with subcommands".to_string());
         }
         for (enabled, flag) in [(self.update, "--update"), (self.check, "--check")] {
             if !enabled {
@@ -425,6 +442,66 @@ mod tests {
             }
             _ => panic!("expected source-file"),
         }
+    }
+
+    #[test]
+    fn parses_remote_flag() {
+        let cli = Cli::try_parse_from(["spectra", "--remote", "me@box"]).expect("parse remote");
+        assert_eq!(cli.remote.as_deref(), Some("me@box"));
+        assert_eq!(cli.mode(), CliMode::RemoteAttach);
+        assert!(cli.validate().is_ok());
+    }
+
+    #[test]
+    fn remote_requires_value() {
+        assert!(Cli::try_parse_from(["spectra", "--remote"]).is_err());
+    }
+
+    #[test]
+    fn remote_conflicts_with_server_update_and_check() {
+        for flag in ["--server", "--update", "--check"] {
+            let err = Cli::try_parse_from(["spectra", "--remote", "box", flag])
+                .expect_err("remote conflict");
+            assert!(
+                err.to_string().contains("cannot be used with"),
+                "unexpected error for {flag}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_rejects_subcommands() {
+        let cli = Cli::try_parse_from(["spectra", "--remote", "box", "new-session"])
+            .expect("parse remote with subcommand");
+        assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn remote_combines_with_attach_target() {
+        let cli = Cli::try_parse_from(["spectra", "--remote", "me@box", "--attach", "dev:w2.p4"])
+            .expect("parse remote with attach");
+        assert_eq!(cli.remote.as_deref(), Some("me@box"));
+        assert_eq!(cli.attach_target_raw(), Some("dev:w2.p4"));
+        assert_eq!(cli.mode(), CliMode::RemoteAttach);
+        assert!(cli.validate().is_ok());
+    }
+
+    #[test]
+    fn parses_remote_client_bridge_subcommand() {
+        let cli = Cli::try_parse_from(["spectra", "remote-client-bridge"]).expect("parse bridge");
+        assert!(matches!(
+            cli.subcommand,
+            Some(CliCommand::RemoteClientBridge)
+        ));
+        assert_eq!(cli.mode(), CliMode::RemoteClientBridge);
+        assert!(cli.validate().is_ok());
+    }
+
+    #[test]
+    fn remote_client_bridge_is_hidden_from_help() {
+        let err = Cli::try_parse_from(["spectra", "--help"]).expect_err("help exits parse");
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+        assert!(!err.to_string().contains("remote-client-bridge"));
     }
 
     #[test]

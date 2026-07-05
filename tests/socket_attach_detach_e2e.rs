@@ -11,7 +11,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use spectra::attach_target::AttachTarget;
 use spectra::ipc::codec::{decode_messages, encode_message};
 use spectra::ipc::protocol::{
-    ClientMessage, CommandRequest, CommandResult, CommandSplitAxis, NetKeyEvent, ServerMessage,
+    ClientMessage, CommandRequest, CommandResult, CommandSplitAxis, NetKeyEvent, PROTOCOL_VERSION,
+    ServerMessage,
 };
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(6);
@@ -192,6 +193,7 @@ impl TestClient {
             rows,
             attach_target,
             client_identity,
+            protocol_version: Some(PROTOCOL_VERSION),
         })?;
         Ok(client)
     }

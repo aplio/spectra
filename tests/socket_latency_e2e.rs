@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use spectra::ipc::codec::{decode_messages, encode_message};
-use spectra::ipc::protocol::{ClientMessage, NetKeyEvent, ServerMessage};
+use spectra::ipc::protocol::{ClientMessage, NetKeyEvent, PROTOCOL_VERSION, ServerMessage};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(6);
 const WAIT_TIMEOUT: Duration = Duration::from_secs(6);
@@ -172,6 +172,7 @@ impl TestClient {
             rows,
             attach_target: None,
             client_identity: None,
+            protocol_version: Some(PROTOCOL_VERSION),
         })?;
         Ok(client)
     }

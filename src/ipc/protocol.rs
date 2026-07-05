@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::attach_target::AttachTarget;
 
+/// Version of the newline-delimited-JSON client protocol. Bumped on
+/// incompatible changes; checked during the `Hello` handshake so mismatched
+/// binaries (for example over a remote ssh bridge) fail with a clear error.
+pub const PROTOCOL_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandSplitAxis {
@@ -76,6 +81,9 @@ pub enum ClientMessage {
         attach_target: Option<AttachTarget>,
         #[serde(default)]
         client_identity: Option<String>,
+        /// `None` marks a legacy client that predates version negotiation.
+        #[serde(default)]
+        protocol_version: Option<u32>,
     },
     Key {
         key: NetKeyEvent,
@@ -364,7 +372,7 @@ mod tests {
 
     use super::{
         ClientMessage, CommandRequest, CommandResult, CommandSplitAxis, NetKeyEvent, NetMouseEvent,
-        ServerMessage, SessionListEntry,
+        PROTOCOL_VERSION, ServerMessage, SessionListEntry,
     };
 
     #[test]
@@ -470,6 +478,7 @@ mod tests {
             rows: 35,
             attach_target: Some(AttachTarget::parse("s2:w1.p3").expect("parse target")),
             client_identity: Some("tty=/dev/pts/4|uid=501".to_string()),
+            protocol_version: Some(PROTOCOL_VERSION),
         };
         let json = serde_json::to_string(&message).expect("encode hello");
         let decoded: ClientMessage = serde_json::from_str(&json).expect("decode hello");
@@ -477,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn hello_message_defaults_client_identity_when_missing() {
+    fn hello_message_defaults_optional_fields_when_missing() {
         let json = r#"{"type":"hello","cols":80,"rows":24,"attach_target":null}"#;
         let decoded: ClientMessage = serde_json::from_str(json).expect("decode hello");
         assert_eq!(
@@ -487,6 +496,7 @@ mod tests {
                 rows: 24,
                 attach_target: None,
                 client_identity: None,
+                protocol_version: None,
             }
         );
     }

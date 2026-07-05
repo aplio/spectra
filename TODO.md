@@ -13,7 +13,7 @@
 | gargoのupdate/version | `--update` は**実装済み**(`src/upgrade.rs`, self_update crate, gargoと同設計)。`--version`/`--check` が**ない** |
 | configでのkeybind | **実装済み**。`[prefix_bindings]`/`[global_bindings]` で上書き・unbind・prefix変更可 (`src/config.rs:28`, `src/input/keymap.rs:83`)。ただし固定enum約40アクションのみ、シェルコマンドは割当不可 |
 | sidebar | **実装済み**(window list)。`prefix e` の `SideWindowTree` (`src/ui/render.rs:40`)。左端固定・拡張には形になる下地あり |
-| herdrのremote attach | **なし**。Unix socketローカルのみ |
+| herdrのremote attach | **簡易版実装済み**。`--remote <host>` がssh stdioトンネル+protocol versionハンドシェイクでリモートserverにattach(リモート設置済み前提・バイナリ自動配布は未) |
 | agent integration (plugin形式) | **検知コアあり**。manifest駆動のAgentState検知(`src/agent/`, Claude 1種)+done導出+status bar `{agent}`トークン+`pane.list` の `agent` フィールド+sidebarマーカー。hook/通知/plugin配布は未 |
 
 ---
@@ -137,8 +137,8 @@ herdr方式 (`src/remote/unix.rs`, 96KB): **TCPポートを開けず、ssh -T �
 5. ローカルclientは `terminal-ansi` エンコーディング(server側でANSI差分化)で接続 → 細い回線でも効率的
 
 spectraタスク:
-- [ ] まず簡易版: 「リモートに既にspectraがある前提」で bridge サブコマンド + ssh stdioトンネルだけ実装(herdrのバイナリ自動配布はやらない)
-- [ ] spectraのRenderは既にANSI差分をserver側で作っているので、remote向きの構造は実は既にある(protocolのversion negotiationだけ足す)
+- [x] DONE 簡易版: 隠し `remote-client-bridge` サブコマンド+`--remote <host>` のssh stdioトンネル+`SPECTRA_REMOTE_SSH_CMD` テストシームで実装(リモート設置済み前提・バイナリ自動配布はやらない)
+- [x] DONE protocolのversion negotiation: `Hello` に `protocol_version` を追加(client常送・不一致はErrorで切断・レガシーNoneは許容)。RenderのANSI差分構造はそのままremoteで流用
 - [ ] ControlMaster=auto + keepaliveの managed ssh config (herdr `:1595`)は後回しで可
 
 ---
@@ -150,7 +150,7 @@ spectraタスク:
 - [ ] **god object分割** — `app/mod.rs` 2838行 / `terminal_state.rs` 2685行。herdrの「AppState=純データ、render=純関数、runtime分離」規律 + `assert_invariants_for_test()` パターンが参考になる
 - [ ] alt-screen resizeがnaive(reflowなし, `terminal_state.rs:354`)
 - [ ] ⏸ 要判断 (面白い候補) **SCM_RIGHTSによるlive handoff** — herdrはPTYのfdをUnix socket越しに新serverへ渡してpaneを殺さずserver更新 (`src/server/handoff.rs`)。self-updateと組み合わせると「動作中に無停止アップグレード」が可能に。採否の判断待ち
-- [ ] IPCのバイナリ化(bincode+length-prefix)は**急がない** — NDJSONで困ってから。ただしprotocol versionフィールドだけは先に入れておく(remote attachで必須)
+- [ ] IPCのバイナリ化(bincode+length-prefix)は**急がない** — NDJSONで困ってから。protocol versionフィールドはP5(remote attach)で導入済み
 - [ ] keybindの拡張: 固定enumに加えて任意シェルコマンド/APIメソッドをbind可能に(tmuxユーザの期待値)
 
 ## spectraがherdrに勝っている点（維持すべき資産)

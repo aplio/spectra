@@ -46,6 +46,8 @@ fn main() {
             spectra::runtime::client::run_attach_or_create(cli)
         }
         spectra::cli::CliMode::RunCommand => spectra::runtime::client::run_command(cli),
+        spectra::cli::CliMode::RemoteAttach => spectra::runtime::remote::run(cli),
+        spectra::cli::CliMode::RemoteClientBridge => spectra::runtime::remote::run_bridge(&cli),
     };
 
     if let Err(err) = result {

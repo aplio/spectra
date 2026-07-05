@@ -130,6 +130,29 @@ Run a startup command through the shell:
 cargo run -- -- "echo ready"
 ```
 
+## Remote attach (experimental)
+
+Attach the local terminal to a spectra server on another machine, tunneled through
+`ssh -T` stdin/stdout (no TCP port is opened):
+
+```bash
+spectra --remote user@host
+spectra --remote user@host --attach session
+```
+
+Prerequisites: `ssh user@host` must work, and spectra must already be installed on
+the remote host (on PATH or at `~/.local/bin/spectra`).
+
+How it works: the local side listens on a private per-invocation Unix socket and
+relays each client connection through `ssh -T` to a hidden `remote-client-bridge`
+subcommand, which auto-starts the remote server when needed and pipes the normal
+newline-delimited-JSON client protocol over ssh stdio. A protocol version handshake
+in the client hello rejects mismatched spectra binaries with an explicit error.
+
+`SPECTRA_REMOTE_SSH_CMD` (testing/advanced): when set, its whitespace-split value
+replaces the default `ssh -T -- <host>` transport prefix; the composed remote bridge
+command is still appended as the final argument.
+
 ## Config
 
 Config file path:

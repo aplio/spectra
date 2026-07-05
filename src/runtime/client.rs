@@ -15,7 +15,7 @@ use crate::io::terminal;
 use crate::ipc::codec::{decode_messages, encode_message};
 use crate::ipc::protocol::{
     ClientMessage, CommandRequest, CommandResult, CommandSplitAxis, NetKeyEvent, NetMouseEvent,
-    ServerMessage,
+    PROTOCOL_VERSION, ServerMessage,
 };
 use crate::ipc::socket_path;
 use crate::runtime::event_loop::poll_event_for;
@@ -57,6 +57,20 @@ pub fn run_attach_or_create(cli: Cli) -> io::Result<()> {
     }
 
     run_client(connected.stream, attach_target)
+}
+
+/// Attach the interactive client to an explicit socket path without any
+/// server auto-spawn (the `--remote` bridge listener is expected to exist).
+pub fn run_attach_on_socket(cli: &Cli, socket: &Path) -> io::Result<()> {
+    let attach_target = parse_attach_target(cli.attach_target_raw(), "--attach")?;
+    let stream = UnixStream::connect(socket)?;
+    run_client(stream, attach_target)
+}
+
+/// Connect to the local client socket, auto-spawning a background server when
+/// missing. Used by the `remote-client-bridge` subcommand on the remote host.
+pub(crate) fn connect_or_spawn_stream(cli: &Cli) -> io::Result<UnixStream> {
+    Ok(connect_or_spawn(cli)?.stream)
 }
 
 pub fn run_command(cli: Cli) -> io::Result<()> {
@@ -105,6 +119,7 @@ fn run_client_loop(
             rows,
             attach_target,
             client_identity: client_identity_fingerprint(),
+            protocol_version: Some(PROTOCOL_VERSION),
         },
     )?;
 
@@ -390,6 +405,10 @@ fn command_request_from_cli(command: &CliCommand) -> io::Result<CommandRequest> 
         CliCommand::SourceFile { path } => Ok(CommandRequest::SourceFile {
             path: path.as_ref().map(|path| path.display().to_string()),
         }),
+        CliCommand::RemoteClientBridge => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "remote-client-bridge is not a one-shot command",
+        )),
     }
 }
 
@@ -664,6 +683,7 @@ mod tests {
         let cli = Cli {
             server: false,
             attach: None,
+            remote: None,
             cwd: Some(explicit_cwd.clone()),
             shell: None,
             update: false,
@@ -687,6 +707,7 @@ mod tests {
         let cli = Cli {
             server: false,
             attach: None,
+            remote: None,
             cwd: None,
             shell: None,
             update: false,
