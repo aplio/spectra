@@ -48,7 +48,9 @@ pub struct PaneInfo {
 pub struct AgentInfo {
     /// Agent kind, e.g. `"claude"`.
     pub kind: String,
-    /// `"unknown" | "idle" | "working" | "blocked"`.
+    /// Derived display state:
+    /// `"unknown" | "idle" | "done" | "working" | "blocked"`.
+    /// `"done"` = idle and the pane has not been viewed since it went idle.
     pub state: String,
 }
 

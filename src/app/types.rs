@@ -35,6 +35,9 @@ pub(super) struct AgentTracking {
     pub last_run: HashMap<usize, Instant>,
     /// Panes whose output changed but whose detection was throttled.
     pub pending: HashSet<usize>,
+    /// Panes viewed since their last agent state change. An idle agent whose
+    /// pane is not in this set displays as "done" (derived, never stored).
+    pub seen: HashSet<usize>,
 }
 
 impl AgentTracking {
@@ -45,7 +48,42 @@ impl AgentTracking {
         self.statuses.retain(|pane_id, _| pane_exists(*pane_id));
         self.last_run.retain(|pane_id, _| pane_exists(*pane_id));
         self.pending.retain(|pane_id| pane_exists(*pane_id));
+        self.seen.retain(|pane_id| pane_exists(*pane_id));
         self.statuses.len() != before
+    }
+
+    /// Display state for one pane's agent, deriving "done" from the seen
+    /// flag; `None` when no agent is detected in the pane.
+    pub fn display_state(&self, pane_id: usize) -> Option<crate::agent::AgentDisplayState> {
+        let status = self.statuses.get(&pane_id)?;
+        Some(status.display_state(self.seen.contains(&pane_id)))
+    }
+
+    /// Update the seen flag after a pane's stored agent status changed.
+    ///
+    /// Herdr-style "done": only a Working/Blocked → Idle transition that
+    /// happens while the pane is not being viewed marks the result unseen;
+    /// every other change (including any transition on a viewed pane) counts
+    /// as seen, so a pane the user is looking at never shows "done".
+    pub fn note_status_change(
+        &mut self,
+        pane_id: usize,
+        previous: Option<crate::agent::AgentState>,
+        next: crate::agent::AgentState,
+        viewing: bool,
+    ) {
+        use crate::agent::AgentState;
+        let finished_unwatched = next == AgentState::Idle
+            && matches!(
+                previous,
+                Some(AgentState::Working) | Some(AgentState::Blocked)
+            )
+            && !viewing;
+        if finished_unwatched {
+            self.seen.remove(&pane_id);
+        } else {
+            self.seen.insert(pane_id);
+        }
     }
 }
 

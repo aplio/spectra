@@ -14,7 +14,7 @@
 | configでのkeybind | **実装済み**。`[prefix_bindings]`/`[global_bindings]` で上書き・unbind・prefix変更可 (`src/config.rs:28`, `src/input/keymap.rs:83`)。ただし固定enum約40アクションのみ、シェルコマンドは割当不可 |
 | sidebar | **実装済み**(window list)。`prefix e` の `SideWindowTree` (`src/ui/render.rs:40`)。左端固定・拡張には形になる下地あり |
 | herdrのremote attach | **なし**。Unix socketローカルのみ |
-| agent integration (plugin形式) | **検知コアあり**。manifest駆動のAgentState検知(`src/agent/`, Claude 1種)+status bar `{agent}`トークン+`pane.list` の `agent` フィールド。hook/通知/sidebar/plugin配布は未 |
+| agent integration (plugin形式) | **検知コアあり**。manifest駆動のAgentState検知(`src/agent/`, Claude 1種)+done導出+status bar `{agent}`トークン+`pane.list` の `agent` フィールド+sidebarマーカー。hook/通知/plugin配布は未 |
 
 ---
 
@@ -103,7 +103,8 @@ spectraタスク:
 - [x] DONE マニフェスト駆動ルールエンジン — TOML(`priority`+`contains/regex/any/all/not`× region `bottom_non_empty_lines(N)`/`osc_title`)を `src/agent/manifest.rs` で実装。Claude 1種の組み込みmanifest(`src/agent/manifests/claude.toml`, include_str!)のみ・ホットリロードと `agent explain` は未
 - [x] DONE プロセス名フォールバック検知 — Linux-only best effort。`PaneBackend::child_pid` → `/proc/<child>/stat` tpgid → `/proc/<tpgid>/cmdline` argv[0] basename を `process_names` と照合。失敗は全てNone(パニックなし)
 - [ ] P2のAPI経由 `pane.report_agent` メソッド + Claude Code hookスクリプト(integration install コマンド)
-- [ ] 状態変化 → sidebar 表示 + (任意)ホスト端末へのdesktop notification(herdr `src/terminal_notify.rs` は端末種別ごとにOSC通知方式を出し分け)。done(=idle&&未閲覧)導出も未
+- [x] DONE sidebar表示 + done(=idle&&未閲覧)導出 — herdr式に done は保存せず導出: working/blocked→idle 遷移を非フォーカスpaneで検知したら unseen、描画時にフォーカスpaneを seen 化(閲覧中のpaneは決してdoneにならない)。`AgentDisplayState`(unknown/idle/done/working/blocked)として `{agent}` トークンと `pane.list` の `state` にも露出
+- [ ] (任意)ホスト端末へのdesktop notification は未(herdr `src/terminal_notify.rs` は端末種別ごとにOSC通知方式を出し分け)
 - [ ] plugin形式にするなら: 検知マニフェスト+hookスクリプトを plugin manifest に同梱して配布、という切り方が自然
 
 ---
@@ -112,9 +113,12 @@ spectraタスク:
 
 - [ ] 既存 `SideWindowTree` を汎用sidebarに拡張: window listセクション + agent panelセクションの2段構成
       (herdr `src/ui/sidebar.rs`: ratio-based分割・ドラッグ可能な仕切り・`prefix+b` トグル)
-- [ ] agent panel行: agent名 + 状態ドット(herdr: 赤●blocked / 黄spinner working / teal●done未読 / 緑✓idle)
+- [x] DONE agent状態の行表示: 状態ドット(赤●blocked / 黄●working / cyan●done未読 / 緑✓idle)を
+      window list行の右端にマーカー表示(window内paneの最悪状態を集約、divider内に収まる幅計算)。
+      専用の2段agent panel/ドラッグ仕切りは未(上の項目)
 - [ ] 注意: 現状 `SideWindowTree` は左端固定(x=0)のジオメトリがハードコード。汎用化するならreserve計算を先に整理
-- [ ] herdrの規律を借りる: sidebar等のUI状態は**クライアント/描画側のプレゼンテーション状態**であってサーバの正データにしない
+- [x] DONE herdrの規律を借りる: agent状態(`AgentStatus`/seen)はサーバ側 `App` が正データとして保持し、
+      マーカー(`AgentIndicator`/`AgentDisplayState`)は描画スナップショット構築時に純粋に導出。永続化もしない
 
 ---
 

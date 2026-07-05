@@ -34,10 +34,42 @@ pub struct SystemOverlay {
     pub preview_from_tail: bool,
 }
 
+/// Colored agent-state marker drawn in the sidebar (dot or check).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentIndicator {
+    pub ch: char,
+    pub color: Color,
+}
+
+impl AgentIndicator {
+    /// Sidebar marker for a derived agent display state:
+    /// blocked = red dot, working = yellow dot, done = cyan dot,
+    /// idle = green check. Unknown carries no marker.
+    pub fn for_state(state: crate::agent::AgentDisplayState) -> Option<Self> {
+        use crate::agent::AgentDisplayState as S;
+        let (ch, color) = match state {
+            S::Blocked => ('●', Color::Red),
+            S::Working => ('●', Color::Yellow),
+            S::Done => ('●', Color::Cyan),
+            S::Idle => ('✓', Color::Green),
+            S::Unknown => return None,
+        };
+        Some(Self { ch, color })
+    }
+}
+
+/// One window row of the sidebar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SideTreeEntry {
+    pub label: String,
+    /// Aggregated agent marker when any pane in the window has an agent.
+    pub indicator: Option<AgentIndicator>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SideWindowTree {
     pub title: String,
-    pub entries: Vec<String>,
+    pub entries: Vec<SideTreeEntry>,
     pub selected: usize,
     pub width: usize,
 }
@@ -415,23 +447,29 @@ fn compose_side_window_tree(
     let start = scroll_start(selected, side.entries.len(), content_h);
     for row in 0..content_h {
         let entry_idx = start + row;
-        let text = side
-            .entries
-            .get(entry_idx)
-            .map(String::as_str)
-            .unwrap_or_default();
+        let entry = side.entries.get(entry_idx);
         let y = 1 + row;
         let is_selected = entry_idx == selected && !side.entries.is_empty();
-        let line = if is_selected {
-            format!("> {text}")
-        } else {
-            format!("  {text}")
+        let marker = if is_selected { '>' } else { ' ' };
+        let label = entry.map(|entry| entry.label.as_str()).unwrap_or_default();
+        let indicator = entry.and_then(|entry| entry.indicator);
+        // With an agent indicator, the last two content columns are reserved
+        // for ` ●` so the marker never overflows into the divider.
+        let line = match indicator {
+            Some(indicator) => {
+                let mut line =
+                    fixed_width(&format!("{marker} {label}"), content_w.saturating_sub(2));
+                line.push(' ');
+                line.push(indicator.ch);
+                line
+            }
+            None => fixed_width(&format!("{marker} {label}"), content_w),
         };
         draw_text_with_style(
             frame,
             0,
             y,
-            &fixed_width(&line, content_w),
+            &line,
             if is_selected {
                 CellStyle {
                     reverse: true,
@@ -441,6 +479,9 @@ fn compose_side_window_tree(
                 CellStyle::default()
             },
         );
+        if let Some(indicator) = indicator {
+            frame.set_fg(content_w.saturating_sub(1), y, indicator.color);
+        }
     }
 }
 
@@ -1306,9 +1347,9 @@ mod tests {
     use crate::ui::window_manager::{Divider, DividerOrientation, PaneRect};
 
     use super::{
-        DOWN, FrameRenderer, LEFT, RIGHT, SideWindowTree, UP, compose_frame,
-        connected_divider_cells, divider_glyph, fixed_width_cells, focused_pane_border_color,
-        write_styled_cells,
+        AgentIndicator, DOWN, FrameRenderer, LEFT, RIGHT, SideTreeEntry, SideWindowTree, UP,
+        compose_frame, connected_divider_cells, divider_glyph, fixed_width_cells,
+        focused_pane_border_color, write_styled_cells,
     };
 
     #[test]
@@ -1530,7 +1571,16 @@ mod tests {
         };
         let side = SideWindowTree {
             title: "windows".to_string(),
-            entries: vec!["w1".to_string(), "w2".to_string()],
+            entries: vec![
+                SideTreeEntry {
+                    label: "w1".to_string(),
+                    indicator: None,
+                },
+                SideTreeEntry {
+                    label: "w2".to_string(),
+                    indicator: None,
+                },
+            ],
             selected: 1,
             width: 8,
         };
@@ -1550,6 +1600,69 @@ mod tests {
         assert!(selected_row[0].style.reverse);
         assert!(selected_row[1].style.reverse);
         assert_eq!(composed.row_slice(0)[7].ch, '│');
+    }
+
+    #[test]
+    fn agent_indicator_maps_states_to_marker_and_color() {
+        use crate::agent::AgentDisplayState as S;
+
+        let blocked = AgentIndicator::for_state(S::Blocked).expect("blocked marker");
+        assert_eq!((blocked.ch, blocked.color), ('●', Color::Red));
+        let working = AgentIndicator::for_state(S::Working).expect("working marker");
+        assert_eq!((working.ch, working.color), ('●', Color::Yellow));
+        let done = AgentIndicator::for_state(S::Done).expect("done marker");
+        assert_eq!((done.ch, done.color), ('●', Color::Cyan));
+        let idle = AgentIndicator::for_state(S::Idle).expect("idle marker");
+        assert_eq!((idle.ch, idle.color), ('✓', Color::Green));
+        assert_eq!(AgentIndicator::for_state(S::Unknown), None);
+    }
+
+    #[test]
+    fn compose_frame_draws_side_window_tree_agent_marker_inside_divider() {
+        let frame = RenderFrame {
+            panes: Vec::new(),
+            dividers: Vec::new(),
+            focused_cursor: None,
+            cursor_style: SetCursorStyle::DefaultUserShape,
+        };
+        let side = SideWindowTree {
+            title: "windows".to_string(),
+            entries: vec![
+                SideTreeEntry {
+                    label: "w1:very-long-window-name".to_string(),
+                    indicator: AgentIndicator::for_state(crate::agent::AgentDisplayState::Blocked),
+                },
+                SideTreeEntry {
+                    label: "w2".to_string(),
+                    indicator: None,
+                },
+            ],
+            selected: 0,
+            width: 8,
+        };
+
+        let composed = compose_frame(
+            &frame,
+            "status",
+            CellStyle::default(),
+            16,
+            5,
+            None,
+            Some(&side),
+        );
+
+        // Width 8 leaves content columns 0..=6 and the divider at column 7.
+        // The blocked marker occupies the last content column, red, with a
+        // separating space, and the long label is truncated before it.
+        let marked_row = composed.row_slice(1);
+        assert_eq!(marked_row[6].ch, '●');
+        assert_eq!(marked_row[6].style.fg, Some(Color::Red));
+        assert_eq!(marked_row[5].ch, ' ');
+        assert_eq!(marked_row[7].ch, '│');
+        // A row without an agent keeps its full label width and no marker.
+        let plain_row = composed.row_slice(2);
+        assert_eq!(plain_row[6].ch, ' ');
+        assert_eq!(plain_row[6].style.fg, None);
     }
 
     #[test]

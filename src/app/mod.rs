@@ -479,6 +479,9 @@ impl App {
         }
 
         let snapshot = self.with_client_context(client_id, |app| {
+            // The pane this client is looking at counts as seen: its agent
+            // result must never render as "done".
+            app.mark_focused_agent_seen();
             let side_window_tree = app.side_window_tree_overlay();
             let mut frame = app.pane_frame_for_current_view_with_sidebar(side_window_tree.as_ref());
             // Apply text selection highlighting to pane cells
@@ -709,9 +712,13 @@ impl App {
                         focused: entry.focused && focused_pane == Some(*pane_id),
                         title: Self::api_pane_title(managed, *pane_id),
                         agent: managed.agents.statuses.get(pane_id).map(|status| {
+                            let state = status
+                                .display_state(managed.agents.seen.contains(pane_id))
+                                .as_str()
+                                .to_string();
                             crate::api::AgentInfo {
                                 kind: status.kind.clone(),
-                                state: status.state.as_str().to_string(),
+                                state,
                             }
                         }),
                     });
@@ -772,7 +779,8 @@ impl App {
         }
 
         let mut changed = false;
-        for managed in &mut self.sessions {
+        let active_session = self.view.active_session;
+        for (session_index, managed) in self.sessions.iter_mut().enumerate() {
             if !managed.agents.statuses.is_empty()
                 || !managed.agents.last_run.is_empty()
                 || !managed.agents.pending.is_empty()
@@ -798,19 +806,30 @@ impl App {
                         .is_none_or(|last| now.duration_since(*last) >= AGENT_DETECT_INTERVAL)
                 })
                 .collect();
+            let focused_pane = managed.session.focused_pane_id();
             for pane_id in due {
                 managed.agents.pending.remove(&pane_id);
                 managed.agents.last_run.insert(pane_id, now);
-                changed |= Self::detect_agent_for_pane(managed, pane_id, now);
+                let viewing = session_index == active_session && focused_pane == Some(pane_id);
+                changed |= Self::detect_agent_for_pane(managed, pane_id, now, viewing);
             }
         }
         changed
     }
 
     /// Run manifest detection for one pane and update its stored status.
-    /// Returns true when the stored status changed.
-    fn detect_agent_for_pane(managed: &mut ManagedSession, pane_id: usize, now: Instant) -> bool {
+    /// `viewing` = the pane is the focused pane of the active window of the
+    /// active session, i.e. the user is looking at it right now; it feeds the
+    /// seen flag that derives "done". Returns true when the stored status
+    /// changed.
+    fn detect_agent_for_pane(
+        managed: &mut ManagedSession,
+        pane_id: usize,
+        now: Instant,
+        viewing: bool,
+    ) -> bool {
         let Some(screen_lines) = managed.session.pane_screen_lines(pane_id) else {
+            managed.agents.seen.remove(&pane_id);
             return managed.agents.statuses.remove(&pane_id).is_some();
         };
         let foreground_process = managed
@@ -827,11 +846,15 @@ impl App {
             Some((kind, state)) => match managed.agents.statuses.get_mut(&pane_id) {
                 Some(status) if status.kind == kind && status.state == state => false,
                 Some(status) => {
+                    let previous = status.state;
                     *status = crate::agent::AgentStatus {
                         kind,
                         state,
                         since: now,
                     };
+                    managed
+                        .agents
+                        .note_status_change(pane_id, Some(previous), state, viewing);
                     true
                 }
                 None => {
@@ -843,22 +866,43 @@ impl App {
                             since: now,
                         },
                     );
+                    managed
+                        .agents
+                        .note_status_change(pane_id, None, state, viewing);
                     true
                 }
             },
-            None => managed.agents.statuses.remove(&pane_id).is_some(),
+            None => {
+                managed.agents.seen.remove(&pane_id);
+                managed.agents.statuses.remove(&pane_id).is_some()
+            }
         }
     }
 
+    /// Mark the focused pane of the active window of the active session as
+    /// seen. Called while rendering, so a pane the user is looking at never
+    /// shows "done". Returns true when the flag was newly set.
+    fn mark_focused_agent_seen(&mut self) -> bool {
+        let Some(managed) = self.sessions.get_mut(self.view.active_session) else {
+            return false;
+        };
+        let Some(pane_id) = managed.session.focused_pane_id() else {
+            return false;
+        };
+        managed.agents.statuses.contains_key(&pane_id) && managed.agents.seen.insert(pane_id)
+    }
+
     /// `{agent}` status token for the focused pane of the active session,
-    /// e.g. `claude:working`; empty when no agent is detected.
+    /// e.g. `claude:working`; empty when no agent is detected. The state is
+    /// the derived display state, so "done" is possible.
     fn focused_agent_token(&self) -> String {
         self.sessions
             .get(self.view.active_session)
             .and_then(|managed| {
                 let pane_id = managed.session.focused_pane_id()?;
                 let status = managed.agents.statuses.get(&pane_id)?;
-                Some(format!("{}:{}", status.kind, status.state.as_str()))
+                let state = managed.agents.display_state(pane_id)?;
+                Some(format!("{}:{}", status.kind, state.as_str()))
             })
             .unwrap_or_default()
     }
@@ -1002,10 +1046,14 @@ impl App {
                 let custom_name = self
                     .effective_window_name(self.view.active_session, entry.window_id)
                     .filter(|name| !name.is_empty());
-                if let Some(name) = custom_name {
+                let label = if let Some(name) = custom_name {
                     format!("w{}:{name}", entry.index)
                 } else {
                     format!("w{}", entry.index)
+                };
+                crate::ui::render::SideTreeEntry {
+                    label,
+                    indicator: Self::window_agent_indicator(managed, &entry.pane_ids),
                 }
             })
             .collect::<Vec<_>>();
@@ -1016,6 +1064,20 @@ impl App {
             selected,
             width,
         })
+    }
+
+    /// Aggregate a window's per-pane agent display states into one sidebar
+    /// marker, worst state first (Blocked > Working > Done > Idle). Unknown
+    /// presence and agent-free windows carry no marker.
+    fn window_agent_indicator(
+        managed: &ManagedSession,
+        pane_ids: &[usize],
+    ) -> Option<crate::ui::render::AgentIndicator> {
+        pane_ids
+            .iter()
+            .filter_map(|pane_id| managed.agents.display_state(*pane_id))
+            .max()
+            .and_then(crate::ui::render::AgentIndicator::for_state)
     }
 
     fn side_window_tree_window_number_at(

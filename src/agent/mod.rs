@@ -47,6 +47,47 @@ pub struct AgentStatus {
     pub since: Instant,
 }
 
+/// Render-time agent state: [`AgentState`] plus the derived `Done`.
+///
+/// `Done` is never stored; it is derived at display time as "idle and not
+/// viewed since it went idle" (herdr-style). Variants are ordered by display
+/// severity, lowest first, so an aggregate over several panes is the max.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AgentDisplayState {
+    Unknown,
+    Idle,
+    Done,
+    Working,
+    Blocked,
+}
+
+impl AgentDisplayState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Idle => "idle",
+            Self::Done => "done",
+            Self::Working => "working",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+impl AgentStatus {
+    /// Derive the display state from the stored state and the pane's `seen`
+    /// flag: an idle agent whose pane has not been viewed since it went idle
+    /// shows as [`AgentDisplayState::Done`].
+    pub fn display_state(&self, seen: bool) -> AgentDisplayState {
+        match self.state {
+            AgentState::Unknown => AgentDisplayState::Unknown,
+            AgentState::Idle if seen => AgentDisplayState::Idle,
+            AgentState::Idle => AgentDisplayState::Done,
+            AgentState::Working => AgentDisplayState::Working,
+            AgentState::Blocked => AgentDisplayState::Blocked,
+        }
+    }
+}
+
 /// Read-only view of one pane's detection inputs.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PaneSnapshot<'a> {

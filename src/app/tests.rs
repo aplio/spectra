@@ -2498,7 +2498,13 @@ fn side_window_tree_overlay_marks_selected_window_with_gt_prefix() {
     let snapshot = app.take_render_snapshot().expect("render snapshot");
     let side = snapshot.side_window_tree.expect("sidebar data");
     assert_eq!(side.selected, 0);
-    assert_eq!(side.entries, vec!["w1".to_string()]);
+    assert_eq!(
+        side.entries,
+        vec![crate::ui::render::SideTreeEntry {
+            label: "w1".to_string(),
+            indicator: None,
+        }]
+    );
 }
 
 #[test]
@@ -5848,4 +5854,223 @@ fn api_pane_list_agent_is_null_when_no_agent_detected() {
     let panes = response["result"].as_array().expect("result array");
     assert_eq!(panes.len(), 1);
     assert!(panes[0]["agent"].is_null());
+}
+
+fn claude_blocked_screen_output() -> Vec<Vec<u8>> {
+    vec![
+        "Do you want to proceed?\r\n\u{276f} 1. Yes\r\n  2. No"
+            .as_bytes()
+            .to_vec(),
+    ]
+}
+
+fn seed_agent_status(app: &mut App, pane_id: usize, state: crate::agent::AgentState) {
+    app.sessions[0].agents.statuses.insert(
+        pane_id,
+        crate::agent::AgentStatus {
+            kind: "claude".to_string(),
+            state,
+            since: Instant::now(),
+        },
+    );
+}
+
+#[test]
+fn working_to_idle_on_unfocused_pane_derives_done() {
+    use crate::agent::{AgentDisplayState, AgentState};
+
+    // Pane 1 is running a claude turn; its screen settles on the idle prompt.
+    let (mut app, _) = build_recording_app_with_output(claude_idle_screen_output());
+    seed_agent_status(&mut app, 1, AgentState::Working);
+    app.sessions[0].agents.seen.insert(1);
+    // A second window takes the focus away from pane 1 before the turn ends.
+    app.current_session_mut()
+        .new_window(80, 24)
+        .expect("create second window");
+
+    app.tick();
+
+    // Unwatched working -> idle: the unseen result derives "done".
+    assert_eq!(
+        app.sessions[0].agents.display_state(1),
+        Some(AgentDisplayState::Done)
+    );
+    // The focused pane 2 also shows the idle prompt, but it was never seen
+    // working, so it derives plain "idle", not "done".
+    assert_eq!(
+        app.sessions[0].agents.display_state(2),
+        Some(AgentDisplayState::Idle)
+    );
+}
+
+#[test]
+fn focusing_a_done_pane_marks_it_seen_and_derives_idle() {
+    use crate::agent::{AgentDisplayState, AgentState};
+
+    let (mut app, _) = build_recording_app_with_output(claude_idle_screen_output());
+    seed_agent_status(&mut app, 1, AgentState::Working);
+    app.current_session_mut()
+        .new_window(80, 24)
+        .expect("create second window");
+    app.tick();
+    assert_eq!(
+        app.sessions[0].agents.display_state(1),
+        Some(AgentDisplayState::Done)
+    );
+
+    // Focus returns to pane 1; rendering the frame marks the result as seen.
+    app.current_session_mut()
+        .focus_window_number(1)
+        .expect("focus first window");
+    app.request_render(true);
+    let _ = app.take_render_snapshot().expect("render snapshot");
+
+    assert_eq!(
+        app.sessions[0].agents.display_state(1),
+        Some(AgentDisplayState::Idle)
+    );
+}
+
+#[test]
+fn working_to_idle_on_focused_pane_never_derives_done() {
+    use crate::agent::{AgentDisplayState, AgentState};
+
+    let (mut app, _) = build_recording_app_with_output(claude_idle_screen_output());
+    seed_agent_status(&mut app, 1, AgentState::Working);
+
+    // Pane 1 stays the focused pane of the active window while it finishes.
+    app.tick();
+
+    assert_eq!(
+        app.sessions[0].agents.display_state(1),
+        Some(AgentDisplayState::Idle)
+    );
+}
+
+#[test]
+fn blocked_pane_displays_blocked_regardless_of_focus_and_seen() {
+    use crate::agent::{AgentDisplayState, AgentState};
+
+    let (mut app, _) = build_recording_app_with_output(claude_blocked_screen_output());
+    seed_agent_status(&mut app, 1, AgentState::Working);
+    app.current_session_mut()
+        .new_window(80, 24)
+        .expect("create second window");
+
+    app.tick();
+    assert_eq!(
+        app.sessions[0].agents.display_state(1),
+        Some(AgentDisplayState::Blocked)
+    );
+
+    // Focusing and rendering the pane marks it seen; blocked stays blocked.
+    app.current_session_mut()
+        .focus_window_number(1)
+        .expect("focus first window");
+    app.request_render(true);
+    let _ = app.take_render_snapshot().expect("render snapshot");
+    assert!(app.sessions[0].agents.seen.contains(&1));
+    assert_eq!(
+        app.sessions[0].agents.display_state(1),
+        Some(AgentDisplayState::Blocked)
+    );
+}
+
+#[test]
+fn window_agent_indicator_picks_worst_pane_state() {
+    use crate::agent::AgentState;
+
+    let (mut app, _) = build_recording_app_one_session();
+    // Pane 1: working, pane 2: blocked, pane 3: unseen idle (= done),
+    // pane 4: seen idle, pane 5: unknown presence.
+    seed_agent_status(&mut app, 1, AgentState::Working);
+    seed_agent_status(&mut app, 2, AgentState::Blocked);
+    seed_agent_status(&mut app, 3, AgentState::Idle);
+    seed_agent_status(&mut app, 4, AgentState::Idle);
+    seed_agent_status(&mut app, 5, AgentState::Unknown);
+    app.sessions[0].agents.seen.insert(1);
+    app.sessions[0].agents.seen.insert(2);
+    app.sessions[0].agents.seen.insert(4);
+
+    let managed = &app.sessions[0];
+    let indicator = |pane_ids: &[usize]| App::window_agent_indicator(managed, pane_ids);
+    assert_eq!(
+        indicator(&[1, 2, 3, 4]).map(|marker| (marker.ch, marker.color)),
+        Some(('●', Color::Red)),
+        "blocked wins over everything"
+    );
+    assert_eq!(
+        indicator(&[1, 3, 4]).map(|marker| (marker.ch, marker.color)),
+        Some(('●', Color::Yellow)),
+        "working wins over done and idle"
+    );
+    assert_eq!(
+        indicator(&[3, 4]).map(|marker| (marker.ch, marker.color)),
+        Some(('●', Color::Cyan)),
+        "done wins over idle"
+    );
+    assert_eq!(
+        indicator(&[4]).map(|marker| (marker.ch, marker.color)),
+        Some(('✓', Color::Green))
+    );
+    assert_eq!(indicator(&[5]), None, "unknown presence has no marker");
+    assert_eq!(indicator(&[99]), None, "agent-free pane has no marker");
+}
+
+#[test]
+fn side_window_tree_overlay_carries_agent_indicator_for_window() {
+    use crate::agent::AgentState;
+
+    let (mut app, _) = build_recording_app_with_output(claude_blocked_screen_output());
+    app.current_session_mut()
+        .new_window(80, 24)
+        .expect("create second window");
+    seed_agent_status(&mut app, 1, AgentState::Blocked);
+    app.view.side_window_tree_open = true;
+
+    let side = app.side_window_tree_overlay().expect("sidebar overlay");
+    let indicators: Vec<_> = side
+        .entries
+        .iter()
+        .map(|entry| entry.indicator.map(|marker| (marker.ch, marker.color)))
+        .collect();
+    assert_eq!(indicators, vec![Some(('●', Color::Red)), None]);
+}
+
+#[test]
+fn api_pane_list_reports_done_for_unseen_idle_agent() {
+    use crate::agent::AgentState;
+
+    let (mut app, _) = build_recording_app_with_output(claude_idle_screen_output());
+    seed_agent_status(&mut app, 1, AgentState::Working);
+    app.current_session_mut()
+        .new_window(80, 24)
+        .expect("create second window");
+    app.tick();
+
+    let response = api_response(&app, r#"{"id":11,"method":"pane.list"}"#);
+    let panes = response["result"].as_array().expect("result array");
+    assert_eq!(panes.len(), 2);
+    assert_eq!(panes[0]["pane_id"], 1);
+    assert_eq!(panes[0]["agent"]["state"], "done");
+    assert_eq!(panes[1]["pane_id"], 2);
+    assert_eq!(panes[1]["agent"]["state"], "idle");
+}
+
+#[test]
+fn status_agent_token_reports_derived_state_and_render_marks_focused_seen() {
+    use crate::agent::AgentState;
+
+    let (mut app, _) = build_recording_app_with_output(claude_idle_screen_output());
+    app.status_format = "agent=[{agent}]".to_string();
+    seed_agent_status(&mut app, 1, AgentState::Idle);
+
+    // Before any render the unseen idle agent derives "done" in the token.
+    assert_eq!(app.status_line(), "agent=[claude:done]");
+
+    // Rendering marks the focused pane seen, so the drawn status shows idle:
+    // the pane the user is looking at never reads "done".
+    app.request_render(true);
+    let snapshot = app.take_render_snapshot().expect("render snapshot");
+    assert_eq!(snapshot.status_line, "agent=[claude:idle]");
 }
