@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::io::host_colors::HostColors;
 use crate::session::pane::Pane;
 use crate::session::pty_backend::{PaneFactory, PaneSpawnConfig, PtyPaneFactory};
 use crate::session::terminal_state::{StyledCell, TerminalEvent};
@@ -28,6 +29,9 @@ pub struct SessionOptions {
     pub session_name: String,
     pub suppress_prompt_eol_marker: bool,
     pub allow_passthrough: bool,
+    /// Host terminal default fg/bg colors applied to new panes so guests
+    /// can query them via OSC 10/11 (unknown by default).
+    pub host_colors: HostColors,
 }
 
 impl SessionOptions {
@@ -39,6 +43,7 @@ impl SessionOptions {
             session_name: "main".to_string(),
             suppress_prompt_eol_marker: false,
             allow_passthrough: true,
+            host_colors: HostColors::default(),
         }
     }
 
@@ -239,6 +244,20 @@ impl SessionManager {
 
     pub fn allow_passthrough(&self) -> bool {
         self.options.allow_passthrough
+    }
+
+    /// Update the host terminal default colors on every pane (and on the
+    /// options template so panes spawned later inherit them).
+    pub fn set_host_colors(&mut self, colors: HostColors) {
+        self.options.host_colors = colors;
+        for pane in self.panes.values_mut() {
+            pane.set_host_colors(colors);
+        }
+    }
+
+    /// Host terminal default colors currently applied to panes.
+    pub fn host_colors(&self) -> HostColors {
+        self.options.host_colors
     }
 
     pub fn focused_pane_id(&self) -> Option<PaneId> {
@@ -567,7 +586,9 @@ pub(super) fn spawn_pane(
         cols: width as u16,
         rows: height as u16,
     })?;
-    Ok(Pane::new(width, height, options.allow_passthrough, backend))
+    let mut pane = Pane::new(width, height, options.allow_passthrough, backend);
+    pane.set_host_colors(options.host_colors);
+    Ok(pane)
 }
 
 pub(super) fn workspace_area(cols: u16, rows: u16) -> PaneRect {

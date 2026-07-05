@@ -163,6 +163,35 @@ fn split_creates_new_pane() {
 }
 
 #[test]
+fn set_host_colors_updates_existing_and_future_panes() {
+    use crate::io::host_colors::HostColors;
+
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options, Arc::new(FakeFactory), 80, 24)
+        .expect("create session");
+    assert_eq!(session.host_colors(), HostColors::default());
+
+    let colors = HostColors {
+        fg: Some((0xff, 0xff, 0xff)),
+        bg: Some((0x1e, 0x2a, 0x3c)),
+    };
+    session.set_host_colors(colors);
+    assert_eq!(session.host_colors(), colors);
+    for pane in session.panes.values() {
+        assert_eq!(pane.host_colors(), colors);
+    }
+
+    // Panes spawned after the report inherit the cached colors too.
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split vertical");
+    assert_eq!(session.pane_count(), 2);
+    for pane in session.panes.values() {
+        assert_eq!(pane.host_colors(), colors);
+    }
+}
+
+#[test]
 fn new_window_creates_new_pane() {
     let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
     let mut session = SessionManager::with_factory(options, Arc::new(FakeFactory), 80, 24)

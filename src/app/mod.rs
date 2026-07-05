@@ -24,6 +24,7 @@ use crate::input::{
     CommandAction, InputAction, KITTY_FLAG_DISAMBIGUATE, KITTY_FLAG_REPORT_ALL, KeyMapper,
     encode_key_to_bytes, encode_key_to_bytes_kitty,
 };
+use crate::io::host_colors::HostColors;
 use crate::runtime::event_loop::{FRAME_DURATION_60_FPS, poll_event_for};
 use crate::session::manager::SessionOptions;
 use crate::session::manager::{PaneTerminalEvent, SessionManager};
@@ -1640,6 +1641,23 @@ impl App {
 
         self.inactive_client_states
             .insert(client_id, self.default_client_view_state(cols, rows));
+    }
+
+    /// Cache the default fg/bg colors reported by the most recently
+    /// attached client's host terminal and push them to every pane so
+    /// guest OSC 10/11 queries can be answered. The template used for
+    /// future sessions/panes is updated too. Last writer wins; a client
+    /// that reported nothing resets the cache back to "unknown".
+    pub fn set_host_colors(&mut self, colors: HostColors) {
+        self.session_template.host_colors = colors;
+        for managed in &mut self.sessions {
+            managed.session.set_host_colors(colors);
+        }
+    }
+
+    /// Host terminal default colors currently cached for OSC 10/11.
+    pub fn host_colors(&self) -> HostColors {
+        self.session_template.host_colors
     }
 
     pub fn register_client_identity(&mut self, client_id: ClientId, identity: Option<String>) {

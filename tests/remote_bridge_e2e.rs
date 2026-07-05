@@ -216,6 +216,7 @@ fn hello(protocol_version: Option<u32>) -> ClientMessage {
         attach_target: None,
         client_identity: None,
         protocol_version,
+        host_colors: None,
     }
 }
 

@@ -11,6 +11,7 @@ use crossterm::event::{Event, KeyEventKind};
 
 use crate::attach_target::AttachTarget;
 use crate::cli::{Cli, CliCommand, CliMode};
+use crate::io::host_colors::{self, HostColors};
 use crate::io::terminal;
 use crate::ipc::codec::{decode_messages, encode_message};
 use crate::ipc::protocol::{
@@ -99,7 +100,13 @@ pub fn run_command(cli: Cli) -> io::Result<()> {
 
 fn run_client(mut stream: UnixStream, attach_target: Option<AttachTarget>) -> io::Result<()> {
     let mut stdout = terminal::setup()?;
-    let result = run_client_loop(&mut stream, &mut stdout, attach_target);
+    // Query the host terminal's default fg/bg colors exactly once, after
+    // raw mode is active but before the event loop's first crossterm poll
+    // starts consuming terminal input (which would swallow the replies).
+    // Bounded to ~150 ms and skipped entirely when stdin is not a tty, so
+    // attach never hangs on terminals that stay silent.
+    let host_colors = host_colors::query_host_terminal_colors();
+    let result = run_client_loop(&mut stream, &mut stdout, attach_target, host_colors);
     terminal::teardown(stdout);
     result
 }
@@ -108,6 +115,7 @@ fn run_client_loop(
     stream: &mut UnixStream,
     stdout: &mut std::io::Stdout,
     attach_target: Option<AttachTarget>,
+    host_colors: Option<HostColors>,
 ) -> io::Result<()> {
     stream.set_nonblocking(true)?;
 
@@ -120,6 +128,7 @@ fn run_client_loop(
             attach_target,
             client_identity: client_identity_fingerprint(),
             protocol_version: Some(PROTOCOL_VERSION),
+            host_colors,
         },
     )?;
 

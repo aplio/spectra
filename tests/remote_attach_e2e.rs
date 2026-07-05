@@ -214,6 +214,7 @@ fn remote_attach_bridges_hello_to_remote_server_through_fake_ssh() {
         attach_target: None,
         client_identity: None,
         protocol_version: Some(PROTOCOL_VERSION),
+        host_colors: None,
     })
     .expect("encode hello");
     stream.write_all(&hello).expect("send hello");

@@ -1333,6 +1333,36 @@ fn local_resize_event_resizes_session_backends() {
 }
 
 #[test]
+fn set_host_colors_propagates_to_sessions_and_template() {
+    use crate::io::host_colors::HostColors;
+
+    let mut app = build_app_for_resize_test();
+    assert_eq!(app.host_colors(), HostColors::default());
+
+    // A Hello carrying host colors lands here (server relays it via
+    // App::set_host_colors): every live session and the template for
+    // future sessions/panes pick the colors up.
+    let colors = HostColors {
+        fg: Some((0xff, 0xff, 0xff)),
+        bg: Some((0x1e, 0x2a, 0x3c)),
+    };
+    app.set_host_colors(colors);
+    assert_eq!(app.host_colors(), colors);
+    assert_eq!(app.session_template.host_colors, colors);
+    for managed in &app.sessions {
+        assert_eq!(managed.session.host_colors(), colors);
+    }
+
+    // A later client that reported nothing (legacy Hello) resets the
+    // cache back to "unknown" — last writer wins.
+    app.set_host_colors(HostColors::default());
+    assert_eq!(app.host_colors(), HostColors::default());
+    for managed in &app.sessions {
+        assert_eq!(managed.session.host_colors(), HostColors::default());
+    }
+}
+
+#[test]
 fn client_resize_event_resizes_backends_to_max_connected_viewport() {
     let (mut app, resizes) = build_app_with_resize_recording_backend(80, 24);
 

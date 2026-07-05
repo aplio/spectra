@@ -26,6 +26,15 @@ associated text (bits 2/4/16) are tracked but not reported. When the host termin
 the spectra client also enables keyboard enhancement (disambiguate + alternate keys) so richer
 key info reaches the server. Kitty graphics is intentionally not supported.
 
+Default color queries (OSC 10/11): guest applications can query the terminal's default
+foreground/background colors (used by editors and TUIs for dark/light theme detection). Rather
+than answering with invented defaults, spectra mirrors the real host terminal: at attach the
+client queries its own terminal once (bounded to ~150 ms, skipped when stdin is not a tty),
+reports the colors in the handshake, and the server answers guest queries instantly from that
+cache — the most recently attached client wins. When no colors are known the query stays
+unanswered, so guests fall back to their own defaults. Guests *setting* OSC 10/11 colors are
+ignored.
+
 ## Install
 
 Quick install (latest release):

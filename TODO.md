@@ -5,14 +5,13 @@
 
 > 進捗メモ (2026-07-05 20:35): **判断不要のタスクは全て実装完了**(13イテレーション・15コミット・テスト447→621・clippy 0維持)。
 > 残りは `⏸ 要判断` の項目のみ — 判断後に再開する。判断待ちリスト:
-> 1. OSC 10/11 の応答戦略 (P1)
-> 2. 書き込み系APIメソッド(`pane.send_keys`/`pane.split`/`events.subscribe`)とplugin manifest形式 (P2) — これが決まるとP3のhook(`pane.report_agent`+integration install)とplugin配布も進められる
-> 3. sidebar 2段構成(専用agent panel)のUX (P4) — 現状はwindow list行のマーカーで代替済み
-> 4. remote attachをherdr同等(バイナリ自動配布+checksum)まで作り込むか (P5)
-> 5. イベントループepoll化の方針(mio/polling/tokio) (P6)
-> 6. SCM_RIGHTS live handoff の採否 (P6)
+> 1. 書き込み系APIメソッド(`pane.send_keys`/`pane.split`/`events.subscribe`)とplugin manifest形式 (P2) — これが決まるとP3のhook(`pane.report_agent`+integration install)とplugin配布も進められる
+> 2. sidebar 2段構成(専用agent panel)のUX (P4) — 現状はwindow list行のマーカーで代替済み
+> 3. remote attachをherdr同等(バイナリ自動配布+checksum)まで作り込むか (P5)
+> 4. イベントループepoll化の方針(mio/polling/tokio) (P6)
+> 5. SCM_RIGHTS live handoff の採否 (P6)
 >
-> (2026-07-05 判断済み: kitty keyboard はパススルー相当で実装済み・kitty graphics は不採用)
+> (2026-07-05 判断済み: kitty keyboard はパススルー相当で実装済み・kitty graphics は不採用・OSC 10/11 は(b)ホスト端末中継で実装済み)
 > なおP6のgod object分割は大工事につき、epoll化の方針と合わせて着手判断を推奨。
 
 ## 現状サマリ（希望機能の実在チェック）
@@ -59,9 +58,7 @@ herdrはlibghostty-vt(vendored, Zig FFI)に委譲し、足りない分を `src/p
       vteはstd featureでOSCペイロード無制限Vecのためdispatch側でcap
 - [x] DONE **OSC 133 (semantic prompt)** — `133;A` (prompt start) の絶対行をpane毎に追跡
       (`last_prompt_abs_row`)。P3 agent検知の「最後のプロンプト以降」region計算に使う。B/C/Dマークは必要になったら
-- [ ] ⏸ 要判断 OSC 10/11 (fg/bg色 query) — 応答戦略の判断待ち: (a)固定デフォルト応答(ダーク/ライト誤検知リスク),
-      (b)ホスト端末へ問い合わせ中継(実装複雑・非同期), (c)現状維持(無応答=アプリ側タイムアウト)。推奨は(b)だが工数大
-      -> b
+- [x] DONE **OSC 10/11 (fg/bg色 query)** — 戦略(b)を採用: client起動時にホスト端末へ1回クエリ(150ms上限・非tty時スキップ)→Helloで報告→server cacheから即答(rgb 16bit形式・BEL/ST終端はクエリに追従)・未取得時は無応答維持・guest側setは無視(v1)
 - [x] DONE **OSC 8 hyperlink をgridで解釈** — `StyledCell` に `link: Option<Arc<str>>` を追加し、OSC 8 の
       URIをアクティブリンクとして追跡して印字セルにスタンプ(URI上限2083B・passthrough転送は従来通り維持)。
       レンダラはセルリンクを自前URL検知より優先してOSC 8でラップ出力

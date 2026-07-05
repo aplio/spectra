@@ -4,6 +4,7 @@ use crossterm::style::Color;
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Parser, Perform};
 
+use crate::io::host_colors::HostColors;
 pub use crate::ui::style::CellStyle;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +154,17 @@ impl TerminalState {
     /// Whether the guest program enabled bracketed paste (DECSET 2004).
     pub fn bracketed_paste(&self) -> bool {
         self.grid.bracketed_paste
+    }
+
+    /// Update the host terminal default colors used to answer guest
+    /// OSC 10/11 queries (reported by the most recently attached client).
+    pub fn set_host_colors(&mut self, colors: HostColors) {
+        self.grid.host_colors = colors;
+    }
+
+    /// Host terminal default colors currently cached for OSC 10/11.
+    pub fn host_colors(&self) -> HostColors {
+        self.grid.host_colors
     }
 
     /// Whether the guest asked to hold frame output (DECSET 2026) and the
@@ -442,6 +454,9 @@ struct TerminalGrid {
     allow_passthrough: bool,
     passthrough_queue: Vec<Vec<u8>>,
     terminal_events: Vec<TerminalEvent>,
+    /// Default fg/bg colors mirrored from the most recently attached
+    /// client's host terminal; used to answer guest OSC 10/11 queries.
+    host_colors: HostColors,
     /// Hyperlink target opened by OSC 8 and not yet closed. Newly printed
     /// cells are stamped with this link.
     active_link: Option<Arc<str>>,
@@ -566,6 +581,7 @@ impl TerminalGrid {
             allow_passthrough,
             passthrough_queue: Vec::new(),
             terminal_events: Vec::new(),
+            host_colors: HostColors::default(),
             active_link: None,
             kitty_kbd_main: KittyKeyboardStack::default(),
             kitty_kbd_alt: KittyKeyboardStack::default(),
@@ -1765,6 +1781,41 @@ impl Perform for TerminalGrid {
                     self.terminal_events.push(TerminalEvent::CwdChanged { cwd });
                 }
             }
+            b"10" | b"11" => {
+                // OSC 10/11: default foreground/background color. Only the
+                // query form ("?") is answered, using the colors mirrored
+                // from the most recently attached client's host terminal
+                // (reported once in the Hello handshake and cached
+                // server-side). When no color is cached the query stays
+                // unanswered, preserving the previous behaviour (guest
+                // falls back to its own timeout). Guests *setting* these
+                // colors are ignored in v1: honouring a set would require
+                // repainting the host terminal and restoring it on detach.
+                if params.get(1).copied() != Some(b"?".as_slice()) {
+                    return;
+                }
+                let color = if *ps == b"10" {
+                    self.host_colors.fg
+                } else {
+                    self.host_colors.bg
+                };
+                let Some((r, g, b)) = color else {
+                    return;
+                };
+                // 16-bit-per-channel reply form: each 8-bit channel byte is
+                // doubled (0xab -> "abab"), matching xterm's replies. The
+                // terminator mirrors the query's (BEL or ST).
+                let code = if *ps == b"10" { 10 } else { 11 };
+                let mut response =
+                    format!("\x1b]{code};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}")
+                        .into_bytes();
+                if bell_terminated {
+                    response.push(0x07);
+                } else {
+                    response.extend_from_slice(b"\x1b\\");
+                }
+                self.response_queue.push(response);
+            }
             b"133" => {
                 // OSC 133 semantic prompt marks (shell integration). Only
                 // the prompt-start mark ("A") is tracked for now; it gives
@@ -2248,6 +2299,81 @@ mod tests {
         // Non-A marks don't move the prompt row.
         state.feed(b"\x1b]133;C\x07");
         assert_eq!(state.last_prompt_abs_row(), Some(2));
+    }
+
+    #[test]
+    fn osc10_11_queries_answer_from_cached_host_colors() {
+        use crate::io::host_colors::HostColors;
+
+        let mut state = TerminalState::new(10, 2);
+        state.set_host_colors(HostColors {
+            fg: Some((0xab, 0xcd, 0xef)),
+            bg: Some((0x1e, 0x2a, 0x3c)),
+        });
+
+        // BEL-terminated query gets a BEL-terminated, 16-bit-per-channel
+        // reply with each 8-bit byte doubled.
+        state.feed(b"\x1b]10;?\x07");
+        assert_eq!(
+            state.drain_responses(),
+            vec![b"\x1b]10;rgb:abab/cdcd/efef\x07".to_vec()]
+        );
+
+        // ST-terminated query gets an ST-terminated reply.
+        state.feed(b"\x1b]11;?\x1b\\");
+        assert_eq!(
+            state.drain_responses(),
+            vec![b"\x1b]11;rgb:1e1e/2a2a/3c3c\x1b\\".to_vec()]
+        );
+    }
+
+    #[test]
+    fn osc10_11_queries_stay_silent_without_cached_colors() {
+        use crate::io::host_colors::HostColors;
+
+        let mut state = TerminalState::new(10, 2);
+        state.feed(b"\x1b]10;?\x07\x1b]11;?\x1b\\");
+        assert!(state.drain_responses().is_empty());
+
+        // A partially known cache only answers the known channel.
+        state.set_host_colors(HostColors {
+            fg: None,
+            bg: Some((0x00, 0x00, 0x00)),
+        });
+        state.feed(b"\x1b]10;?\x07");
+        assert!(state.drain_responses().is_empty());
+        state.feed(b"\x1b]11;?\x07");
+        assert_eq!(
+            state.drain_responses(),
+            vec![b"\x1b]11;rgb:0000/0000/0000\x07".to_vec()]
+        );
+    }
+
+    #[test]
+    fn osc10_11_set_forms_are_ignored() {
+        use crate::io::host_colors::HostColors;
+
+        let colors = HostColors {
+            fg: Some((0xff, 0xff, 0xff)),
+            bg: Some((0x00, 0x00, 0x00)),
+        };
+        let mut state = TerminalState::new(10, 2);
+        state.set_host_colors(colors);
+
+        // Guests setting the default colors are ignored in v1: no reply,
+        // no crash, and the cached colors stay untouched.
+        state.feed(b"\x1b]10;rgb:1111/2222/3333\x07");
+        state.feed(b"\x1b]11;#123456\x1b\\");
+        state.feed(b"\x1b]10\x07");
+        assert!(state.drain_responses().is_empty());
+        assert_eq!(state.host_colors(), colors);
+
+        // Queries still answer from the untouched cache afterwards.
+        state.feed(b"\x1b]10;?\x07");
+        assert_eq!(
+            state.drain_responses(),
+            vec![b"\x1b]10;rgb:ffff/ffff/ffff\x07".to_vec()]
+        );
     }
 
     #[test]

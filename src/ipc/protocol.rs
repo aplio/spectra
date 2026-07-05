@@ -4,6 +4,7 @@ use crossterm::event::{
 use serde::{Deserialize, Serialize};
 
 use crate::attach_target::AttachTarget;
+use crate::io::host_colors::HostColors;
 
 /// Version of the newline-delimited-JSON client protocol. Bumped on
 /// incompatible changes; checked during the `Hello` handshake so mismatched
@@ -84,6 +85,11 @@ pub enum ClientMessage {
         /// `None` marks a legacy client that predates version negotiation.
         #[serde(default)]
         protocol_version: Option<u32>,
+        /// Default fg/bg colors of the client's host terminal, used to
+        /// answer guest OSC 10/11 queries. `None` marks a legacy client or
+        /// one that could not query its terminal.
+        #[serde(default)]
+        host_colors: Option<HostColors>,
     },
     Key {
         key: NetKeyEvent,
@@ -369,6 +375,7 @@ mod tests {
     };
 
     use crate::attach_target::AttachTarget;
+    use crate::io::host_colors::HostColors;
 
     use super::{
         ClientMessage, CommandRequest, CommandResult, CommandSplitAxis, NetKeyEvent, NetMouseEvent,
@@ -479,6 +486,10 @@ mod tests {
             attach_target: Some(AttachTarget::parse("s2:w1.p3").expect("parse target")),
             client_identity: Some("tty=/dev/pts/4|uid=501".to_string()),
             protocol_version: Some(PROTOCOL_VERSION),
+            host_colors: Some(HostColors {
+                fg: Some((0xff, 0xff, 0xff)),
+                bg: Some((0x1e, 0x2a, 0x3c)),
+            }),
         };
         let json = serde_json::to_string(&message).expect("encode hello");
         let decoded: ClientMessage = serde_json::from_str(&json).expect("decode hello");
@@ -497,6 +508,7 @@ mod tests {
                 attach_target: None,
                 client_identity: None,
                 protocol_version: None,
+                host_colors: None,
             }
         );
     }

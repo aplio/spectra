@@ -1,5 +1,6 @@
 use std::io;
 
+use crate::io::host_colors::HostColors;
 use crate::session::terminal_state::{StyledCell, TerminalEvent, TerminalState};
 
 pub trait PaneBackend: Send {
@@ -120,6 +121,17 @@ impl Pane {
 
     pub fn bracketed_paste(&self) -> bool {
         self.terminal.bracketed_paste()
+    }
+
+    /// Update the host terminal default colors used to answer guest
+    /// OSC 10/11 queries.
+    pub fn set_host_colors(&mut self, colors: HostColors) {
+        self.terminal.set_host_colors(colors);
+    }
+
+    /// Host terminal default colors currently cached for OSC 10/11.
+    pub fn host_colors(&self) -> HostColors {
+        self.terminal.host_colors()
     }
 
     /// Kitty keyboard protocol flags enabled by the guest for the active

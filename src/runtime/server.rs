@@ -331,6 +331,7 @@ fn handle_client_message(
             attach_target,
             client_identity,
             protocol_version,
+            host_colors,
         } => {
             // `None` marks a legacy client that predates version negotiation
             // and is still accepted; an explicit mismatch is rejected.
@@ -345,6 +346,10 @@ fn handle_client_message(
                 client.close_after_flush = true;
                 return Ok(());
             }
+            // Cache the client's host terminal colors so guests can query
+            // default fg/bg via OSC 10/11 (last attached client wins; a
+            // legacy client without the field resets to "unknown").
+            app.set_host_colors(host_colors.unwrap_or_default());
             app.register_client_identity(client.id, client_identity);
             if let Some(target) = attach_target
                 && let Err(err) = app.apply_attach_target_for_client(client.id, &target)

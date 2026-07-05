@@ -173,6 +173,7 @@ impl TestClient {
             attach_target: None,
             client_identity: None,
             protocol_version: Some(PROTOCOL_VERSION),
+            host_colors: None,
         })?;
         Ok(client)
     }
