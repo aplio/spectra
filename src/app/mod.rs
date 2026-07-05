@@ -669,6 +669,79 @@ impl App {
             .or_else(|| managed.cwd_fallbacks.get(&pane_id).cloned())
     }
 
+    /// Read-only session snapshot for the JSON-RPC API (`session.list`).
+    pub fn api_sessions(&self) -> Vec<crate::api::SessionInfo> {
+        self.sessions
+            .iter()
+            .enumerate()
+            .map(|(index, managed)| crate::api::SessionInfo {
+                session_id: managed.session_id.clone(),
+                name: managed.session.session_name().to_string(),
+                ordinal: managed.ordinal,
+                active: index == self.view.active_session,
+                windows: managed.session.window_count(),
+            })
+            .collect()
+    }
+
+    /// Read-only pane snapshot for the JSON-RPC API (`pane.list`).
+    pub fn api_panes(&self, session_id: Option<&str>) -> Vec<crate::api::PaneInfo> {
+        let mut panes = Vec::new();
+        for managed in &self.sessions {
+            if session_id.is_some_and(|filter| filter != managed.session_id) {
+                continue;
+            }
+            let focused_pane = managed.session.focused_pane_id();
+            for entry in managed.session.window_entries() {
+                for pane_id in &entry.pane_ids {
+                    panes.push(crate::api::PaneInfo {
+                        pane_id: *pane_id,
+                        session_id: managed.session_id.clone(),
+                        window: entry.index,
+                        focused: entry.focused && focused_pane == Some(*pane_id),
+                        title: Self::api_pane_title(managed, *pane_id),
+                    });
+                }
+            }
+        }
+        panes
+    }
+
+    fn api_pane_title(managed: &ManagedSession, pane_id: usize) -> Option<String> {
+        managed
+            .pane_names
+            .get(&pane_id)
+            .or_else(|| managed.pane_auto_names.get(&pane_id))
+            .cloned()
+            .or_else(|| Self::resolve_auto_pane_name(managed, pane_id))
+    }
+
+    /// Read-only pane text for the JSON-RPC API (`pane.read`).
+    ///
+    /// Without `lines`, returns the pane's visible screen text; with
+    /// `lines: N`, returns the last N lines including scrollback.
+    pub fn api_pane_read(
+        &self,
+        pane_id: usize,
+        session_id: Option<&str>,
+        lines: Option<usize>,
+    ) -> Option<String> {
+        for managed in &self.sessions {
+            if session_id.is_some_and(|filter| filter != managed.session_id) {
+                continue;
+            }
+            if !managed.session.pane_exists(pane_id) {
+                continue;
+            }
+            let max_lines = lines.or_else(|| managed.session.pane_screen_rows(pane_id))?;
+            return managed
+                .session
+                .pane_history_tail_lines(pane_id, max_lines)
+                .map(|tail| tail.join("\n"));
+        }
+        None
+    }
+
     fn focused_window_title_from_terminal_events(&self) -> Option<String> {
         let managed = self.sessions.get(self.view.active_session)?;
         let pane_id = managed.session.focused_pane_id()?;

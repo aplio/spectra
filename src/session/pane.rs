@@ -155,6 +155,10 @@ impl Pane {
         self.terminal.total_lines()
     }
 
+    pub fn screen_rows(&self) -> usize {
+        self.terminal.height()
+    }
+
     pub fn cursor(&self) -> (usize, usize) {
         self.terminal.cursor()
     }

@@ -71,8 +71,13 @@ herdr方式の学び: OSCトラッカーを**VTパーサと分離した独立の
 herdrの拡張モデルが秀逸: **TUI用のバイナリprotocolとは別に、改行区切りJSON-RPCのsocket APIを立てる** (`src/api/server.rs`)。
 plugin = 「`herdr-plugin.toml` マニフェスト + 任意言語のargvコマンド」で、SDK不要。CLI自体がAPIのラッパー。
 
-- [ ] 第2ソケット: `{id, method, params}` の改行区切りJSON-RPC (spectraの既存IPC `src/ipc/codec.rs` はすでにNDJSONなので流用しやすい)
-- [ ] 最初のメソッドセット: `pane.list` / `pane.read`(画面テキスト取得) / `pane.send_keys` / `pane.split` / `events.subscribe` / `session.list`
+- [x] DONE **第2ソケット** — `spectra-api.sock` を同runtime dirに追加(`src/ipc/socket_path.rs::api_socket_path`)。
+      改行区切りJSON-RPC(`{id, method, params}` → `{id, result|error}`)。server busy-poll loopに
+      nonblocking accept/read/flushを統合、複数同時接続可・1行1MiB上限・parse errorは-32700で接続維持。
+      dispatchは純関数 `api::dispatch(&App, &str) -> String`(&Appのみ=読み取り専用保証)。unit+E2Eテストあり
+- [x] 一部DONE **最初のメソッドセット** — 読み取り系 `session.list` / `pane.list`(session_idフィルタ・title解決) /
+      `pane.read`(デフォルト可視画面・`lines:N`でscrollback込み末尾N行) は実装済み。
+      書き込み系 `pane.send_keys` / `pane.split` と `events.subscribe` は未実装(⏸ 要判断につき方針確認後)
 - [ ] CLIサブコマンドをこのAPIのラッパーとして生やす (`spectra pane read <id>` 等) — agentからの操作面にもなる
 - [ ] plugin manifest (`spectra-plugin.toml`): 名前/コマンド/購読イベント。イベント発火でargv起動 or 常駐プロセスにNDJSON配送
 - [ ] 既存 `[hooks]` はこのイベント購読の特殊ケースとして統合を検討

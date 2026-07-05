@@ -20,6 +20,7 @@ use crate::ui::render::FrameRenderer;
 const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
 const IDLE_LOOP_BACKOFF: std::time::Duration = std::time::Duration::from_millis(1);
+const API_MAX_LINE_BYTES: usize = 1024 * 1024;
 
 pub fn run(cli: Cli) -> io::Result<()> {
     let socket = socket_path::socket_path();
@@ -28,16 +29,25 @@ pub fn run(cli: Cli) -> io::Result<()> {
     listener.set_nonblocking(true)?;
     let _cleanup = SocketCleanupGuard::new(socket);
 
+    let api_socket = socket_path::api_socket_path();
+    socket_path::prepare_listener_socket(&api_socket)?;
+    let api_listener = UnixListener::bind(&api_socket)?;
+    api_listener.set_nonblocking(true)?;
+    let _api_cleanup = SocketCleanupGuard::new(api_socket);
+
     let mut app = App::new_with_size(cli.without_server_flag(), DEFAULT_COLS, DEFAULT_ROWS)?;
     app.request_render(true);
 
     let mut clients = Vec::new();
+    let mut api_connections: Vec<ApiConnection> = Vec::new();
     let mut next_client_id: ClientId = 1;
     loop {
         let mut did_work = false;
 
         did_work |= accept_clients(&listener, &mut clients, &mut app, &mut next_client_id)?;
         did_work |= process_client_input(&mut clients, &mut app)?;
+        did_work |= accept_api_connections(&api_listener, &mut api_connections)?;
+        did_work |= process_api_input(&mut api_connections, &app);
 
         let had_pending_render_before_tick = app.has_pending_render();
         app.tick();
@@ -66,12 +76,147 @@ pub fn run(cli: Cli) -> io::Result<()> {
         }
 
         did_work |= flush_clients(&mut clients, &mut app)?;
+        did_work |= flush_api_connections(&mut api_connections);
         if !did_work {
             thread::sleep(IDLE_LOOP_BACKOFF);
         }
     }
 
     Ok(())
+}
+
+fn accept_api_connections(
+    listener: &UnixListener,
+    connections: &mut Vec<ApiConnection>,
+) -> io::Result<bool> {
+    let mut accepted = false;
+    loop {
+        match listener.accept() {
+            Ok((stream, _addr)) => {
+                stream.set_nonblocking(true)?;
+                connections.push(ApiConnection::new(stream));
+                accepted = true;
+            }
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(accepted)
+}
+
+fn process_api_input(connections: &mut [ApiConnection], app: &App) -> bool {
+    let mut had_input = false;
+    for connection in connections {
+        if connection.disconnected {
+            continue;
+        }
+        for request in connection.read_request_lines() {
+            had_input = true;
+            if request.trim().is_empty() {
+                continue;
+            }
+            let response = crate::api::dispatch(app, &request);
+            connection.queue_response(&response);
+        }
+    }
+    had_input
+}
+
+fn flush_api_connections(connections: &mut Vec<ApiConnection>) -> bool {
+    let mut progressed = false;
+    let mut index = 0usize;
+    while index < connections.len() {
+        progressed |= connections[index].flush();
+        if connections[index].disconnected {
+            connections.remove(index);
+            progressed = true;
+        } else {
+            index += 1;
+        }
+    }
+    progressed
+}
+
+struct ApiConnection {
+    stream: UnixStream,
+    read_buffer: Vec<u8>,
+    write_buffer: Vec<u8>,
+    disconnected: bool,
+}
+
+impl ApiConnection {
+    fn new(stream: UnixStream) -> Self {
+        Self {
+            stream,
+            read_buffer: Vec::new(),
+            write_buffer: Vec::new(),
+            disconnected: false,
+        }
+    }
+
+    fn read_request_lines(&mut self) -> Vec<String> {
+        let mut chunk = [0u8; 16 * 1024];
+        loop {
+            match self.stream.read(&mut chunk) {
+                Ok(0) => {
+                    self.disconnected = true;
+                    break;
+                }
+                Ok(n) => {
+                    self.read_buffer.extend_from_slice(&chunk[..n]);
+                }
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_err) => {
+                    self.disconnected = true;
+                    break;
+                }
+            }
+        }
+
+        let mut lines = Vec::new();
+        while let Some(newline) = self.read_buffer.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = self.read_buffer.drain(..=newline).collect();
+            lines.push(String::from_utf8_lossy(&line[..line.len() - 1]).into_owned());
+        }
+        if self.read_buffer.len() > API_MAX_LINE_BYTES {
+            self.disconnected = true;
+        }
+        lines
+    }
+
+    fn queue_response(&mut self, response: &str) {
+        self.write_buffer.extend_from_slice(response.as_bytes());
+        self.write_buffer.push(b'\n');
+    }
+
+    fn flush(&mut self) -> bool {
+        if self.disconnected || self.write_buffer.is_empty() {
+            return false;
+        }
+
+        let mut written = 0usize;
+        while written < self.write_buffer.len() {
+            match self.stream.write(&self.write_buffer[written..]) {
+                Ok(0) => {
+                    self.disconnected = true;
+                    break;
+                }
+                Ok(n) => written += n,
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_err) => {
+                    self.disconnected = true;
+                    break;
+                }
+            }
+        }
+        if written > 0 {
+            self.write_buffer.drain(..written);
+        }
+        written > 0
+    }
 }
 
 fn accept_clients(

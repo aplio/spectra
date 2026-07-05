@@ -1,3 +1,4 @@
+pub mod api;
 pub mod app;
 pub mod attach_target;
 pub mod cli;

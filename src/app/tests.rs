@@ -5574,3 +5574,154 @@ fn closed_error_classifier_matches_eio_and_broken_pipe() {
         "denied"
     )));
 }
+
+// --- JSON-RPC API dispatch (src/api.rs) ---
+
+fn api_response(app: &App, request: &str) -> serde_json::Value {
+    serde_json::from_str(&crate::api::dispatch(app, request)).expect("valid JSON response")
+}
+
+#[test]
+fn api_dispatch_unknown_method_returns_method_not_found() {
+    let app = build_app_with_history();
+    let response = api_response(&app, r#"{"id":7,"method":"nope.nope"}"#);
+
+    assert_eq!(response["id"], 7);
+    assert_eq!(response["error"]["code"], crate::api::METHOD_NOT_FOUND);
+    assert!(response.get("result").is_none());
+}
+
+#[test]
+fn api_dispatch_unparseable_request_returns_parse_error_with_null_id() {
+    let app = build_app_with_history();
+    let response = api_response(&app, "this is not json");
+
+    assert!(response["id"].is_null());
+    assert_eq!(response["error"]["code"], crate::api::PARSE_ERROR);
+}
+
+#[test]
+fn api_session_list_reports_all_sessions() {
+    let (app, _) = build_recording_app_multi_session();
+    let response = api_response(&app, r#"{"id":"a","method":"session.list"}"#);
+
+    assert_eq!(response["id"], "a");
+    let sessions = response["result"].as_array().expect("result array");
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(sessions[0]["session_id"], "main-1");
+    assert_eq!(sessions[0]["name"], "main");
+    assert_eq!(sessions[0]["ordinal"], 1);
+    assert_eq!(sessions[0]["active"], true);
+    assert_eq!(sessions[0]["windows"], 2);
+    assert_eq!(sessions[1]["session_id"], "alt-2");
+    assert_eq!(sessions[1]["name"], "alt");
+    assert_eq!(sessions[1]["ordinal"], 2);
+    assert_eq!(sessions[1]["active"], false);
+    assert_eq!(sessions[1]["windows"], 1);
+}
+
+#[test]
+fn api_pane_list_reports_panes_with_titles_and_focus() {
+    let (mut app, _) = build_recording_app_multi_session();
+    app.sessions[0]
+        .terminal_titles
+        .insert(1, "vim notes".to_string());
+
+    let response = api_response(&app, r#"{"id":1,"method":"pane.list"}"#);
+    let panes = response["result"].as_array().expect("result array");
+    assert_eq!(panes.len(), 3);
+
+    let first = panes
+        .iter()
+        .find(|pane| pane["pane_id"] == 1 && pane["session_id"] == "main-1")
+        .expect("pane 1 in main-1");
+    assert_eq!(first["window"], 1);
+    assert_eq!(first["focused"], false);
+    assert_eq!(first["title"], "vim notes");
+
+    let second = panes
+        .iter()
+        .find(|pane| pane["pane_id"] == 2 && pane["session_id"] == "main-1")
+        .expect("pane 2 in main-1");
+    assert_eq!(second["window"], 2);
+    assert_eq!(second["focused"], true);
+    assert!(second["title"].is_null());
+}
+
+#[test]
+fn api_pane_list_filters_by_session_id() {
+    let (app, _) = build_recording_app_multi_session();
+    let response = api_response(
+        &app,
+        r#"{"id":2,"method":"pane.list","params":{"session_id":"alt-2"}}"#,
+    );
+
+    let panes = response["result"].as_array().expect("result array");
+    assert_eq!(panes.len(), 1);
+    assert_eq!(panes[0]["session_id"], "alt-2");
+    assert_eq!(panes[0]["window"], 1);
+    assert_eq!(panes[0]["focused"], true);
+}
+
+#[test]
+fn api_pane_read_returns_visible_screen_text() {
+    let (app, _) = build_recording_app_with_history();
+    let response = api_response(
+        &app,
+        r#"{"id":3,"method":"pane.read","params":{"pane_id":1}}"#,
+    );
+
+    let text = response["result"]["text"].as_str().expect("text string");
+    // 80x24 workspace leaves a 23-row pane; 65 content lines scroll 42 into history.
+    let lines: Vec<&str> = text.split('\n').collect();
+    assert_eq!(lines.len(), 23);
+    assert_eq!(lines[0], "line-042");
+    assert_eq!(*lines.last().expect("last line"), "line-END");
+    assert!(!text.contains("line-000"));
+}
+
+#[test]
+fn api_pane_read_with_lines_includes_scrollback() {
+    let (app, _) = build_recording_app_with_history();
+    let response = api_response(
+        &app,
+        r#"{"id":4,"method":"pane.read","params":{"pane_id":1,"lines":30}}"#,
+    );
+
+    let text = response["result"]["text"].as_str().expect("text string");
+    let lines: Vec<&str> = text.split('\n').collect();
+    assert_eq!(lines.len(), 30);
+    assert_eq!(lines[0], "line-035");
+    assert_eq!(*lines.last().expect("last line"), "line-END");
+}
+
+#[test]
+fn api_pane_read_unknown_pane_returns_pane_not_found() {
+    let (app, _) = build_recording_app_multi_session();
+    let response = api_response(
+        &app,
+        r#"{"id":5,"method":"pane.read","params":{"pane_id":999}}"#,
+    );
+
+    assert_eq!(response["error"]["code"], crate::api::PANE_NOT_FOUND);
+    assert_eq!(response["error"]["message"], "pane not found");
+}
+
+#[test]
+fn api_pane_read_without_pane_id_returns_invalid_params() {
+    let (app, _) = build_recording_app_multi_session();
+    let response = api_response(&app, r#"{"id":6,"method":"pane.read","params":{}}"#);
+
+    assert_eq!(response["error"]["code"], crate::api::INVALID_PARAMS);
+}
+
+#[test]
+fn api_pane_read_respects_session_id_filter() {
+    let (app, _) = build_recording_app_multi_session();
+    let response = api_response(
+        &app,
+        r#"{"id":8,"method":"pane.read","params":{"pane_id":1,"session_id":"missing"}}"#,
+    );
+
+    assert_eq!(response["error"]["code"], crate::api::PANE_NOT_FOUND);
+}

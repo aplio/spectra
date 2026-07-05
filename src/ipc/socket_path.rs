@@ -6,12 +6,21 @@ use std::path::{Path, PathBuf};
 
 const APP_ID: &str = "spectra";
 const SOCKET_FILE: &str = "spectra.sock";
+const API_SOCKET_FILE: &str = "spectra-api.sock";
 
 pub fn socket_path() -> PathBuf {
+    runtime_socket_path(SOCKET_FILE)
+}
+
+pub fn api_socket_path() -> PathBuf {
+    runtime_socket_path(API_SOCKET_FILE)
+}
+
+fn runtime_socket_path(file_name: &str) -> PathBuf {
     if let Some(runtime_dir) = env::var_os("XDG_RUNTIME_DIR") {
-        return PathBuf::from(runtime_dir).join(APP_ID).join(SOCKET_FILE);
+        return PathBuf::from(runtime_dir).join(APP_ID).join(file_name);
     }
-    crate::xdg::app_data_dir().join("run").join(SOCKET_FILE)
+    crate::xdg::app_data_dir().join("run").join(file_name)
 }
 
 pub fn ensure_parent(path: &Path) -> io::Result<()> {

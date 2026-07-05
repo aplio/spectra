@@ -408,6 +408,10 @@ impl SessionManager {
         self.panes.get(&pane_id).map(Pane::total_lines)
     }
 
+    pub fn pane_screen_rows(&self, pane_id: PaneId) -> Option<usize> {
+        self.panes.get(&pane_id).map(Pane::screen_rows)
+    }
+
     pub fn pane_absolute_row_cells(
         &self,
         pane_id: PaneId,
