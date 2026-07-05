@@ -15,9 +15,8 @@
 
 ## P7: バグ修正・改善 (2026-07-05 ユーザー報告)
 
-- [ ] `spectra --version` 対応(gargo風) — **リポジトリでは実装済み**(コミット3a3a094、`spectra 0.1.5` を出力)。
-      インストール済みバイナリが古いだけ。対応=リリース(Cargo.tomlのversion bump → push → tag → `--update`/install.sh で配布)。
-      本バッチ完了時に 0.2.0 へ bump するか要確認 → とりあえず bump して push する方針
+- [x] DONE `spectra --version` 対応(gargo風) — コード自体はコミット3a3a094で実装済みだった(インストール済みバイナリが古かっただけ)。
+      本バッチで 0.2.0 に bump して push + tag v0.2.0 → CIがリリースを発行するので `spectra --update` か install.sh で更新可能
 - [x] DONE cursor mode の `v` anchor toggle が効かない疑い — 原因判明: 移動キーが無条件に selection_anchor をクリアしていた。`visual` フラグ導入で v 選択は移動で伸長し、y はヤンク後 Normal へ戻る(vi 準拠)
 - [x] DONE windowtree(SideWindowTree)の左端固定(x=0)ジオメトリのhardcode修正(P4の既知項目) — `SidebarRect`(origin+width)を導入し、compose・クリックhit-testing・pane xオフセット・reserve計算(effective_pane_cols)を全て同一rect経由に統一。挙動は従来どおり左端のみ(`SidebarRect::left_edge`が唯一の構成)、位置はパラメータ化済みで将来の右端/可変位置はrect生成の差し替えだけで済む
 - [x] DONE enter/leave cursor mode のアクションを command palette で文脈フィルタ — `CommandPaletteContext` 導入でエントリ毎に表示可否を判定。palette は Normal からしか開けないため通常は enter のみ表示・leave は非表示(lock mode の enter/leave も同機構に統合)
