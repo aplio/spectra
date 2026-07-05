@@ -9,9 +9,6 @@
 > 1. sidebar 2段構成(専用agent panel)のUX (P4) — 現状はwindow list行のマーカーで代替済み
 > 2. remote attachをherdr同等(バイナリ自動配布+checksum)まで作り込むか (P5)
 >
-> 判断済み・実装待ち (P6):
-> - SCM_RIGHTS live handoff — ユーザー判断: yes、採用
->
 > (2026-07-05 判断済み: kitty keyboard はパススルー相当で実装済み・kitty graphics は不採用・OSC 10/11 は(b)ホスト端末中継で実装済み)
 
 ---
@@ -183,8 +180,7 @@ spectraタスク:
 - [x] DONE **unwrap/expect監査** — 実棚卸しでprod経路は6箇所のみ(~149はcfg(test)込みの過大見積り)。terminal::setup×2をio::Result化・reflowのunwrap×1をis_some_and化で修正、不変条件expect×3は理由付き#[allow]で意図明示、lock系prod使用ゼロ。lint gateはlib.rs/main.rsに`#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]`でcrate全体に適用(テストmodは非対象)
 - [x] DONE **god object分割** — 純粋なコード移動で2ファイルを分割(挙動・公開API変更なし・全726テスト無修正パス)。`app/mod.rs` 3643行→991行+`clients`(504)/`input`(609)/`actions`(508)/`render_snapshot`(570)/`agents`(248)/`api_support`(239)、`terminal_state.rs` 3646行→ディレクトリ化 `mod.rs`(328)+`grid`(1174, TerminalGrid本体+Perform一体で維持)/`reflow`(395)/`modes`(178)/`passthrough`(92)/`tests`(1499)
 - [x] DONE alt-screen resizeがnaive(reflowなし) — 保存中のprimary画面をalt中のresizeでも通常経路と同じsoft-wrap reflowで追随(`reflow_saved_screen`)・alt画面自体はclip/pad維持・連続resize合成もtwin-grid同値でテスト
-- [ ] 判断済み・実装待ち **SCM_RIGHTSによるlive handoff** — herdrはPTYのfdをUnix socket越しに新serverへ渡してpaneを殺さずserver更新 (`src/server/handoff.rs`)。self-updateと組み合わせると「動作中に無停止アップグレード」が可能に。
-      ユーザー判断(2026-07-05): 採用(yes)
+- [x] DONE **SCM_RIGHTSによるlive handoff** — `spectra server-handoff` + SCM_RIGHTSでPTY master fdを新serverへ移送(≤32/batch・上限64)+pane毎≤8KB replayで画面復元+`--update`はserver稼働中でも成功しhandoffヒントを表示。v1制約: クライアント接続中は拒否(自動再接続なし・paneは無傷)・replay超のscrollbackは引き継がない・final ack前の失敗は旧server無傷で継続
 - [ ] IPCのバイナリ化(bincode+length-prefix)は**急がない** — NDJSONで困ってから。protocol versionフィールドはP5(remote attach)で導入済み
 - [x] DONE keybindの拡張 — `run:` プレフィクスで任意シェルコマンドをbind可・hooks実行基盤を流用・paletteには出さない
 

@@ -1,4 +1,6 @@
 pub mod codec;
+#[cfg(unix)]
+pub mod fdpass;
 pub mod protocol;
 
 #[cfg(unix)]

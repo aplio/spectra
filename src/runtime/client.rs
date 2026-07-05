@@ -426,6 +426,10 @@ fn command_request_from_cli(command: &CliCommand) -> io::Result<CommandRequest> 
             io::ErrorKind::InvalidInput,
             "remote-client-bridge is not a one-shot command",
         )),
+        CliCommand::ServerHandoff { .. } => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "server-handoff runs its own takeover flow, not a one-shot command",
+        )),
     }
 }
 

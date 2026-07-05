@@ -37,11 +37,18 @@ impl PaneFactory for PtyPaneFactory {
 
 pub struct PtyPaneBackend {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    /// `None` after a handoff disarm: the portable-pty writer sends
+    /// `\n`+VEOF (ctrl-d) into the PTY when dropped, which would make the
+    /// pane program read EOF and exit right as the old server shuts down —
+    /// so the disarm path leaks the writer instead of dropping it.
+    writer: Option<Box<dyn Write + Send>>,
     child: Box<dyn Child + Send + Sync>,
     output_rx: Receiver<Vec<u8>>,
     output_channel_open: bool,
     exited: bool,
+    /// Cleared during a live server handoff so process exit leaves the
+    /// child running for the successor server.
+    kill_child_on_drop: bool,
 }
 
 impl PtyPaneBackend {
@@ -70,11 +77,12 @@ impl PtyPaneBackend {
 
         Ok(Self {
             master: pair.master,
-            writer,
+            writer: Some(writer),
             child,
             output_rx,
             output_channel_open: true,
             exited: false,
+            kill_child_on_drop: true,
         })
     }
 }
@@ -235,7 +243,7 @@ fn notify_server_loop() {
     crate::runtime::wake::notify();
 }
 
-fn pump_reader<R: Read + ?Sized>(reader: &mut R, tx: mpsc::Sender<Vec<u8>>) {
+pub(crate) fn pump_reader<R: Read + ?Sized>(reader: &mut R, tx: mpsc::Sender<Vec<u8>>) {
     let mut buf = [0u8; 8192];
     loop {
         match reader.read(&mut buf) {
@@ -257,8 +265,14 @@ fn pump_reader<R: Read + ?Sized>(reader: &mut R, tx: mpsc::Sender<Vec<u8>>) {
 
 impl PaneBackend for PtyPaneBackend {
     fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
-        self.writer.write_all(bytes)?;
-        self.writer.flush()
+        let Some(writer) = self.writer.as_mut() else {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "pane writer detached for server handoff",
+            ));
+        };
+        writer.write_all(bytes)?;
+        writer.flush()
     }
 
     fn resize(&mut self, cols: u16, rows: u16) -> io::Result<()> {
@@ -306,12 +320,29 @@ impl PaneBackend for PtyPaneBackend {
         }
         false
     }
+
+    #[cfg(unix)]
+    fn handoff_master_fd(&self) -> Option<std::os::fd::RawFd> {
+        self.master.as_raw_fd()
+    }
+
+    fn disarm_child_kill(&mut self) {
+        self.kill_child_on_drop = false;
+        // Leak the writer: dropping it would send `\n`+VEOF into the PTY
+        // and terminate the very child the handoff is keeping alive. The
+        // fd is reclaimed when this (exiting) process closes its fd table.
+        if let Some(writer) = self.writer.take() {
+            std::mem::forget(writer);
+        }
+    }
 }
 
 impl Drop for PtyPaneBackend {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.try_wait();
+        if self.kill_child_on_drop {
+            let _ = self.child.kill();
+            let _ = self.child.try_wait();
+        }
     }
 }
 

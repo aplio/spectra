@@ -177,7 +177,7 @@ fn update_reports_failure_in_mock_mode() {
 }
 
 #[test]
-fn update_rejects_when_server_is_active() {
+fn update_succeeds_while_server_is_active_and_prints_handoff_hint() {
     let dir = tempfile::tempdir().expect("tempdir");
     let runtime_dir = dir.path().join("runtime");
     let data_home = dir.path().join("data");
@@ -189,17 +189,52 @@ fn update_rejects_when_server_is_active() {
     let socket = socket_path(&runtime_dir);
     wait_for_socket(&socket).expect("socket exists");
 
+    // Binary replacement is an inode swap, safe while the old server runs;
+    // --update therefore succeeds and points at the live handoff.
     let output = run_spectra(&bin, &runtime_dir, &data_home, &["--update"], "has_update")
         .expect("run --update");
 
     assert!(
-        !output.status.success(),
-        "expected --update to fail while server is active: {:?}",
-        output.status
+        output.status.success(),
+        "expected --update to succeed while server is active, stderr: {}",
+        format_output(&output.stderr)
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Error:"), "unexpected stderr: {}", stderr);
-    assert!(stderr.contains("active"), "unexpected stderr: {}", stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Upgraded spectra from"),
+        "unexpected stdout: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("spectra server-handoff"),
+        "expected the handoff hint in stdout: {}",
+        stdout
+    );
+}
+
+#[test]
+fn update_without_running_server_omits_handoff_hint() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime_dir = dir.path().join("runtime");
+    let data_home = dir.path().join("data");
+    std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+    std::fs::create_dir_all(&data_home).expect("create data dir");
+    let bin = resolve_spectra_binary().expect("resolve binary");
+
+    let output = run_spectra(&bin, &runtime_dir, &data_home, &["--update"], "has_update")
+        .expect("run --update");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        format_output(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("server-handoff"),
+        "handoff hint must only appear with an active server: {}",
+        stdout
+    );
 }
 
 #[test]

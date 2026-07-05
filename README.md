@@ -57,6 +57,40 @@ curl -fsSL https://github.com/aplio/spectra/raw/refs/heads/master/install.sh | S
 
 Checksum verification is enabled when a release includes `checksums.txt`. Set `SPECTRA_SKIP_VERIFY=1` to skip verification.
 
+## Zero-downtime upgrades
+
+`spectra --update` installs the latest release. Replacing the binary is safe
+while a server is running (the running server keeps its old inode), so the
+update succeeds even with active sessions and then prints a hint to finish
+the switch:
+
+```bash
+spectra --update          # installs the new binary
+spectra server-handoff    # moves the RUNNING server onto the new binary
+```
+
+`spectra server-handoff` performs a live handoff: a new server process (the
+freshly installed binary) connects to the running server, receives the full
+session/window/pane layout plus every pane's PTY file descriptor over a Unix
+socket (SCM_RIGHTS), and takes over serving — **without killing any pane
+process**. Running agents, builds, and shells keep going; the last ~8 KiB of
+each pane's output is replayed so screens are not blank after the switch.
+`spectra --check` only reports whether an update exists and never installs.
+
+v1 limitations:
+
+- The handoff is refused while any client is attached (there is no client
+  auto-reconnect yet). Detach all clients first (`prefix d`), run
+  `spectra server-handoff`, then reattach with `spectra`. Detached panes and
+  their processes are unaffected throughout.
+- Scrollback beyond the ~8 KiB replay tail is not transferred; older history
+  is dropped across a handoff (the layout itself is preserved).
+- A server hosting more than 64 panes refuses the handoff.
+
+If anything fails before the new server has acknowledged receipt of all PTY
+descriptors, the old server keeps running untouched and logs the aborted
+handoff.
+
 ## Run
 
 ```bash
@@ -353,6 +387,9 @@ Write methods:
 - `pane.send_keys` — `{pane_id, session_id?, text}`: write `text` bytes verbatim to the pane's PTY (raw, no key encoding; same semantics as CLI `send-keys`)
 - `pane.split` — `{pane_id?, session_id?, axis: "horizontal"|"vertical"}`: focus the target pane (default: current focused), split it, return `{pane_id}` of the new pane
 - `agent.report` — `{pane_id, session_id?, kind, state: "idle"|"working"|"blocked"|"unknown"}`: externally reported agent state (e.g. from a Claude Code hook). Overrides screen-based detection for that pane for 30s after the last report, then manifest detection resumes; done derivation and notifications behave exactly like detected states
+
+Server methods:
+- `server.handoff` — internal: begin a live server handoff (used by `spectra server-handoff`, see "Zero-downtime upgrades"); returns the one-shot handoff socket, refused while clients are attached
 
 Events:
 - `events.subscribe` — `{events?: ["pane.split", ...]}` (omitted = all) marks the connection as subscribed; the server then pushes `{"event": "<name>", "params": {...}}` lines interleaved after responses. Unknown names are accepted silently but only known ones are echoed in `subscribed`

@@ -95,6 +95,16 @@ pub struct PaneTerminalEvent {
     pub event: TerminalEvent,
 }
 
+/// One pane's transferable state, exported by the outgoing server during a
+/// live handoff. The fd is borrowed (still owned by the pane backend); the
+/// handoff duplicates it before sending.
+#[cfg(unix)]
+pub struct PaneHandoffExport {
+    pub master_fd: std::os::fd::RawFd,
+    pub child_pid: Option<u32>,
+    pub replay: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SavedLayout {
     pub session_name: String,
@@ -478,6 +488,52 @@ impl SessionManager {
     /// Pid of the process spawned for the pane, when the backend knows it.
     pub fn pane_child_pid(&self, pane_id: PaneId) -> Option<u32> {
         self.panes.get(&pane_id)?.child_pid()
+    }
+
+    /// Everything the live server handoff needs to transfer one pane:
+    /// its PTY master fd, child pid, and the raw replay tail. Errors when
+    /// the pane has no transferable fd (fake/test backends).
+    #[cfg(unix)]
+    pub fn pane_handoff_export(&self, pane_id: PaneId) -> io::Result<PaneHandoffExport> {
+        let pane = self.panes.get(&pane_id).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, format!("pane {pane_id} not found"))
+        })?;
+        let master_fd = pane.handoff_master_fd().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("pane {pane_id} has no transferable PTY fd"),
+            )
+        })?;
+        Ok(PaneHandoffExport {
+            master_fd,
+            child_pid: pane.child_pid(),
+            replay: pane.replay_tail().to_vec(),
+        })
+    }
+
+    /// Disarm kill-on-drop for every pane child; the outgoing server calls
+    /// this only after its successor acked receipt of all PTY fds.
+    pub fn disarm_pane_children(&mut self) {
+        for pane in self.panes.values_mut() {
+            pane.disarm_child_kill();
+        }
+    }
+
+    /// Feed transferred replay bytes into one pane's terminal state after a
+    /// handoff. Returns false when the pane does not exist.
+    pub fn feed_pane_replay(&mut self, pane_id: PaneId, bytes: &[u8]) -> bool {
+        let Some(pane) = self.panes.get_mut(&pane_id) else {
+            return false;
+        };
+        pane.feed_replay(bytes);
+        true
+    }
+
+    /// Replace the factory used for future pane spawns. The successor server
+    /// restores sessions through a fd-adopting factory and then swaps back to
+    /// the real PTY factory so later splits spawn fresh shells.
+    pub fn set_pane_factory(&mut self, pane_factory: Arc<dyn PaneFactory>) {
+        self.pane_factory = pane_factory;
     }
 
     pub fn pane_absolute_row_cells(

@@ -3,11 +3,12 @@
 use std::collections::VecDeque;
 use std::fs;
 use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyEvent, MouseEvent};
 use polling::{Event, Events, Poller};
@@ -89,17 +90,32 @@ fn rearm_poll_interest(
 }
 
 pub fn run(cli: Cli) -> io::Result<()> {
+    serve(cli, None)
+}
+
+/// Run the server around sessions adopted from a live handoff: the panes
+/// wrap PTY fds received from the previous server instead of spawning new
+/// processes. Called by `spectra server-handoff --foreground` after the
+/// takeover exchange completed and the old server released its sockets.
+pub(crate) fn run_adopted(
+    cli: Cli,
+    takeover: crate::runtime::handoff::HandoffTakeover,
+) -> io::Result<()> {
+    serve(cli, Some(takeover))
+}
+
+fn serve(cli: Cli, takeover: Option<crate::runtime::handoff::HandoffTakeover>) -> io::Result<()> {
     let socket = socket_path::socket_path();
     socket_path::prepare_listener_socket(&socket)?;
     let listener = UnixListener::bind(&socket)?;
     listener.set_nonblocking(true)?;
-    let _cleanup = SocketCleanupGuard::new(socket);
+    let mut socket_cleanup = SocketCleanupGuard::new(socket);
 
     let api_socket = socket_path::api_socket_path();
     socket_path::prepare_listener_socket(&api_socket)?;
     let api_listener = UnixListener::bind(&api_socket)?;
     api_listener.set_nonblocking(true)?;
-    let _api_cleanup = SocketCleanupGuard::new(api_socket);
+    let mut api_socket_cleanup = SocketCleanupGuard::new(api_socket);
 
     // Readiness-based loop core: the poller owns interest for both
     // listeners and every connection stream; fd-less producers (PTY reader
@@ -115,7 +131,22 @@ pub fn run(cli: Cli) -> io::Result<()> {
         poller.add(&api_listener, Event::readable(POLL_KEY_API_LISTENER))?;
     }
 
-    let mut app = App::new_with_size(cli.without_server_flag(), DEFAULT_COLS, DEFAULT_ROWS)?;
+    let adopted = takeover.is_some();
+    let mut app = match takeover {
+        Some(takeover) => App::new_from_handoff(
+            cli.without_server_flag(),
+            DEFAULT_COLS,
+            DEFAULT_ROWS,
+            takeover.header,
+            takeover.fds,
+        )?,
+        None => App::new_with_size(cli.without_server_flag(), DEFAULT_COLS, DEFAULT_ROWS)?,
+    };
+    if adopted {
+        // One status line for the `server-handoff` coordinator, printed only
+        // once the sockets are bound and the adopted state is live.
+        crate::runtime::handoff::announce_takeover_ready(app.total_pane_count());
+    }
     app.request_render(true);
     // Plugins load only in the server: on_event/service commands need the
     // API socket, and services must be supervised by the server's lifetime
@@ -152,7 +183,33 @@ pub fn run(cli: Cli) -> io::Result<()> {
             &poller,
             &mut next_api_poll_key,
         )?;
-        did_work |= process_api_input(&mut api_connections, &mut app);
+        let mut handoff_requested = false;
+        did_work |= process_api_input(&mut api_connections, &mut app, &mut handoff_requested);
+        if handoff_requested {
+            did_work = true;
+            match perform_handoff(&mut app, &mut api_connections, &poller) {
+                Ok(successor) => {
+                    // Point of no return: the successor holds a copy of
+                    // every PTY fd and has acked. Let the children outlive
+                    // this process and release the listener sockets so the
+                    // successor can bind fresh ones, then signal completion
+                    // and exit without touching the panes again.
+                    app.disarm_pane_children();
+                    socket_cleanup.remove_now();
+                    api_socket_cleanup.remove_now();
+                    let _ = crate::runtime::handoff::write_line(
+                        &successor,
+                        crate::runtime::handoff::COMPLETE,
+                    );
+                    return Ok(());
+                }
+                Err(err) => {
+                    // Nothing was disarmed or unbound: this server stays
+                    // fully functional and keeps serving.
+                    app.note_handoff_abort(&err.to_string());
+                }
+            }
+        }
         did_work |= poll_update_check(&mut update_check_rx, &mut app);
 
         let had_pending_render_before_tick = app.has_pending_render();
@@ -287,7 +344,11 @@ fn accept_api_connections(
     Ok(accepted)
 }
 
-fn process_api_input(connections: &mut [ApiConnection], app: &mut App) -> bool {
+fn process_api_input(
+    connections: &mut [ApiConnection],
+    app: &mut App,
+    handoff_requested: &mut bool,
+) -> bool {
     let mut had_input = false;
     for connection in connections {
         if connection.disconnected {
@@ -303,6 +364,7 @@ fn process_api_input(connections: &mut [ApiConnection], app: &mut App) -> bool {
             if let Some(subscription) = outcome.subscription {
                 connection.subscription = Some(subscription);
             }
+            *handoff_requested |= outcome.handoff_requested;
         }
     }
     had_input
@@ -850,19 +912,122 @@ impl ClientConnection {
     }
 }
 
+/// Serve one accepted `server.handoff` request as the outgoing server:
+/// bind the handoff socket, flush the pending API response so the
+/// successor learns the socket path, wait for it to connect, and run the
+/// header/fd exchange up to the successor's final ack.
+///
+/// Errors anywhere in here leave this server untouched (nothing disarmed,
+/// nothing unbound); the caller logs and keeps serving. The temporary
+/// handoff socket file is removed by its own guard either way.
+fn perform_handoff(
+    app: &mut App,
+    api_connections: &mut Vec<ApiConnection>,
+    poller: &Poller,
+) -> io::Result<UnixStream> {
+    use crate::runtime::handoff::{EXCHANGE_TIMEOUT, FDS_ACK, HEADER_ACK, read_line};
+
+    let handoff_socket = socket_path::handoff_socket_path();
+    socket_path::prepare_listener_socket(&handoff_socket)?;
+    let handoff_listener = UnixListener::bind(&handoff_socket)?;
+    handoff_listener.set_nonblocking(true)?;
+    let _handoff_cleanup = SocketCleanupGuard::new(handoff_socket);
+
+    // Deliver the queued `server.handoff` response (with the socket path)
+    // before waiting for the successor to connect.
+    let deadline = Instant::now() + EXCHANGE_TIMEOUT;
+    while api_connections
+        .iter()
+        .any(|connection| !connection.disconnected && !connection.write_buffer.is_empty())
+    {
+        flush_api_connections(api_connections, poller);
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "timed out flushing the server.handoff response",
+            ));
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    let successor = loop {
+        match handoff_listener.accept() {
+            Ok((stream, _addr)) => break stream,
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "no successor connected to the handoff socket",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        }
+    };
+    successor.set_nonblocking(false)?;
+    successor.set_read_timeout(Some(EXCHANGE_TIMEOUT))?;
+    successor.set_write_timeout(Some(EXCHANGE_TIMEOUT))?;
+
+    // Drain pending pane output first so the replay tails are current.
+    // Bytes the reader threads consume after this snapshot are lost to the
+    // replay (not to the panes), which is why replay is best-effort only.
+    app.tick();
+    let (header, fds) = app.export_handoff()?;
+    let mut header_line = serde_json::to_vec(&header).map_err(io::Error::other)?;
+    header_line.push(b'\n');
+    (&successor).write_all(&header_line)?;
+
+    let ack = read_line(&successor, 4096)?;
+    if ack.trim() != HEADER_ACK {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("expected header ack, got {ack:?}"),
+        ));
+    }
+
+    for batch in fds.chunks(crate::ipc::fdpass::MAX_FDS_PER_MESSAGE) {
+        let raw: Vec<std::os::fd::RawFd> = batch.iter().map(AsRawFd::as_raw_fd).collect();
+        crate::ipc::fdpass::send_with_fds(&successor, b"F", &raw)?;
+    }
+    // The duplicated fds in `fds` drop here; the successor holds its own
+    // copies and this server's originals stay open in the pane backends.
+
+    let ack = read_line(&successor, 4096)?;
+    if ack.trim() != FDS_ACK {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("expected fd ack, got {ack:?}"),
+        ));
+    }
+    Ok(successor)
+}
+
 struct SocketCleanupGuard {
-    path: PathBuf,
+    path: Option<PathBuf>,
 }
 
 impl SocketCleanupGuard {
     fn new(path: PathBuf) -> Self {
-        Self { path }
+        Self { path: Some(path) }
+    }
+
+    /// Remove the socket file immediately and defuse the guard. Used during
+    /// a handoff: the file must disappear before the successor binds, and
+    /// this process's later exit must not delete the successor's socket.
+    fn remove_now(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = fs::remove_file(&path);
+        }
     }
 }
 
 impl Drop for SocketCleanupGuard {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        if let Some(path) = &self.path {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 

@@ -223,7 +223,16 @@ fn check_latest_with_source(
     Ok((newest > current).then(|| newest.to_string()))
 }
 
-pub fn run(command: UpdateCommand) -> Result<String, String> {
+/// Result of a `--check`/`--update` run: the user-facing message plus
+/// whether a new binary was actually installed (drives the live-handoff
+/// hint when a server is running).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateOutcome {
+    pub message: String,
+    pub installed: bool,
+}
+
+pub fn run(command: UpdateCommand) -> Result<UpdateOutcome, String> {
     let request = build_request()?;
     if use_mock_update_source() {
         let source = MockUpdateSource::from_env();
@@ -238,40 +247,50 @@ fn run_with_source(
     source: &dyn UpdateSource,
     command: UpdateCommand,
     request: &UpdateRequest,
-) -> Result<String, String> {
+) -> Result<UpdateOutcome, String> {
     let latest = validated_latest_release(source, request)?;
     let current = parse_semver(&request.current_version)?;
     let newest = parse_semver(&latest.version)?;
     match command {
         UpdateCommand::Check => {
-            if newest > current {
-                Ok(format!(
+            let message = if newest > current {
+                format!(
                     "Update available: {} -> {} ({}/{})",
                     current,
                     newest,
                     std::env::consts::OS,
                     std::env::consts::ARCH
-                ))
+                )
             } else {
-                Ok(format!(
+                format!(
                     "Already up to date: {} ({}/{})",
                     current,
                     std::env::consts::OS,
                     std::env::consts::ARCH
-                ))
-            }
+                )
+            };
+            Ok(UpdateOutcome {
+                message,
+                installed: false,
+            })
         }
         UpdateCommand::Update => {
             if newest <= current {
-                return Ok(format!(
-                    "Already up to date: {} ({}/{})",
-                    current,
-                    std::env::consts::OS,
-                    std::env::consts::ARCH
-                ));
+                return Ok(UpdateOutcome {
+                    message: format!(
+                        "Already up to date: {} ({}/{})",
+                        current,
+                        std::env::consts::OS,
+                        std::env::consts::ARCH
+                    ),
+                    installed: false,
+                });
             }
             source.perform_update(request, &latest)?;
-            Ok(format!("Upgraded spectra from {} to {}", current, newest))
+            Ok(UpdateOutcome {
+                message: format!("Upgraded spectra from {} to {}", current, newest),
+                installed: true,
+            })
         }
     }
 }

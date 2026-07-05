@@ -21,6 +21,8 @@ pub const METHOD_NOT_FOUND: i64 = -32601;
 pub const INVALID_PARAMS: i64 = -32602;
 pub const INTERNAL_ERROR: i64 = -32603;
 pub const PANE_NOT_FOUND: i64 = -32000;
+/// `server.handoff` pre-flight refused (clients attached / too many panes).
+pub const HANDOFF_REFUSED: i64 = -32001;
 
 /// Event names a connection can subscribe to via `events.subscribe`.
 pub const EVENT_NAMES: [&str; 7] = [
@@ -122,6 +124,9 @@ pub struct DispatchOutcome {
     pub response: String,
     /// Set when this request subscribed the connection to event pushes.
     pub subscription: Option<EventSubscription>,
+    /// Set when this request was an accepted `server.handoff`: the server
+    /// loop must flush the response and run the fd transfer.
+    pub handoff_requested: bool,
 }
 
 type MethodError = (i64, String);
@@ -140,6 +145,7 @@ pub fn dispatch(app: &mut App, request: &str) -> DispatchOutcome {
             return DispatchOutcome {
                 response: error_response(Value::Null, PARSE_ERROR, &format!("parse error: {err}")),
                 subscription: None,
+                handoff_requested: false,
             };
         }
     };
@@ -148,25 +154,36 @@ pub fn dispatch(app: &mut App, request: &str) -> DispatchOutcome {
         return DispatchOutcome {
             response: error_response(id, INVALID_PARAMS, "request has no string \"method\" field"),
             subscription: None,
+            handoff_requested: false,
         };
     };
 
     let mut subscription = None;
-    let response = match handle_method(app, method, parsed.get("params"), &mut subscription) {
+    let mut handoff_requested = false;
+    let response = match handle_method(
+        app,
+        method,
+        parsed.get("params"),
+        &mut subscription,
+        &mut handoff_requested,
+    ) {
         Ok(result) => json!({ "id": id, "result": result }).to_string(),
         Err((code, message)) => error_response(id, code, &message),
     };
     DispatchOutcome {
         response,
         subscription,
+        handoff_requested,
     }
 }
 
+#[cfg_attr(not(unix), allow(unused_variables))]
 fn handle_method(
     app: &mut App,
     method: &str,
     params: Option<&Value>,
     subscription: &mut Option<EventSubscription>,
+    handoff_requested: &mut bool,
 ) -> Result<Value, MethodError> {
     match method {
         "session.list" => session_list(app),
@@ -176,6 +193,14 @@ fn handle_method(
         "pane.split" => pane_split(app, params),
         "agent.report" => agent_report(app, params),
         "plugin.list" => plugin_list(app),
+        #[cfg(unix)]
+        "server.handoff" => {
+            let result = app
+                .api_server_handoff()
+                .map_err(|message| (HANDOFF_REFUSED, message))?;
+            *handoff_requested = true;
+            Ok(result)
+        }
         "events.subscribe" => {
             let (result, accepted) = events_subscribe(params)?;
             *subscription = Some(accepted);

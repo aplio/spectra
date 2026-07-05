@@ -5,6 +5,8 @@ mod clients;
 mod command_dispatch;
 mod command_palette;
 mod copy_mode;
+#[cfg(unix)]
+pub mod handoff;
 mod hooks;
 mod input;
 mod persistence;
@@ -91,6 +93,15 @@ pub enum AppSignal {
     DetachClient,
 }
 
+/// Construction inputs shared by every `App` build path (fresh session,
+/// disk restore, live handoff).
+struct AppBootstrap {
+    options: SessionOptions,
+    store: DataStore,
+    runtime_ui: RuntimeUiConfig,
+    started_unix: u64,
+}
+
 pub struct RenderSnapshot {
     pub frame: crate::session::manager::RenderFrame,
     pub status_line: String,
@@ -146,42 +157,13 @@ impl App {
     }
 
     pub fn new_with_size(cli: Cli, cols: u16, rows: u16) -> io::Result<Self> {
-        let app_config = config::load_from_xdg()?;
-
-        let mut options = SessionOptions::from_cli(cli.shell, cli.cwd, cli.command);
-        if options.command.is_empty()
-            && let Some(command) = app_config.initial_command
-        {
-            options.command = vec![command];
-        }
-        if let Some(session_name) = app_config.session_name {
-            options.session_name = session_name;
-        }
-        options.suppress_prompt_eol_marker = app_config.shell.suppress_prompt_eol_marker;
-        options.allow_passthrough = app_config.terminal.allow_passthrough;
-
-        let store = DataStore::from_xdg()?;
+        let AppBootstrap {
+            mut options,
+            store,
+            runtime_ui,
+            started_unix,
+        } = Self::bootstrap_from_cli(cli)?;
         let command_history = CommandHistory::new_with_data_dir(store.base_dir().to_path_buf());
-        let started_unix = unix_time_now();
-        let keys = KeyMapper::with_config(
-            app_config.prefix.as_deref(),
-            app_config.prefix_sticky,
-            &app_config.prefix_bindings,
-            &app_config.global_bindings,
-        );
-        let runtime_ui = RuntimeUiConfig {
-            keys,
-            mouse_enabled: app_config.mouse.enabled,
-            status_format: app_config
-                .status
-                .format
-                .clone()
-                .unwrap_or_else(|| DEFAULT_STATUS_FORMAT.to_string()),
-            status_style: status_style_from_config(&app_config.status),
-            hooks: app_config.hooks.clone(),
-            editor_command: normalize_editor_command(app_config.editor.clone()),
-            agent_notify: app_config.agent.notify,
-        };
 
         if let Some(mut restored) = Self::restore_from_runtime_state(
             &store,
@@ -271,6 +253,54 @@ impl App {
         Ok(app)
     }
 
+    /// Load config and derive everything `App` construction needs that does
+    /// not depend on where the sessions come from (fresh spawn, disk
+    /// restore, or live handoff).
+    fn bootstrap_from_cli(cli: Cli) -> io::Result<AppBootstrap> {
+        let app_config = config::load_from_xdg()?;
+
+        let mut options = SessionOptions::from_cli(cli.shell, cli.cwd, cli.command);
+        if options.command.is_empty()
+            && let Some(command) = app_config.initial_command
+        {
+            options.command = vec![command];
+        }
+        if let Some(session_name) = app_config.session_name {
+            options.session_name = session_name;
+        }
+        options.suppress_prompt_eol_marker = app_config.shell.suppress_prompt_eol_marker;
+        options.allow_passthrough = app_config.terminal.allow_passthrough;
+
+        let store = DataStore::from_xdg()?;
+        let started_unix = unix_time_now();
+        let keys = KeyMapper::with_config(
+            app_config.prefix.as_deref(),
+            app_config.prefix_sticky,
+            &app_config.prefix_bindings,
+            &app_config.global_bindings,
+        );
+        let runtime_ui = RuntimeUiConfig {
+            keys,
+            mouse_enabled: app_config.mouse.enabled,
+            status_format: app_config
+                .status
+                .format
+                .clone()
+                .unwrap_or_else(|| DEFAULT_STATUS_FORMAT.to_string()),
+            status_style: status_style_from_config(&app_config.status),
+            hooks: app_config.hooks.clone(),
+            editor_command: normalize_editor_command(app_config.editor.clone()),
+            agent_notify: app_config.agent.notify,
+        };
+
+        Ok(AppBootstrap {
+            options,
+            store,
+            runtime_ui,
+            started_unix,
+        })
+    }
+
     fn restore_from_runtime_state(
         store: &DataStore,
         started_unix: u64,
@@ -287,20 +317,49 @@ impl App {
             return Ok(None);
         }
 
+        // Any restore failure falls back to a fresh session, preserving the
+        // pre-refactor behavior of this path.
+        match Self::build_from_runtime_state(
+            store,
+            started_unix,
+            session_template,
+            runtime_ui,
+            cols,
+            rows,
+            state,
+            std::sync::Arc::new(crate::session::pty_backend::PtyPaneFactory),
+        ) {
+            Ok(app) => Ok(Some(app)),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Reconstruct an `App` from a runtime-state snapshot, spawning each
+    /// pane through `pane_factory` (real PTYs on disk restore, adopted fds
+    /// on live handoff).
+    #[allow(clippy::too_many_arguments)]
+    fn build_from_runtime_state(
+        store: &DataStore,
+        started_unix: u64,
+        session_template: SessionOptions,
+        runtime_ui: RuntimeUiConfig,
+        cols: u16,
+        rows: u16,
+        state: AppRuntimeState,
+        pane_factory: std::sync::Arc<dyn crate::session::pty_backend::PaneFactory>,
+    ) -> io::Result<Self> {
         let mut sessions = Vec::new();
         for session_state in state.sessions {
             let mut options = session_template.clone();
             options.session_name = session_state.session.session_name.clone();
             options.session_id = session_state.session_id.clone();
-            let session = match SessionManager::from_runtime_snapshot(
+            let session = SessionManager::with_factory_from_runtime_snapshot(
                 options,
+                std::sync::Arc::clone(&pane_factory),
                 session_state.session,
                 cols,
                 rows,
-            ) {
-                Ok(session) => session,
-                Err(_) => return Ok(None),
-            };
+            )?;
             sessions.push(ManagedSession {
                 ordinal: session_state.ordinal,
                 session_id: session_state.session_id,
@@ -315,7 +374,10 @@ impl App {
             });
         }
         if sessions.is_empty() {
-            return Ok(None);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "runtime state has no sessions",
+            ));
         }
 
         let active_session = state.active_session.min(sessions.len().saturating_sub(1));
@@ -377,7 +439,7 @@ impl App {
         app.restore_active_client_focus_profile(LOCAL_CLIENT_FOCUS_IDENTITY);
         app.capture_active_client_focus_profile();
 
-        Ok(Some(app))
+        Ok(app)
     }
 
     pub fn run(&mut self, stdout: &mut std::io::Stdout) -> io::Result<()> {

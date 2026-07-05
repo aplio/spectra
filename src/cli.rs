@@ -12,6 +12,7 @@ pub enum CliMode {
     Check,
     RemoteAttach,
     RemoteClientBridge,
+    ServerHandoff,
     Integration,
 }
 
@@ -121,6 +122,15 @@ pub enum CliCommand {
     /// Internal: relay stdio to the local client socket (remote end of --remote).
     #[command(hide = true)]
     RemoteClientBridge,
+    /// Hand the running server's panes over to this binary without killing
+    /// them (zero-downtime upgrade; refused while clients are attached).
+    #[command(hide = true)]
+    ServerHandoff {
+        /// Internal: perform the takeover in this process (become the new
+        /// server) instead of spawning a detached one.
+        #[arg(long, hide = true)]
+        foreground: bool,
+    },
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -182,6 +192,8 @@ impl Cli {
             CliMode::Check
         } else if matches!(self.subcommand, Some(CliCommand::RemoteClientBridge)) {
             CliMode::RemoteClientBridge
+        } else if matches!(self.subcommand, Some(CliCommand::ServerHandoff { .. })) {
+            CliMode::ServerHandoff
         } else if self.remote.is_some() {
             CliMode::RemoteAttach
         } else if matches!(self.subcommand, Some(CliCommand::Api { .. })) {
@@ -596,6 +608,35 @@ mod tests {
         let err = Cli::try_parse_from(["spectra", "--help"]).expect_err("help exits parse");
         assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
         assert!(!err.to_string().contains("remote-client-bridge"));
+    }
+
+    #[test]
+    fn parses_server_handoff_subcommand() {
+        let cli = Cli::try_parse_from(["spectra", "server-handoff"]).expect("parse handoff");
+        assert!(matches!(
+            cli.subcommand,
+            Some(CliCommand::ServerHandoff { foreground: false })
+        ));
+        assert_eq!(cli.mode(), CliMode::ServerHandoff);
+        assert!(cli.validate().is_ok());
+    }
+
+    #[test]
+    fn parses_server_handoff_foreground_flag() {
+        let cli = Cli::try_parse_from(["spectra", "server-handoff", "--foreground"])
+            .expect("parse handoff foreground");
+        assert!(matches!(
+            cli.subcommand,
+            Some(CliCommand::ServerHandoff { foreground: true })
+        ));
+        assert_eq!(cli.mode(), CliMode::ServerHandoff);
+    }
+
+    #[test]
+    fn server_handoff_is_hidden_from_help() {
+        let err = Cli::try_parse_from(["spectra", "--help"]).expect_err("help exits parse");
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+        assert!(!err.to_string().contains("server-handoff"));
     }
 
     #[test]

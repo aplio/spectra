@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 const APP_ID: &str = "spectra";
 const SOCKET_FILE: &str = "spectra.sock";
 const API_SOCKET_FILE: &str = "spectra-api.sock";
+const HANDOFF_SOCKET_FILE: &str = "spectra-handoff.sock";
 
 pub fn socket_path() -> PathBuf {
     runtime_socket_path(SOCKET_FILE)
@@ -14,6 +15,12 @@ pub fn socket_path() -> PathBuf {
 
 pub fn api_socket_path() -> PathBuf {
     runtime_socket_path(API_SOCKET_FILE)
+}
+
+/// Socket used only during a live server handoff; bound by the outgoing
+/// server when a `server.handoff` request is accepted.
+pub fn handoff_socket_path() -> PathBuf {
+    runtime_socket_path(HANDOFF_SOCKET_FILE)
 }
 
 fn runtime_socket_path(file_name: &str) -> PathBuf {

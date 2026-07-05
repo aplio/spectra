@@ -3,6 +3,11 @@ use std::io;
 use crate::io::host_colors::HostColors;
 use crate::session::terminal_state::{StyledCell, TerminalEvent, TerminalState};
 
+/// Raw output retained per pane for replay across a live server handoff.
+/// Kept small on purpose: enough to repaint the visible screen, not the
+/// scrollback (herdr uses the same 8 KiB budget).
+pub const MAX_REPLAY_BYTES_PER_PANE: usize = 8 * 1024;
+
 pub trait PaneBackend: Send {
     fn write(&mut self, bytes: &[u8]) -> io::Result<()>;
     fn resize(&mut self, cols: u16, rows: u16) -> io::Result<()>;
@@ -15,6 +20,16 @@ pub trait PaneBackend: Send {
     fn child_pid(&self) -> Option<u32> {
         None
     }
+    /// Raw PTY master fd for a live server handoff; `None` when the backend
+    /// has no transferable descriptor (fake/test backends).
+    #[cfg(unix)]
+    fn handoff_master_fd(&self) -> Option<std::os::fd::RawFd> {
+        None
+    }
+    /// Stop killing the pane child when this backend drops. Called by the
+    /// outgoing server once its successor has acked receipt of the PTY fds,
+    /// so process exit leaves the children running.
+    fn disarm_child_kill(&mut self) {}
 }
 
 pub struct Pane {
@@ -23,6 +38,9 @@ pub struct Pane {
     view_scroll_offset: usize,
     pending_passthrough: Vec<Vec<u8>>,
     pending_terminal_events: Vec<TerminalEvent>,
+    /// Last ≤[`MAX_REPLAY_BYTES_PER_PANE`] raw output bytes, kept so a live
+    /// server handoff can repaint the pane in the successor process.
+    replay_tail: Vec<u8>,
 }
 
 impl Pane {
@@ -38,6 +56,7 @@ impl Pane {
             view_scroll_offset: 0,
             pending_passthrough: Vec::new(),
             pending_terminal_events: Vec::new(),
+            replay_tail: Vec::new(),
         }
     }
 
@@ -85,6 +104,7 @@ impl Pane {
         };
         for chunk in self.backend.poll_output() {
             self.terminal.feed(&chunk);
+            self.push_replay_tail(&chunk);
             self.pending_passthrough
                 .extend(self.terminal.drain_passthrough());
             self.pending_terminal_events
@@ -283,6 +303,49 @@ impl Pane {
     pub fn child_pid(&self) -> Option<u32> {
         self.backend.child_pid()
     }
+
+    /// Raw PTY master fd for a live server handoff, when the backend has one.
+    #[cfg(unix)]
+    pub fn handoff_master_fd(&self) -> Option<std::os::fd::RawFd> {
+        self.backend.handoff_master_fd()
+    }
+
+    /// See [`PaneBackend::disarm_child_kill`].
+    pub fn disarm_child_kill(&mut self) {
+        self.backend.disarm_child_kill();
+    }
+
+    /// Last ≤[`MAX_REPLAY_BYTES_PER_PANE`] raw output bytes seen by this pane.
+    pub fn replay_tail(&self) -> &[u8] {
+        &self.replay_tail
+    }
+
+    /// Feed transferred replay bytes straight into the terminal state after
+    /// a live handoff. Side effects are discarded: passthrough frames and
+    /// terminal responses were already delivered by the previous server, so
+    /// re-emitting them would duplicate output or inject stray bytes.
+    pub fn feed_replay(&mut self, bytes: &[u8]) {
+        self.terminal.feed(bytes);
+        let _ = self.terminal.drain_passthrough();
+        let _ = self.terminal.drain_events();
+        let _ = self.terminal.drain_responses();
+        self.push_replay_tail(bytes);
+    }
+
+    fn push_replay_tail(&mut self, bytes: &[u8]) {
+        if bytes.len() >= MAX_REPLAY_BYTES_PER_PANE {
+            self.replay_tail.clear();
+            self.replay_tail
+                .extend_from_slice(&bytes[bytes.len() - MAX_REPLAY_BYTES_PER_PANE..]);
+            return;
+        }
+        let overflow =
+            (self.replay_tail.len() + bytes.len()).saturating_sub(MAX_REPLAY_BYTES_PER_PANE);
+        if overflow > 0 {
+            self.replay_tail.drain(..overflow);
+        }
+        self.replay_tail.extend_from_slice(bytes);
+    }
 }
 
 pub struct FakeBackend {
@@ -314,5 +377,49 @@ impl PaneBackend for FakeBackend {
 
     fn poll_output(&mut self) -> Vec<Vec<u8>> {
         std::mem::take(&mut self.output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FakeBackend, MAX_REPLAY_BYTES_PER_PANE, Pane};
+
+    fn pane_with_output(chunks: Vec<Vec<u8>>) -> Pane {
+        Pane::new(80, 24, false, Box::new(FakeBackend::new(chunks)))
+    }
+
+    #[test]
+    fn replay_tail_records_polled_output() {
+        let mut pane = pane_with_output(vec![b"hello ".to_vec(), b"world".to_vec()]);
+        assert!(pane.poll_output());
+        assert_eq!(pane.replay_tail(), b"hello world");
+    }
+
+    #[test]
+    fn replay_tail_is_capped_at_the_replay_budget() {
+        let big = vec![b'x'; MAX_REPLAY_BYTES_PER_PANE + 100];
+        let mut pane = pane_with_output(vec![big]);
+        assert!(pane.poll_output());
+        assert_eq!(pane.replay_tail().len(), MAX_REPLAY_BYTES_PER_PANE);
+
+        // Small chunks after a full tail keep only the newest bytes.
+        let mut pane = pane_with_output(vec![
+            vec![b'a'; MAX_REPLAY_BYTES_PER_PANE],
+            b"tail-marker".to_vec(),
+        ]);
+        assert!(pane.poll_output());
+        let tail = pane.replay_tail();
+        assert_eq!(tail.len(), MAX_REPLAY_BYTES_PER_PANE);
+        assert!(tail.ends_with(b"tail-marker"));
+    }
+
+    #[test]
+    fn feed_replay_populates_grid_without_response_side_effects() {
+        let mut pane = pane_with_output(vec![]);
+        // Include a cursor-position query: the reply must be discarded, not
+        // written back to the (already answered) guest.
+        pane.feed_replay(b"restored-line\x1b[6n");
+        assert!(pane.row_text(0).contains("restored-line"));
+        assert_eq!(pane.replay_tail(), b"restored-line\x1b[6n");
     }
 }
