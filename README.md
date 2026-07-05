@@ -329,7 +329,7 @@ Global data files:
 - prefix `Ctrl+s` save current layout
 - prefix `l` append a manual log line
 - prefix `P` write focused pane scrollback
-- cursor mode keys: `h/j/k/l` or arrows move (clears anchor), `w/b/e` word motions (set anchor), `0/$` start/end of line (clear anchor), `v` toggles selection anchor, `x` selects current line then extends linewise downward on repeat, `y` copies to clipboard, `Esc`/`q` leaves mode
+- cursor mode keys: `h/j/k/l` or arrows move (drops a word-motion selection; extends a `v` selection), `w/b/e` word motions (select the traversed word outside visual mode), `0/$` start/end of line, `v` toggles a vi-style visual selection anchored at the cursor, `x` selects current line then extends linewise downward on repeat, `y` copies to clipboard and leaves the mode, `Esc`/`q` leaves mode
 - cursor mode `w/b/e` follows gargo-like classes (`word`, `punctuation`, `whitespace`): punctuation blocks such as `@` are stepped through distinctly and motion can cross line boundaries
 - command palette `Open current pane buffer in editor` writes focused pane scrollback, opens a new window running `${editor} <scrollback-file>`, and auto-closes that window when the editor exits
 - command palette action execution uses each action’s own mode transition, so selecting `session.peek_all_windows` now enters peek mode directly from the palette instead of staying in normal mode

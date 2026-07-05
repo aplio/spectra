@@ -210,6 +210,9 @@ pub(super) struct CursorModeState {
     pub styled_lines: Vec<Vec<StyledCell>>,
     pub cursor: CursorModePoint,
     pub selection_anchor: Option<CursorModePoint>,
+    /// True while a `v` visual selection is active: movement then extends
+    /// the selection instead of dropping the anchor.
+    pub visual: bool,
     pub viewport_top: usize,
 }
 

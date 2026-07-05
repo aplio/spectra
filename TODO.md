@@ -18,7 +18,7 @@
 - [ ] `spectra --version` 対応(gargo風) — **リポジトリでは実装済み**(コミット3a3a094、`spectra 0.1.5` を出力)。
       インストール済みバイナリが古いだけ。対応=リリース(Cargo.tomlのversion bump → push → tag → `--update`/install.sh で配布)。
       本バッチ完了時に 0.2.0 へ bump するか要確認 → とりあえず bump して push する方針
-- [ ] cursor mode の `v` anchor toggle が効かない疑い(v→cursor rightで選択されずyankも不発)。再現テスト→修正
+- [x] DONE cursor mode の `v` anchor toggle が効かない疑い — 原因判明: 移動キーが無条件に selection_anchor をクリアしていた。`visual` フラグ導入で v 選択は移動で伸長し、y はヤンク後 Normal へ戻る(vi 準拠)
 - [ ] windowtree(SideWindowTree)の左端固定(x=0)ジオメトリのhardcode修正(P4の既知項目)
 - [ ] enter/leave cursor mode のアクションを command palette で文脈フィルタ(cursor mode中はleaveのみ、normal中はenterのみ表示)
 - [ ] アーキテクチャ+テストカバレッジの再確認。カバレッジの穴にテストを実装(最後に実施)

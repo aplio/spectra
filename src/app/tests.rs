@@ -3299,6 +3299,7 @@ fn cursor_mode_movement_and_word_navigation() {
             styled_lines: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 0 },
             selection_anchor: None,
+            visual: false,
             viewport_top: 0,
         },
     };
@@ -3367,6 +3368,7 @@ fn cursor_mode_word_navigation_crosses_lines_like_gargo() {
             styled_lines: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 0 },
             selection_anchor: None,
+            visual: false,
             viewport_top: 0,
         },
     };
@@ -3414,6 +3416,7 @@ fn cursor_mode_word_navigation_handles_punctuation_blocks_like_gargo() {
             styled_lines: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 0 },
             selection_anchor: None,
+            visual: false,
             viewport_top: 0,
         },
     };
@@ -3464,6 +3467,7 @@ fn cursor_mode_word_end_navigation_crosses_lines_like_gargo() {
             styled_lines: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 4 },
             selection_anchor: None,
+            visual: false,
             viewport_top: 0,
         },
     };
@@ -3495,6 +3499,7 @@ fn cursor_mode_word_end_navigation_handles_punctuation_blocks_like_gargo() {
             styled_lines: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 0 },
             selection_anchor: None,
+            visual: false,
             viewport_top: 0,
         },
     };
@@ -3538,6 +3543,7 @@ fn cursor_mode_v_toggles_selection_anchor() {
             styled_lines: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 4 },
             selection_anchor: None,
+            visual: false,
             viewport_top: 0,
         },
     };
@@ -3570,6 +3576,7 @@ fn cursor_mode_space_does_not_toggle_selection_anchor() {
             styled_lines: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 4 },
             selection_anchor: Some(super::CursorModePoint { line: 0, col: 1 }),
+            visual: false,
             viewport_top: 0,
         },
     };
@@ -3596,6 +3603,7 @@ fn cursor_mode_x_selects_current_line() {
             styled_lines: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 3 },
             selection_anchor: None,
+            visual: false,
             viewport_top: 0,
         },
     };
@@ -3623,6 +3631,7 @@ fn cursor_mode_x_extends_line_selection_down() {
             styled_lines: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 2 },
             selection_anchor: None,
+            visual: false,
             viewport_top: 0,
         },
     };
@@ -3652,6 +3661,7 @@ fn cursor_mode_x_at_last_line_does_not_move_past_buffer_end() {
             styled_lines: Vec::new(),
             cursor: super::CursorModePoint { line: 1, col: 1 },
             selection_anchor: None,
+            visual: false,
             viewport_top: 0,
         },
     };
@@ -3679,6 +3689,7 @@ fn cursor_mode_selection_extracts_multiline_text() {
         styled_lines: Vec::new(),
         cursor: super::CursorModePoint { line: 2, col: 2 },
         selection_anchor: Some(super::CursorModePoint { line: 0, col: 1 }),
+        visual: false,
         viewport_top: 0,
     };
 
@@ -3740,7 +3751,7 @@ fn cursor_mode_copy_for_remote_client_queues_clipboard_ansi() {
 }
 
 #[test]
-fn cursor_mode_y_keeps_mode_active() {
+fn cursor_mode_y_exits_to_normal_mode() {
     let mut app = build_app_with_history();
     app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
         .expect("enter prefix");
@@ -3750,7 +3761,81 @@ fn cursor_mode_y_keeps_mode_active() {
     app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))
         .expect("copy with y");
 
-    assert!(matches!(app.view.input_mode, InputMode::CursorMode { .. }));
+    assert!(matches!(app.view.input_mode, InputMode::Normal));
+}
+
+#[test]
+fn cursor_mode_v_then_movement_keeps_selection_and_y_yanks_range() {
+    let mut app = build_app_with_history();
+    let remote_client_id = 43;
+    app.register_client(remote_client_id, 80, 24);
+
+    for key in [
+        KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('0'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+    ] {
+        app.handle_key_event_for_client(remote_client_id, key)
+            .expect("cursor mode key");
+    }
+
+    {
+        let client_view = app
+            .inactive_client_states
+            .get(&remote_client_id)
+            .expect("remote client state");
+        let InputMode::CursorMode { state } = &client_view.input_mode else {
+            panic!("expected cursor mode");
+        };
+        assert_eq!(
+            state.selection_anchor,
+            Some(super::CursorModePoint { line: 2, col: 0 }),
+            "v anchor must survive cursor movement"
+        );
+        assert_eq!(state.cursor, super::CursorModePoint { line: 2, col: 2 });
+        assert_eq!(App::cursor_mode_selected_text(state), "gam");
+    }
+
+    app.handle_key_event_for_client(
+        remote_client_id,
+        KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+    )
+    .expect("yank selection");
+
+    assert_eq!(
+        app.take_pending_clipboard_ansi_for_client(remote_client_id),
+        vec![crate::clipboard::osc52_sequence("gam")]
+    );
+    let client_view = app
+        .inactive_client_states
+        .get(&remote_client_id)
+        .expect("remote client state");
+    assert!(matches!(client_view.input_mode, InputMode::Normal));
+}
+
+#[test]
+fn cursor_mode_v_toggle_off_then_movement_clears_selection() {
+    let mut app = build_app_with_history();
+    for key in [
+        KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
+    ] {
+        app.handle_key(key).expect("cursor mode key");
+    }
+
+    let InputMode::CursorMode { state } = &app.view.input_mode else {
+        panic!("expected cursor mode");
+    };
+    assert!(
+        state.selection_anchor.is_none(),
+        "second v must leave visual mode"
+    );
 }
 
 #[test]

@@ -34,56 +34,64 @@ impl App {
             KeyCode::Esc => return InputMode::Normal,
             KeyCode::Char('q') if !has_ctrl_or_alt => return InputMode::Normal,
             KeyCode::Char('h') | KeyCode::Left if !has_ctrl_or_alt => {
-                state.selection_anchor = None;
+                Self::cursor_mode_drop_transient_selection(&mut state);
                 Self::cursor_mode_move_left(&mut state);
             }
             KeyCode::Char('l') | KeyCode::Right if !has_ctrl_or_alt => {
-                state.selection_anchor = None;
+                Self::cursor_mode_drop_transient_selection(&mut state);
                 Self::cursor_mode_move_right(&mut state);
             }
             KeyCode::Char('j') | KeyCode::Down if !has_ctrl_or_alt => {
-                state.selection_anchor = None;
+                Self::cursor_mode_drop_transient_selection(&mut state);
                 Self::cursor_mode_move_vertical(&mut state, 1);
             }
             KeyCode::Char('k') | KeyCode::Up if !has_ctrl_or_alt => {
-                state.selection_anchor = None;
+                Self::cursor_mode_drop_transient_selection(&mut state);
                 Self::cursor_mode_move_vertical(&mut state, -1);
             }
             KeyCode::PageUp if !has_ctrl_or_alt => {
-                state.selection_anchor = None;
+                Self::cursor_mode_drop_transient_selection(&mut state);
                 let jump = view_rows.saturating_sub(1).max(1) as isize;
                 Self::cursor_mode_move_vertical(&mut state, -jump);
             }
             KeyCode::PageDown if !has_ctrl_or_alt => {
-                state.selection_anchor = None;
+                Self::cursor_mode_drop_transient_selection(&mut state);
                 let jump = view_rows.saturating_sub(1).max(1) as isize;
                 Self::cursor_mode_move_vertical(&mut state, jump);
             }
             KeyCode::Char('0') if !has_ctrl_or_alt => {
-                state.selection_anchor = None;
+                Self::cursor_mode_drop_transient_selection(&mut state);
                 state.cursor.col = 0;
             }
             KeyCode::Char('$') if !has_ctrl_or_alt => {
-                state.selection_anchor = None;
+                Self::cursor_mode_drop_transient_selection(&mut state);
                 let len = Self::cursor_mode_line_char_len(&state, state.cursor.line);
                 state.cursor.col = len.saturating_sub(1);
             }
             KeyCode::Char('w') if !has_ctrl_or_alt => {
-                state.selection_anchor = Some(state.cursor);
+                if !state.visual {
+                    state.selection_anchor = Some(state.cursor);
+                }
                 state.cursor = Self::cursor_mode_word_forward_point(&state, state.cursor);
             }
             KeyCode::Char('b') if !has_ctrl_or_alt => {
-                state.selection_anchor = Some(state.cursor);
+                if !state.visual {
+                    state.selection_anchor = Some(state.cursor);
+                }
                 state.cursor = Self::cursor_mode_word_backward_point(&state, state.cursor);
             }
             KeyCode::Char('e') if !has_ctrl_or_alt => {
-                state.selection_anchor = Some(state.cursor);
+                if !state.visual {
+                    state.selection_anchor = Some(state.cursor);
+                }
                 state.cursor = Self::cursor_mode_word_end_point(&state, state.cursor);
             }
             KeyCode::Char('v') if !has_ctrl_or_alt => {
-                if state.selection_anchor == Some(state.cursor) {
+                if state.visual {
+                    state.visual = false;
                     state.selection_anchor = None;
                 } else {
+                    state.visual = true;
                     state.selection_anchor = Some(state.cursor);
                 }
             }
@@ -96,7 +104,9 @@ impl App {
                 }
             }
             KeyCode::Char('y') if !has_ctrl_or_alt => {
-                self.cursor_mode_copy_selection(&state);
+                if self.cursor_mode_copy_selection(&state) {
+                    return InputMode::Normal;
+                }
             }
             KeyCode::Enter if !has_ctrl_or_alt => return InputMode::Normal,
             _ => {}
@@ -210,6 +220,7 @@ impl App {
                 col: cursor_col,
             },
             selection_anchor: None,
+            visual: false,
             viewport_top,
         };
         Self::cursor_mode_clamp_cursor(&mut state);
@@ -261,18 +272,34 @@ impl App {
         parts.join("\n")
     }
 
-    fn cursor_mode_copy_selection(&mut self, state: &CursorModeState) {
+    /// Copies the current selection (or line) and returns `true` when the
+    /// text made it to the clipboard.
+    fn cursor_mode_copy_selection(&mut self, state: &CursorModeState) -> bool {
         let text = Self::cursor_mode_selected_text(state);
         if text.is_empty() {
             self.set_message("cursor mode: nothing to copy", Duration::from_secs(2));
-            return;
+            return false;
         }
         match self.copy_text_for_active_client(&text) {
-            Ok(()) => self.set_message("copied to clipboard", Duration::from_secs(2)),
-            Err(err) => self.set_message(
-                &format!("clipboard copy failed: {err}"),
-                Duration::from_secs(3),
-            ),
+            Ok(()) => {
+                self.set_message("copied to clipboard", Duration::from_secs(2));
+                true
+            }
+            Err(err) => {
+                self.set_message(
+                    &format!("clipboard copy failed: {err}"),
+                    Duration::from_secs(3),
+                );
+                false
+            }
+        }
+    }
+
+    /// Drops a transient (word-motion) selection before plain movement; a
+    /// `v` visual selection stays anchored and extends instead.
+    fn cursor_mode_drop_transient_selection(state: &mut CursorModeState) {
+        if !state.visual {
+            state.selection_anchor = None;
         }
     }
 
