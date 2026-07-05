@@ -9,6 +9,11 @@ pub trait PaneBackend: Send {
     fn is_closed(&mut self) -> bool {
         false
     }
+    /// Pid of the process spawned for this pane, when known (real PTY
+    /// backends only). Used for best-effort agent detection.
+    fn child_pid(&self) -> Option<u32> {
+        None
+    }
 }
 
 pub struct Pane {
@@ -250,6 +255,10 @@ impl Pane {
 
     pub fn is_closed(&mut self) -> bool {
         self.backend.is_closed()
+    }
+
+    pub fn child_pid(&self) -> Option<u32> {
+        self.backend.child_pid()
     }
 }
 

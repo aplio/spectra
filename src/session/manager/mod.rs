@@ -273,7 +273,13 @@ impl SessionManager {
     }
 
     pub fn poll_output(&mut self) -> bool {
-        let mut changed = false;
+        !self.poll_output_changed_panes().is_empty()
+    }
+
+    /// Poll all panes for pending output and return the ids of panes whose
+    /// terminal content changed.
+    pub fn poll_output_changed_panes(&mut self) -> Vec<PaneId> {
+        let mut changed_panes = Vec::new();
         let mut pane_ids = self.panes.keys().copied().collect::<Vec<_>>();
         pane_ids.sort_unstable();
 
@@ -281,7 +287,9 @@ impl SessionManager {
             let Some(pane) = self.panes.get_mut(&pane_id) else {
                 continue;
             };
-            changed |= pane.poll_output();
+            if pane.poll_output() {
+                changed_panes.push(pane_id);
+            }
             self.pending_passthrough.extend(pane.take_passthrough());
             self.pending_terminal_events.extend(
                 pane.take_terminal_events()
@@ -289,7 +297,7 @@ impl SessionManager {
                     .map(|event| PaneTerminalEvent { pane_id, event }),
             );
         }
-        changed
+        changed_panes
     }
 
     pub fn take_passthrough_output(&mut self) -> Vec<Vec<u8>> {
@@ -410,6 +418,22 @@ impl SessionManager {
 
     pub fn pane_screen_rows(&self, pane_id: PaneId) -> Option<usize> {
         self.panes.get(&pane_id).map(Pane::screen_rows)
+    }
+
+    /// The pane's visible screen rows as text, top to bottom (independent of
+    /// any scrollback view offset).
+    pub fn pane_screen_lines(&self, pane_id: PaneId) -> Option<Vec<String>> {
+        let pane = self.panes.get(&pane_id)?;
+        Some(
+            (0..pane.screen_rows())
+                .map(|row| pane.row_text(row))
+                .collect(),
+        )
+    }
+
+    /// Pid of the process spawned for the pane, when the backend knows it.
+    pub fn pane_child_pid(&self, pane_id: PaneId) -> Option<u32> {
+        self.panes.get(&pane_id)?.child_pid()
     }
 
     pub fn pane_absolute_row_cells(

@@ -1771,6 +1771,7 @@ dependencies = [
  "clap",
  "crossterm",
  "portable-pty",
+ "regex",
  "rusqlite",
  "self_update",
  "semver",

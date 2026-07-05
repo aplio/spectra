@@ -262,6 +262,10 @@ impl PaneBackend for PtyPaneBackend {
         chunks
     }
 
+    fn child_pid(&self) -> Option<u32> {
+        self.child.process_id()
+    }
+
     fn is_closed(&mut self) -> bool {
         if self.exited {
             return true;

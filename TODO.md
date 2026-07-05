@@ -14,7 +14,7 @@
 | configでのkeybind | **実装済み**。`[prefix_bindings]`/`[global_bindings]` で上書き・unbind・prefix変更可 (`src/config.rs:28`, `src/input/keymap.rs:83`)。ただし固定enum約40アクションのみ、シェルコマンドは割当不可 |
 | sidebar | **実装済み**(window list)。`prefix e` の `SideWindowTree` (`src/ui/render.rs:40`)。左端固定・拡張には形になる下地あり |
 | herdrのremote attach | **なし**。Unix socketローカルのみ |
-| agent integration (plugin形式) | **なし**。あるのは `[hooks]`(ライフサイクル6種のシェル実行, `src/app/hooks.rs`)のみ |
+| agent integration (plugin形式) | **検知コアあり**。manifest駆動のAgentState検知(`src/agent/`, Claude 1種)+status bar `{agent}`トークン+`pane.list` の `agent` フィールド。hook/通知/sidebar/plugin配布は未 |
 
 ---
 
@@ -99,11 +99,11 @@ herdrの実装 (`src/detect/`) は**4層の独立シグナル**の合成。状�
 「done」の扱いが上手い: **done = idle && 未閲覧**。paneをフォーカスすると seen=true になり done→idle に落ちる(状態として保存しない)。
 
 spectraタスク:
-- [ ] `AgentState` enum + pane毎の検知結果保持
-- [ ] マニフェスト駆動ルールエンジン(まずClaude Code 1種のTOMLから。P1のOSC titleトラッカーを流用)
-- [ ] プロセス名フォールバック検知
+- [x] DONE `AgentState` enum + pane毎の検知結果保持 — `unknown/idle/working/blocked` + `AgentStatus{kind,state,since}` を `ManagedSession` 毎に保持。tickで出力変化paneのみ・pane毎200msスロットルで再検知、`pane.list` の `agent` フィールドと status `{agent}` トークン(デフォルトformatには未追加)で露出
+- [x] DONE マニフェスト駆動ルールエンジン — TOML(`priority`+`contains/regex/any/all/not`× region `bottom_non_empty_lines(N)`/`osc_title`)を `src/agent/manifest.rs` で実装。Claude 1種の組み込みmanifest(`src/agent/manifests/claude.toml`, include_str!)のみ・ホットリロードと `agent explain` は未
+- [x] DONE プロセス名フォールバック検知 — Linux-only best effort。`PaneBackend::child_pid` → `/proc/<child>/stat` tpgid → `/proc/<tpgid>/cmdline` argv[0] basename を `process_names` と照合。失敗は全てNone(パニックなし)
 - [ ] P2のAPI経由 `pane.report_agent` メソッド + Claude Code hookスクリプト(integration install コマンド)
-- [ ] 状態変化 → status bar / sidebar 表示 + (任意)ホスト端末へのdesktop notification(herdr `src/terminal_notify.rs` は端末種別ごとにOSC通知方式を出し分け)
+- [ ] 状態変化 → sidebar 表示 + (任意)ホスト端末へのdesktop notification(herdr `src/terminal_notify.rs` は端末種別ごとにOSC通知方式を出し分け)。done(=idle&&未閲覧)導出も未
 - [ ] plugin形式にするなら: 検知マニフェスト+hookスクリプトを plugin manifest に同梱して配布、という切り方が自然
 
 ---

@@ -1,0 +1,53 @@
+# Claude Code detection manifest.
+#
+# Rule priorities: blocked > working > idle. Rules are conservative on
+# purpose; when nothing matches, presence falls back to the OSC title marker
+# or the foreground process name, yielding state "unknown".
+
+name = "claude"
+display_name = "Claude Code"
+process_names = ["claude", "claude-code"]
+title_markers = ["✳"]
+
+# Selection caret on a numbered option: permission dialogs, plan approval,
+# and other menus that stop the agent until the user answers.
+[[rules]]
+priority = 110
+state = "blocked"
+region = { bottom_non_empty_lines = 12 }
+regex = '(?m)^\s*(?:│\s*)?❯\s*\d+\.'
+
+# Permission prompt wording plus a numbered Yes option. Requiring both keeps
+# ordinary "Do you want ...?" chat text from tripping the rule.
+[[rules]]
+priority = 100
+state = "blocked"
+region = { bottom_non_empty_lines = 12 }
+any = ["Do you want", "Would you like"]
+all = ["1. Yes"]
+
+# Spinner status line shown while a turn is running.
+[[rules]]
+priority = 50
+state = "working"
+region = { bottom_non_empty_lines = 6 }
+contains = "esc to interrupt"
+
+# Input box at rest with the shortcuts hint underneath.
+[[rules]]
+priority = 12
+state = "idle"
+region = { bottom_non_empty_lines = 6 }
+contains = "? for shortcuts"
+not = "esc to interrupt"
+
+# Input box at rest: a "> " prompt line together with the rounded box
+# borders. The border requirement keeps plain-shell "> " continuation
+# prompts from matching.
+[[rules]]
+priority = 10
+state = "idle"
+region = { bottom_non_empty_lines = 6 }
+regex = '(?m)^\s*(?:│\s*)?>\s'
+all = ["╭─", "╰─"]
+not = "esc to interrupt"

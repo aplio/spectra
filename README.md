@@ -255,6 +255,7 @@ Status format tokens:
 - `{window_index}` `{window_count}` `{window_id}`
 - `{pane_id}` `{pane_index}` `{pane_count}`
 - `{prefix}` `{lock}` `{zoom}` `{sync}` `{mouse}` `{message}`
+- `{agent}` — detected AI agent of the focused pane as `kind:state` (for example `claude:working`; states `unknown`/`idle`/`working`/`blocked`), empty when none. Not part of the default format; add it to `[status].format` to use it. The same detection result is exposed as the `agent` field of JSON-RPC `pane.list`
 
 Status style defaults:
 - `[status].background = "#2E3440"`

@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use crate::agent::AgentStatus;
 
 use crossterm::style::Color;
 use serde::{Deserialize, Serialize};
@@ -21,6 +23,30 @@ pub(super) struct ManagedSession {
     pub pane_auto_names: HashMap<usize, String>,
     pub terminal_titles: HashMap<usize, String>,
     pub cwd_fallbacks: HashMap<usize, String>,
+    pub agents: AgentTracking,
+}
+
+/// Per-session AI-agent detection state, keyed by pane id.
+#[derive(Debug, Default)]
+pub(super) struct AgentTracking {
+    /// Latest detection result per pane; absent = no agent detected.
+    pub statuses: HashMap<usize, AgentStatus>,
+    /// When detection last ran per pane (throttle bookkeeping).
+    pub last_run: HashMap<usize, Instant>,
+    /// Panes whose output changed but whose detection was throttled.
+    pub pending: HashSet<usize>,
+}
+
+impl AgentTracking {
+    /// Drop bookkeeping for panes that no longer exist. Returns true when a
+    /// visible status entry was removed.
+    pub fn prune_closed_panes(&mut self, pane_exists: impl Fn(usize) -> bool) -> bool {
+        let before = self.statuses.len();
+        self.statuses.retain(|pane_id, _| pane_exists(*pane_id));
+        self.last_run.retain(|pane_id, _| pane_exists(*pane_id));
+        self.pending.retain(|pane_id| pane_exists(*pane_id));
+        self.statuses.len() != before
+    }
 }
 
 pub(super) enum InputMode {
@@ -199,6 +225,8 @@ pub(super) const DEFAULT_STATUS_FG: Color = Color::Rgb {
     g: 0xDE,
     b: 0xE9,
 };
+/// Minimum interval between agent-detection runs for one pane.
+pub(super) const AGENT_DETECT_INTERVAL: Duration = Duration::from_millis(200);
 pub(super) const TREE_PREVIEW_MAX_LINES: usize = 400;
 pub(super) const TREE_PREVIEW_EMPTY: &str = "no pane output";
 pub(super) const LOCAL_CLIENT_FOCUS_IDENTITY: &str = "local";

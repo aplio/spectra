@@ -189,6 +189,7 @@ impl App {
             pane_auto_names: HashMap::new(),
             terminal_titles: HashMap::new(),
             cwd_fallbacks: HashMap::new(),
+            agents: AgentTracking::default(),
         }];
         let pane_histories_by_session = default_pane_histories_for_managed_sessions(&sessions);
         let client_identities =
@@ -280,6 +281,7 @@ impl App {
                 pane_auto_names: HashMap::new(),
                 terminal_titles: HashMap::new(),
                 cwd_fallbacks: HashMap::new(),
+                agents: AgentTracking::default(),
             });
         }
         if sessions.is_empty() {
@@ -402,8 +404,13 @@ impl App {
         let mut title_changed = false;
         let mut passthrough_by_session = Vec::new();
         let mut terminal_events_by_session = Vec::new();
+        let mut agent_dirty_by_session = Vec::new();
         for (session_index, managed) in self.sessions.iter_mut().enumerate() {
-            output_changed |= managed.session.poll_output();
+            let changed_panes = managed.session.poll_output_changed_panes();
+            if !changed_panes.is_empty() {
+                output_changed = true;
+                agent_dirty_by_session.push((session_index, changed_panes));
+            }
             let passthrough = managed.session.take_passthrough_output();
             if !passthrough.is_empty() {
                 passthrough_by_session.push((session_index, passthrough));
@@ -419,7 +426,8 @@ impl App {
         for (session_index, terminal_events) in terminal_events_by_session {
             title_changed |= self.apply_terminal_events_for_session(session_index, terminal_events);
         }
-        if output_changed || title_changed {
+        let agent_changed = self.run_agent_detection(agent_dirty_by_session, Instant::now());
+        if output_changed || title_changed || agent_changed {
             self.needs_render = true;
         }
 
@@ -700,6 +708,12 @@ impl App {
                         window: entry.index,
                         focused: entry.focused && focused_pane == Some(*pane_id),
                         title: Self::api_pane_title(managed, *pane_id),
+                        agent: managed.agents.statuses.get(pane_id).map(|status| {
+                            crate::api::AgentInfo {
+                                kind: status.kind.clone(),
+                                state: status.state.as_str().to_string(),
+                            }
+                        }),
                     });
                 }
             }
@@ -740,6 +754,113 @@ impl App {
                 .map(|tail| tail.join("\n"));
         }
         None
+    }
+
+    /// Re-run AI-agent detection for panes whose output changed, throttled to
+    /// at most once per [`AGENT_DETECT_INTERVAL`] per pane. Throttled panes
+    /// stay pending and are picked up by a later tick. Returns true when any
+    /// pane's detected agent status changed.
+    fn run_agent_detection(
+        &mut self,
+        dirty_by_session: Vec<(usize, Vec<usize>)>,
+        now: Instant,
+    ) -> bool {
+        for (session_index, pane_ids) in dirty_by_session {
+            if let Some(managed) = self.sessions.get_mut(session_index) {
+                managed.agents.pending.extend(pane_ids);
+            }
+        }
+
+        let mut changed = false;
+        for managed in &mut self.sessions {
+            if !managed.agents.statuses.is_empty()
+                || !managed.agents.last_run.is_empty()
+                || !managed.agents.pending.is_empty()
+            {
+                let session = &managed.session;
+                changed |= managed
+                    .agents
+                    .prune_closed_panes(|pane_id| session.pane_exists(pane_id));
+            }
+            if managed.agents.pending.is_empty() {
+                continue;
+            }
+            let due: Vec<usize> = managed
+                .agents
+                .pending
+                .iter()
+                .copied()
+                .filter(|pane_id| {
+                    managed
+                        .agents
+                        .last_run
+                        .get(pane_id)
+                        .is_none_or(|last| now.duration_since(*last) >= AGENT_DETECT_INTERVAL)
+                })
+                .collect();
+            for pane_id in due {
+                managed.agents.pending.remove(&pane_id);
+                managed.agents.last_run.insert(pane_id, now);
+                changed |= Self::detect_agent_for_pane(managed, pane_id, now);
+            }
+        }
+        changed
+    }
+
+    /// Run manifest detection for one pane and update its stored status.
+    /// Returns true when the stored status changed.
+    fn detect_agent_for_pane(managed: &mut ManagedSession, pane_id: usize, now: Instant) -> bool {
+        let Some(screen_lines) = managed.session.pane_screen_lines(pane_id) else {
+            return managed.agents.statuses.remove(&pane_id).is_some();
+        };
+        let foreground_process = managed
+            .session
+            .pane_child_pid(pane_id)
+            .and_then(crate::agent::foreground_process_name);
+        let snapshot = crate::agent::PaneSnapshot {
+            screen_lines: &screen_lines,
+            osc_title: managed.terminal_titles.get(&pane_id).map(String::as_str),
+            foreground_process: foreground_process.as_deref(),
+        };
+
+        match crate::agent::detect(crate::agent::builtin_manifests(), &snapshot) {
+            Some((kind, state)) => match managed.agents.statuses.get_mut(&pane_id) {
+                Some(status) if status.kind == kind && status.state == state => false,
+                Some(status) => {
+                    *status = crate::agent::AgentStatus {
+                        kind,
+                        state,
+                        since: now,
+                    };
+                    true
+                }
+                None => {
+                    managed.agents.statuses.insert(
+                        pane_id,
+                        crate::agent::AgentStatus {
+                            kind,
+                            state,
+                            since: now,
+                        },
+                    );
+                    true
+                }
+            },
+            None => managed.agents.statuses.remove(&pane_id).is_some(),
+        }
+    }
+
+    /// `{agent}` status token for the focused pane of the active session,
+    /// e.g. `claude:working`; empty when no agent is detected.
+    fn focused_agent_token(&self) -> String {
+        self.sessions
+            .get(self.view.active_session)
+            .and_then(|managed| {
+                let pane_id = managed.session.focused_pane_id()?;
+                let status = managed.agents.statuses.get(&pane_id)?;
+                Some(format!("{}:{}", status.kind, status.state.as_str()))
+            })
+            .unwrap_or_default()
     }
 
     fn focused_window_title_from_terminal_events(&self) -> Option<String> {
@@ -2629,6 +2750,7 @@ impl App {
             pane_auto_names: HashMap::new(),
             terminal_titles: HashMap::new(),
             cwd_fallbacks: HashMap::new(),
+            agents: AgentTracking::default(),
         });
         self.view.active_session = self.sessions.len().saturating_sub(1);
         self.record_focus_for_active_session();
@@ -2812,6 +2934,7 @@ impl App {
             ("{pane_index}", pane_index.to_string()),
             ("{pane_count}", session.pane_count().to_string()),
             ("{prefix}", prefix_state.to_string()),
+            ("{agent}", self.focused_agent_token()),
             (
                 "{lock}",
                 if self.view.locked_input {

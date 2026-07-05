@@ -22,8 +22,8 @@ use crate::session::terminal_state::TerminalEvent;
 use crate::storage::DataStore;
 
 use super::{
-    App, AppSignal, AttachTarget, InputMode, ManagedSession, RenameTarget, RuntimeUiConfig,
-    TreeRowKind, is_closed_pane_error, session_id_for,
+    AgentTracking, App, AppSignal, AttachTarget, InputMode, ManagedSession, RenameTarget,
+    RuntimeUiConfig, TreeRowKind, is_closed_pane_error, session_id_for,
 };
 
 type RecordedWrites = Arc<Mutex<Vec<(usize, Vec<u8>)>>>;
@@ -288,6 +288,7 @@ fn build_app_for_resize_test() -> App {
             pane_auto_names: HashMap::new(),
             terminal_titles: HashMap::new(),
             cwd_fallbacks: HashMap::new(),
+            agents: AgentTracking::default(),
         }],
         view: super::ClientViewState {
             keys: KeyMapper::new(),
@@ -404,6 +405,7 @@ fn build_app_with_history() -> App {
             pane_auto_names: HashMap::new(),
             terminal_titles: HashMap::new(),
             cwd_fallbacks: HashMap::new(),
+            agents: AgentTracking::default(),
         }],
         view: super::ClientViewState {
             keys: KeyMapper::new(),
@@ -513,6 +515,7 @@ fn build_app_with_write_behavior(behavior: WriteBehavior) -> App {
             pane_auto_names: HashMap::new(),
             terminal_titles: HashMap::new(),
             cwd_fallbacks: HashMap::new(),
+            agents: AgentTracking::default(),
         }],
         view: super::ClientViewState {
             keys: KeyMapper::new(),
@@ -579,6 +582,7 @@ fn build_app_with_close_on_write_behavior(behavior: CloseOnWriteBehavior) -> App
             pane_auto_names: HashMap::new(),
             terminal_titles: HashMap::new(),
             cwd_fallbacks: HashMap::new(),
+            agents: AgentTracking::default(),
         }],
         view: super::ClientViewState {
             keys: KeyMapper::new(),
@@ -642,6 +646,7 @@ fn add_fake_session(app: &mut App, session_name: &str, session_id: &str) {
         pane_auto_names: HashMap::new(),
         terminal_titles: HashMap::new(),
         cwd_fallbacks: HashMap::new(),
+        agents: AgentTracking::default(),
     });
 }
 
@@ -683,6 +688,7 @@ fn build_recording_app_one_session() -> (App, RecordedWrites) {
             pane_auto_names: HashMap::new(),
             terminal_titles: HashMap::new(),
             cwd_fallbacks: HashMap::new(),
+            agents: AgentTracking::default(),
         }],
         view: super::ClientViewState {
             keys: KeyMapper::new(),
@@ -770,6 +776,7 @@ fn build_recording_app_with_history() -> (App, RecordedWrites) {
             pane_auto_names: HashMap::new(),
             terminal_titles: HashMap::new(),
             cwd_fallbacks: HashMap::new(),
+            agents: AgentTracking::default(),
         }],
         view: super::ClientViewState {
             keys: KeyMapper::new(),
@@ -835,6 +842,7 @@ fn build_recording_app_with_output(output: Vec<Vec<u8>>) -> (App, RecordedWrites
             pane_auto_names: HashMap::new(),
             terminal_titles: HashMap::new(),
             cwd_fallbacks: HashMap::new(),
+            agents: AgentTracking::default(),
         }],
         view: super::ClientViewState {
             keys: KeyMapper::new(),
@@ -909,6 +917,7 @@ fn build_recording_app_multi_session() -> (App, RecordedWrites) {
                 pane_auto_names: HashMap::new(),
                 terminal_titles: HashMap::new(),
                 cwd_fallbacks: HashMap::new(),
+                agents: AgentTracking::default(),
             },
             ManagedSession {
                 ordinal: 2,
@@ -920,6 +929,7 @@ fn build_recording_app_multi_session() -> (App, RecordedWrites) {
                 pane_auto_names: HashMap::new(),
                 terminal_titles: HashMap::new(),
                 cwd_fallbacks: HashMap::new(),
+                agents: AgentTracking::default(),
             },
         ],
         view: super::ClientViewState {
@@ -1024,6 +1034,7 @@ fn build_editor_command_app() -> (App, RecordedSpawnConfigs, BackendClosedFlags)
             pane_auto_names: HashMap::new(),
             terminal_titles: HashMap::new(),
             cwd_fallbacks: HashMap::new(),
+            agents: AgentTracking::default(),
         }],
         view: super::ClientViewState {
             keys: KeyMapper::new(),
@@ -5724,4 +5735,117 @@ fn api_pane_read_respects_session_id_filter() {
     );
 
     assert_eq!(response["error"]["code"], crate::api::PANE_NOT_FOUND);
+}
+
+fn claude_working_screen_output() -> Vec<Vec<u8>> {
+    vec![
+        "✳ Compacting… (esc to interrupt)\r\n╭──────────────╮\r\n│ >            │\r\n╰──────────────╯"
+            .as_bytes()
+            .to_vec(),
+    ]
+}
+
+fn claude_idle_screen_output() -> Vec<Vec<u8>> {
+    vec![
+        "╭──────────────╮\r\n│ >            │\r\n╰──────────────╯\r\n  ? for shortcuts"
+            .as_bytes()
+            .to_vec(),
+    ]
+}
+
+#[test]
+fn tick_detects_claude_working_state_from_pane_screen() {
+    let (mut app, _) = build_recording_app_with_output(claude_working_screen_output());
+
+    app.tick();
+
+    let status = app.sessions[0]
+        .agents
+        .statuses
+        .get(&1)
+        .expect("agent detected for pane 1");
+    assert_eq!(status.kind, "claude");
+    assert_eq!(status.state, crate::agent::AgentState::Working);
+    assert!(app.has_pending_render());
+}
+
+#[test]
+fn tick_detects_claude_idle_state_and_plain_shell_detects_nothing() {
+    let (mut app, _) = build_recording_app_with_output(claude_idle_screen_output());
+    app.tick();
+    let status = app.sessions[0]
+        .agents
+        .statuses
+        .get(&1)
+        .expect("agent detected for pane 1");
+    assert_eq!(status.state, crate::agent::AgentState::Idle);
+
+    let (mut shell_app, _) =
+        build_recording_app_with_output(vec![b"$ ls\r\nCargo.toml src\r\n$ ".to_vec()]);
+    shell_app.tick();
+    assert!(shell_app.sessions[0].agents.statuses.is_empty());
+}
+
+#[test]
+fn agent_detection_is_throttled_to_once_per_interval_per_pane() {
+    let (mut app, _) = build_recording_app_with_output(claude_working_screen_output());
+    // Feed the pane's output into the terminal without running detection.
+    assert!(app.sessions[0].session.poll_output());
+    let t0 = Instant::now();
+
+    // First run for a dirty pane executes immediately.
+    assert!(app.run_agent_detection(vec![(0, vec![1])], t0));
+    let status = &app.sessions[0].agents.statuses[&1];
+    assert_eq!(status.state, crate::agent::AgentState::Working);
+    assert_eq!(status.since, t0);
+    assert_eq!(app.sessions[0].agents.last_run[&1], t0);
+
+    // A second dirty tick within the interval is throttled: no run, the pane
+    // stays pending, and the last-run timestamp is unchanged.
+    let t1 = t0 + Duration::from_millis(100);
+    assert!(!app.run_agent_detection(vec![(0, vec![1])], t1));
+    assert!(app.sessions[0].agents.pending.contains(&1));
+    assert_eq!(app.sessions[0].agents.last_run[&1], t0);
+
+    // Once the interval has elapsed, the pending pane is picked up even
+    // without new output; same screen keeps the same state and since.
+    let t2 = t0 + Duration::from_millis(250);
+    assert!(!app.run_agent_detection(vec![], t2));
+    assert!(app.sessions[0].agents.pending.is_empty());
+    assert_eq!(app.sessions[0].agents.last_run[&1], t2);
+    assert_eq!(app.sessions[0].agents.statuses[&1].since, t0);
+}
+
+#[test]
+fn status_format_agent_token_renders_focused_pane_agent() {
+    let (mut app, _) = build_recording_app_with_output(claude_working_screen_output());
+    app.status_format = "agent=[{agent}]".to_string();
+
+    assert_eq!(app.status_line(), "agent=[]");
+    app.tick();
+    assert_eq!(app.status_line(), "agent=[claude:working]");
+}
+
+#[test]
+fn api_pane_list_reports_agent_state() {
+    let (mut app, _) = build_recording_app_with_output(claude_working_screen_output());
+    app.tick();
+
+    let response = api_response(&app, r#"{"id":9,"method":"pane.list"}"#);
+    let panes = response["result"].as_array().expect("result array");
+    assert_eq!(panes.len(), 1);
+    assert_eq!(panes[0]["agent"]["kind"], "claude");
+    assert_eq!(panes[0]["agent"]["state"], "working");
+}
+
+#[test]
+fn api_pane_list_agent_is_null_when_no_agent_detected() {
+    let (mut app, _) =
+        build_recording_app_with_output(vec![b"$ ls\r\nCargo.toml src\r\n$ ".to_vec()]);
+    app.tick();
+
+    let response = api_response(&app, r#"{"id":10,"method":"pane.list"}"#);
+    let panes = response["result"].as_array().expect("result array");
+    assert_eq!(panes.len(), 1);
+    assert!(panes[0]["agent"].is_null());
 }

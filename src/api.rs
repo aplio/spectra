@@ -39,6 +39,17 @@ pub struct PaneInfo {
     pub window: usize,
     pub focused: bool,
     pub title: Option<String>,
+    /// Detected AI agent in the pane, `null` when none.
+    pub agent: Option<AgentInfo>,
+}
+
+/// Detected AI-agent status of a pane (`pane.list` `agent` field).
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentInfo {
+    /// Agent kind, e.g. `"claude"`.
+    pub kind: String,
+    /// `"unknown" | "idle" | "working" | "blocked"`.
+    pub state: String,
 }
 
 type MethodError = (i64, String);
