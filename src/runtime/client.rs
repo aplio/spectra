@@ -722,8 +722,12 @@ mod tests {
         let _guard = env_lock().lock().expect("env lock");
         let current_guard = CurrentDirGuard::capture();
         let temp = tempfile::tempdir().expect("tempdir");
-        let expected = temp.path().to_path_buf();
-        std::env::set_current_dir(&expected).expect("set temp cwd");
+        std::env::set_current_dir(temp.path()).expect("set temp cwd");
+        // `bootstrap_server_cwd` returns `current_dir()`, which reports the
+        // symlink-resolved physical path (on macOS the tempdir under `/var/...`
+        // resolves to `/private/var/...`). Canonicalize the expectation so the
+        // comparison holds regardless of symlinks in the temp path.
+        let expected = std::fs::canonicalize(temp.path()).expect("canonicalize temp cwd");
 
         let cli = Cli {
             server: false,

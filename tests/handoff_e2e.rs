@@ -213,6 +213,7 @@ fn send_keys(env: &TestEnv, text: &str) {
 
 /// First child pid of `pid` via /proc (Linux). The test server hosts one
 /// pane running `cat`, so its only child is the pane process.
+#[cfg(target_os = "linux")]
 fn first_child_pid(pid: u32) -> u32 {
     let path = format!("/proc/{pid}/task/{pid}/children");
     let deadline = Instant::now() + WAIT_TIMEOUT;
@@ -231,12 +232,17 @@ fn first_child_pid(pid: u32) -> u32 {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn process_cmdline(pid: u32) -> Option<String> {
     std::fs::read_to_string(format!("/proc/{pid}/cmdline"))
         .ok()
         .map(|raw| raw.replace('\0', " ").trim().to_string())
 }
 
+// Asserts pane processes survive a handoff by inspecting the server's child
+// process via /proc, so it only runs on Linux (macOS has no /proc). The other
+// handoff e2e tests below are platform-agnostic and still run everywhere.
+#[cfg(target_os = "linux")]
 #[test]
 fn handoff_moves_running_panes_to_a_new_server_without_killing_them() {
     let env = test_env();
