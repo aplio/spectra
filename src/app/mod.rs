@@ -3,6 +3,7 @@ mod command_palette;
 mod copy_mode;
 mod hooks;
 mod persistence;
+mod plugins;
 mod system_tree;
 #[cfg(test)]
 mod tests;
@@ -122,6 +123,12 @@ pub struct App {
     /// API events awaiting fan-out to subscribed API connections
     /// (bounded by [`API_EVENT_QUEUE_MAX`]; drained by the server loop).
     pending_api_events: Vec<crate::api::ApiEvent>,
+    /// Plugin discovery/dispatch/service supervision. Inactive (a no-op)
+    /// until the server calls [`App::load_plugins`].
+    plugins: crate::plugin::PluginHost,
+    /// Runtime agent-detection registry: built-in manifests plus
+    /// plugin-provided ones, swapped wholesale on plugin (re)load.
+    agent_manifests: std::sync::Arc<Vec<crate::agent::AgentManifest>>,
     available_update: Option<String>,
     renderer: crate::ui::render::FrameRenderer,
 }
@@ -244,6 +251,8 @@ impl App {
             needs_render: true,
             needs_full_clear: true,
             pending_api_events: Vec::new(),
+            plugins: crate::plugin::PluginHost::new(),
+            agent_manifests: std::sync::Arc::new(crate::agent::parse_builtin_manifests()),
             available_update: None,
             renderer: crate::ui::render::FrameRenderer::new(),
         };
@@ -353,6 +362,8 @@ impl App {
             needs_render: true,
             needs_full_clear: true,
             pending_api_events: Vec::new(),
+            plugins: crate::plugin::PluginHost::new(),
+            agent_manifests: std::sync::Arc::new(crate::agent::parse_builtin_manifests()),
             available_update: None,
             renderer: crate::ui::render::FrameRenderer::new(),
         };
@@ -961,16 +972,19 @@ impl App {
 
     /// Queue one API event for fan-out to subscribed API connections.
     /// The queue is bounded by [`API_EVENT_QUEUE_MAX`]: the oldest event is
-    /// dropped (with a log line) when full.
+    /// dropped (with a log line) when full. Every event also fans out to
+    /// plugin `[[on_event]]` commands (no-op when no plugins are loaded).
     pub(crate) fn push_api_event(&mut self, name: &str, params: serde_json::Value) {
         if self.pending_api_events.len() >= API_EVENT_QUEUE_MAX {
             self.pending_api_events.remove(0);
             self.write_log("api event queue full; dropped oldest event");
         }
-        self.pending_api_events.push(crate::api::ApiEvent {
+        let event = crate::api::ApiEvent {
             name: name.to_string(),
             params,
-        });
+        };
+        self.plugins.dispatch_event(&event);
+        self.pending_api_events.push(event);
     }
 
     /// Drain the queued API events; called by the server loop each pass to
@@ -1028,6 +1042,7 @@ impl App {
         let mut notifications = Vec::new();
         let notify_mode = self.agent_notify;
         let active_session = self.view.active_session;
+        let manifests = std::sync::Arc::clone(&self.agent_manifests);
         for (session_index, managed) in self.sessions.iter_mut().enumerate() {
             if !managed.agents.statuses.is_empty()
                 || !managed.agents.last_run.is_empty()
@@ -1061,6 +1076,7 @@ impl App {
                 let viewing = session_index == active_session && focused_pane == Some(pane_id);
                 if Self::detect_agent_for_pane(
                     managed,
+                    &manifests,
                     pane_id,
                     now,
                     viewing,
@@ -1086,6 +1102,7 @@ impl App {
     /// changed.
     fn detect_agent_for_pane(
         managed: &mut ManagedSession,
+        manifests: &[crate::agent::AgentManifest],
         pane_id: usize,
         now: Instant,
         viewing: bool,
@@ -1107,7 +1124,7 @@ impl App {
             foreground_process: foreground_process.as_deref(),
         };
 
-        match crate::agent::detect(crate::agent::builtin_manifests(), &snapshot) {
+        match crate::agent::detect(manifests, &snapshot) {
             Some((kind, state)) => Self::apply_agent_status(
                 managed,
                 pane_id,
@@ -3194,6 +3211,7 @@ impl App {
             .map_err(|err| format!("source-file failed: {err}"))?;
         self.apply_loaded_config(loaded);
         self.persist_runtime_state();
+        self.reload_plugins();
         self.emit_hook(HookEvent::ConfigReloaded, self.current_hook_context());
         let message = format!("config reloaded: {}", path.display());
         self.write_log(&message);
@@ -3227,6 +3245,7 @@ impl App {
 
         self.apply_loaded_config(merged);
         self.persist_runtime_state();
+        self.reload_plugins();
         self.emit_hook(HookEvent::ConfigReloaded, self.current_hook_context());
         let message = format!("config written: {}", path.display());
         self.write_log(&message);

@@ -4,15 +4,17 @@
 参照: spectra v0.1.5 (~26k LoC), herdr v0.7.1, gargo v0.2.14。
 
 > 進捗メモ (2026-07-05 20:35): **判断不要のタスクは全て実装完了**(13イテレーション・15コミット・テスト447→621・clippy 0維持)。
-> 残りは `⏸ 要判断` の項目のみ — 判断後に再開する。判断待ちリスト:
-> 1. plugin manifest形式 (P2) — API表面はherdr式で確定し実装済み(2026-07-05: `pane.send_keys`/`pane.split`/`agent.report`/`events.subscribe`)。残る判断はmanifest形式のみ。P3のhookスクリプト+integration installは実装完了(2026-07-05)
-> 2. sidebar 2段構成(専用agent panel)のUX (P4) — 現状はwindow list行のマーカーで代替済み
-> 3. remote attachをherdr同等(バイナリ自動配布+checksum)まで作り込むか (P5)
-> 4. イベントループepoll化の方針(mio/polling/tokio) (P6)
-> 5. SCM_RIGHTS live handoff の採否 (P6)
+> 進捗メモ (2026-07-05 深夜): plugin基盤(P2)を実装完了 — manifest + argvコマンド + service supervision + agent manifest同梱 + `plugin.list`。[hooks]は統合しない判断で確定。
+> 残りの判断待ちリスト:
+> 1. sidebar 2段構成(専用agent panel)のUX (P4) — 現状はwindow list行のマーカーで代替済み
+> 2. remote attachをherdr同等(バイナリ自動配布+checksum)まで作り込むか (P5)
+>
+> 判断済み・実装待ち (P6):
+> - イベントループepoll化 — ユーザー判断: 一番薄いもので可、どれも大差なければtokioでok
+> - god object分割 — ユーザー判断: yes、着手可(epoll化と合わせて計画推奨)
+> - SCM_RIGHTS live handoff — ユーザー判断: yes、採用
 >
 > (2026-07-05 判断済み: kitty keyboard はパススルー相当で実装済み・kitty graphics は不採用・OSC 10/11 は(b)ホスト端末中継で実装済み)
-> なおP6のgod object分割は大工事につき、epoll化の方針と合わせて着手判断を推奨。
 
 ## 現状サマリ（希望機能の実在チェック）
 
@@ -22,7 +24,7 @@
 | configでのkeybind | **実装済み**。`[prefix_bindings]`/`[global_bindings]` で上書き・unbind・prefix変更可 (`src/config.rs:28`, `src/input/keymap.rs:83`)。ただし固定enum約40アクションのみ、シェルコマンドは割当不可 |
 | sidebar | **実装済み**(window list)。`prefix e` の `SideWindowTree` (`src/ui/render.rs:40`)。左端固定・拡張には形になる下地あり |
 | herdrのremote attach | **簡易版実装済み**。`--remote <host>` がssh stdioトンネル+protocol versionハンドシェイクでリモートserverにattach(リモート設置済み前提・バイナリ自動配布は未) |
-| agent integration (plugin形式) | **検知コアあり**。manifest駆動のAgentState検知(`src/agent/`, Claude 1種)+done導出+status bar `{agent}`トークン+`pane.list` の `agent` フィールド+sidebarマーカー+Claude Code hook統合(`spectra integration install claude`)。plugin配布は未 |
+| agent integration (plugin形式) | **検知コアあり**。manifest駆動のAgentState検知(`src/agent/`, Claude 1種)+done導出+status bar `{agent}`トークン+`pane.list` の `agent` フィールド+sidebarマーカー+Claude Code hook統合(`spectra integration install claude`)+plugin基盤(`src/plugin/`, manifest/on_event/service/agent_manifest同梱) |
 
 ---
 
@@ -72,7 +74,7 @@ herdr方式の学び: OSCトラッカーを**VTパーサと分離した独立の
 ## P2: Plugin基盤 = JSON-RPC socket API（agent integrationの前提）
 
 > APIメソッド表面はherdr式(「CLI=APIラッパー」・coreと分離したthin adapter)で確定・実装済み(2026-07-05)。
-> ⏸ 残る要判断はplugin manifest形式のみ。
+> plugin manifest形式もherdr式(manifest + argvコマンド・SDKなし・API socketが統合面)で確定し実装済み(2026-07-05) — **P2は完了**。
 
 herdrの拡張モデルが秀逸: **TUI用のバイナリprotocolとは別に、改行区切りJSON-RPCのsocket APIを立てる** (`src/api/server.rs`)。
 plugin = 「`herdr-plugin.toml` マニフェスト + 任意言語のargvコマンド」で、SDK不要。CLI自体がAPIのラッパー。
@@ -87,8 +89,13 @@ plugin = 「`herdr-plugin.toml` マニフェスト + 任意言語のargvコマ�
       `events.subscribe`(hook 6種のブリッジ+`agent.changed`を接続毎フィルタでpush、キューは1024上限)を実装済み。
       dispatchは`&mut App`化したがapi.rsはthin adapterのままcoreと分離(2026-07-05)
 - [x] 一部DONE CLIサブコマンドをこのAPIのラッパーとして生やす — 汎用 `spectra api <method> [json]` を実装(agent/スクリプト向けの脱出ハッチ)。`--follow`でevents.subscribeのeventラインを追尾表示。`spectra pane read` 等のpretty wrapperは必要になったら
-- [ ] plugin manifest (`spectra-plugin.toml`): 名前/コマンド/購読イベント。イベント発火でargv起動 or 常駐プロセスにNDJSON配送
-- [ ] 既存 `[hooks]` はこのイベント購読の特殊ケースとして統合を検討
+- [x] DONE plugin manifest (`spectra-plugin.toml`) — `src/plugin/` に実装(2026-07-05)。plugin = 「manifest + 任意言語のargvコマンド」でSDK不要、API socketが統合面。
+      発見場所は `$XDG_CONFIG_HOME/spectra/plugins/<name>/`(優先) と `$XDG_DATA_HOME/spectra/plugins/<name>/`、server起動時+config reload時に再スキャン(不正manifestはログしてスキップ)。
+      3機能: `[[on_event]]`(購読イベント発火でargvを一発起動・イベントJSONをstdin配送・`{event}`プレースホルダ・`SPECTRA_EVENT`/`SPECTRA_API_SOCKET` env)、
+      `[service]`(常駐子プロセス: capped backoff 1s→30sで再起動・60秒内5回で打ち切り・stdout/stderrは plugin dirの `service.log`(起動時>1MiBで切り詰め)・drop guardでshutdown時kill)、
+      `[agent_manifest]`(検知manifest同梱→registryへマージ)。`plugin.list` APIメソッドで一覧可
+- [x] DONE 既存 `[hooks]` はこのイベント購読の特殊ケースとして統合を検討 — **統合しない判断**(2026-07-05): hooksはシェル1行の軽量版としてそのまま維持、
+      pluginが構造化上位互換(argv・stdinペイロード・常駐・配布)。同じ `push_api_event` 経路から両方に配送されるだけで実装も干渉しない
 
 ---
 
@@ -115,7 +122,9 @@ spectraタスク:
 - [x] DONE sidebar表示 + done(=idle&&未閲覧)導出 — herdr式に done は保存せず導出: working/blocked→idle 遷移を非フォーカスpaneで検知したら unseen、描画時にフォーカスpaneを seen 化(閲覧中のpaneは決してdoneにならない)。`AgentDisplayState`(unknown/idle/done/working/blocked)として `{agent}` トークンと `pane.list` の `state` にも露出
 - [x] DONE (任意)ホスト端末へのdesktop notification — agent状態変化でOSC 9 (`ESC ]9;msg BEL`)を全attachedクライアントへブロードキャスト。`[agent] notify = "off"|"blocked"|"all"`(default "blocked"、"all"はdone通知も追加)、
       閲覧中paneは通知せず・pane×state毎に1回debounce(状態が離れて戻ると再arm)。対応端末はghostty/iTerm2/wezterm(v1、herdr式の端末別出し分けは未)
-- [ ] plugin形式にするなら: 検知マニフェスト+hookスクリプトを plugin manifest に同梱して配布、という切り方が自然
+- [x] DONE plugin形式にするなら: 検知マニフェスト+hookスクリプトを plugin manifest に同梱して配布、という切り方が自然 — P2のplugin基盤の `[agent_manifest]` 同梱で実現(2026-07-05)。
+      plugin付属のagent検知manifestはbuiltin+先行plugin優先で runtime registry(`App.agent_manifests`, Arc swap)にマージされ、再コンパイルなしにユーザー定義agent検知が可能。
+      検知manifestのホットリロードもplugin再スキャン(config reload)経由で実質実現
 
 ---
 
@@ -155,14 +164,14 @@ spectraタスク:
 
 ## P6: アーキテクチャ改善（機能ではないがherdrに劣る点）
 
-- [ ] ⏸ 要判断 **イベントループのepoll化** — 現状1ms sleepのbusy-poll (`src/runtime/server.rs:22,67`)。アイドル時CPUを常時食う。mio/pollingへ。herdrはtokio multi-thread。依存追加(mio/polling/tokioのどれか)と改修範囲が大きいため方針確認したい
-  -> 一番薄いもので. どれも大差ないならtokioでok
+- [ ] 判断済み・実装待ち **イベントループのepoll化** — 現状1ms sleepのbusy-poll (`src/runtime/server.rs:22,67`)。アイドル時CPUを常時食う。herdrはtokio multi-thread。
+      ユーザー判断(2026-07-05): 一番薄いもので可、どれも大差なければtokioでok
 - [x] DONE **unwrap/expect監査** — 実棚卸しでprod経路は6箇所のみ(~149はcfg(test)込みの過大見積り)。terminal::setup×2をio::Result化・reflowのunwrap×1をis_some_and化で修正、不変条件expect×3は理由付き#[allow]で意図明示、lock系prod使用ゼロ。lint gateはlib.rs/main.rsに`#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]`でcrate全体に適用(テストmodは非対象)
-- [ ] **god object分割** — `app/mod.rs` 2838行 / `terminal_state.rs` 2685行。herdrの「AppState=純データ、render=純関数、runtime分離」規律 + `assert_invariants_for_test()` パターンが参考になる
-  -> yes please
+- [ ] 判断済み・実装待ち **god object分割** — `app/mod.rs` 2838行 / `terminal_state.rs` 2685行。herdrの「AppState=純データ、render=純関数、runtime分離」規律 + `assert_invariants_for_test()` パターンが参考になる。
+      ユーザー判断(2026-07-05): 着手可(epoll化と合わせて計画するのを推奨)
 - [x] DONE alt-screen resizeがnaive(reflowなし) — 保存中のprimary画面をalt中のresizeでも通常経路と同じsoft-wrap reflowで追随(`reflow_saved_screen`)・alt画面自体はclip/pad維持・連続resize合成もtwin-grid同値でテスト
-- [ ] ⏸ 要判断 (面白い候補) **SCM_RIGHTSによるlive handoff** — herdrはPTYのfdをUnix socket越しに新serverへ渡してpaneを殺さずserver更新 (`src/server/handoff.rs`)。self-updateと組み合わせると「動作中に無停止アップグレード」が可能に。採否の判断待ち
-  -> yes please
+- [ ] 判断済み・実装待ち **SCM_RIGHTSによるlive handoff** — herdrはPTYのfdをUnix socket越しに新serverへ渡してpaneを殺さずserver更新 (`src/server/handoff.rs`)。self-updateと組み合わせると「動作中に無停止アップグレード」が可能に。
+      ユーザー判断(2026-07-05): 採用(yes)
 - [ ] IPCのバイナリ化(bincode+length-prefix)は**急がない** — NDJSONで困ってから。protocol versionフィールドはP5(remote attach)で導入済み
 - [x] DONE keybindの拡張 — `run:` プレフィクスで任意シェルコマンドをbind可・hooks実行基盤を流用・paletteには出さない
 

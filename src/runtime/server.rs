@@ -38,6 +38,10 @@ pub fn run(cli: Cli) -> io::Result<()> {
 
     let mut app = App::new_with_size(cli.without_server_flag(), DEFAULT_COLS, DEFAULT_ROWS)?;
     app.request_render(true);
+    // Plugins load only in the server: on_event/service commands need the
+    // API socket, and services must be supervised by the server's lifetime
+    // (their kill-on-drop guards die with `app` at the end of this fn).
+    app.load_plugins();
 
     // Update check: a fresh cache answers immediately; otherwise one named
     // background thread performs the check so startup is never delayed.

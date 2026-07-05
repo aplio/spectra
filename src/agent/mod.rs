@@ -117,18 +117,25 @@ pub fn detect(
 
 static BUILTIN_MANIFESTS: OnceLock<Vec<AgentManifest>> = OnceLock::new();
 
-/// Built-in agent manifests, parsed once on first use.
+/// TOML sources of the manifests embedded at compile time.
+const BUILTIN_MANIFEST_SOURCES: [&str; 1] = [include_str!("manifests/claude.toml")];
+
+/// Freshly parsed built-in manifests. Seeds the runtime detection registry,
+/// which merges plugin-provided manifests on top (built-ins win collisions).
 #[allow(
     clippy::expect_used,
     reason = "compile-time embedded manifest; parse failure is a build defect, not a runtime input"
 )]
+pub fn parse_builtin_manifests() -> Vec<AgentManifest> {
+    BUILTIN_MANIFEST_SOURCES
+        .iter()
+        .map(|source| AgentManifest::parse(source).expect("embedded manifest is valid"))
+        .collect()
+}
+
+/// Built-in agent manifests, parsed once on first use.
 pub fn builtin_manifests() -> &'static [AgentManifest] {
-    BUILTIN_MANIFESTS.get_or_init(|| {
-        vec![
-            AgentManifest::parse(include_str!("manifests/claude.toml"))
-                .expect("embedded claude manifest is valid"),
-        ]
-    })
+    BUILTIN_MANIFESTS.get_or_init(parse_builtin_manifests)
 }
 
 #[cfg(test)]

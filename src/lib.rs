@@ -15,6 +15,7 @@ pub mod input;
 pub mod integration;
 pub mod io;
 pub mod ipc;
+pub mod plugin;
 #[cfg(unix)]
 pub mod runtime;
 pub mod session;

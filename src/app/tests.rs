@@ -330,6 +330,8 @@ fn build_app_for_resize_test() -> App {
         needs_render: false,
         needs_full_clear: false,
         pending_api_events: Vec::new(),
+        plugins: crate::plugin::PluginHost::new(),
+        agent_manifests: std::sync::Arc::new(crate::agent::parse_builtin_manifests()),
         available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     }
@@ -450,6 +452,8 @@ fn build_app_with_history() -> App {
         needs_render: false,
         needs_full_clear: false,
         pending_api_events: Vec::new(),
+        plugins: crate::plugin::PluginHost::new(),
+        agent_manifests: std::sync::Arc::new(crate::agent::parse_builtin_manifests()),
         available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     }
@@ -563,6 +567,8 @@ fn build_app_with_write_behavior(behavior: WriteBehavior) -> App {
         needs_render: false,
         needs_full_clear: false,
         pending_api_events: Vec::new(),
+        plugins: crate::plugin::PluginHost::new(),
+        agent_manifests: std::sync::Arc::new(crate::agent::parse_builtin_manifests()),
         available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     }
@@ -633,6 +639,8 @@ fn build_app_with_close_on_write_behavior(behavior: CloseOnWriteBehavior) -> App
         needs_render: false,
         needs_full_clear: false,
         pending_api_events: Vec::new(),
+        plugins: crate::plugin::PluginHost::new(),
+        agent_manifests: std::sync::Arc::new(crate::agent::parse_builtin_manifests()),
         available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     }
@@ -742,6 +750,8 @@ fn build_recording_app_one_session() -> (App, RecordedWrites) {
         needs_render: false,
         needs_full_clear: false,
         pending_api_events: Vec::new(),
+        plugins: crate::plugin::PluginHost::new(),
+        agent_manifests: std::sync::Arc::new(crate::agent::parse_builtin_manifests()),
         available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     };
@@ -833,6 +843,8 @@ fn build_recording_app_with_history() -> (App, RecordedWrites) {
         needs_render: false,
         needs_full_clear: false,
         pending_api_events: Vec::new(),
+        plugins: crate::plugin::PluginHost::new(),
+        agent_manifests: std::sync::Arc::new(crate::agent::parse_builtin_manifests()),
         available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     };
@@ -902,6 +914,8 @@ fn build_recording_app_with_output(output: Vec<Vec<u8>>) -> (App, RecordedWrites
         needs_render: false,
         needs_full_clear: false,
         pending_api_events: Vec::new(),
+        plugins: crate::plugin::PluginHost::new(),
+        agent_manifests: std::sync::Arc::new(crate::agent::parse_builtin_manifests()),
         available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     };
@@ -993,6 +1007,8 @@ fn build_recording_app_multi_session() -> (App, RecordedWrites) {
         needs_render: false,
         needs_full_clear: false,
         pending_api_events: Vec::new(),
+        plugins: crate::plugin::PluginHost::new(),
+        agent_manifests: std::sync::Arc::new(crate::agent::parse_builtin_manifests()),
         available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     };
@@ -1100,6 +1116,8 @@ fn build_editor_command_app() -> (App, RecordedSpawnConfigs, BackendClosedFlags)
         needs_render: false,
         needs_full_clear: false,
         pending_api_events: Vec::new(),
+        plugins: crate::plugin::PluginHost::new(),
+        agent_manifests: std::sync::Arc::new(crate::agent::parse_builtin_manifests()),
         available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     };
@@ -6772,4 +6790,197 @@ fn api_event_queue_is_bounded_and_drops_oldest() {
         events[API_EVENT_QUEUE_MAX - 1].params["index"],
         API_EVENT_QUEUE_MAX + 99
     );
+}
+
+// --- Plugin system (src/plugin/, src/app/plugins.rs) ---
+
+fn fast_plugin_tuning() -> crate::plugin::ServiceTuning {
+    crate::plugin::ServiceTuning {
+        initial_backoff: Duration::from_millis(5),
+        max_backoff: Duration::from_millis(20),
+        poll_interval: Duration::from_millis(5),
+        ..crate::plugin::ServiceTuning::default()
+    }
+}
+
+fn write_test_plugin(base: &std::path::Path, name: &str, manifest: &str) -> std::path::PathBuf {
+    let dir = base.join(name);
+    std::fs::create_dir_all(&dir).expect("create plugin dir");
+    std::fs::write(dir.join(crate::plugin::MANIFEST_FILE), manifest).expect("write manifest");
+    dir
+}
+
+#[test]
+fn plugin_agent_manifests_merge_into_registry_with_builtin_winning() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let clash = write_test_plugin(
+        base.path(),
+        "clash",
+        "name = \"clash\"\n[agent_manifest]\npath = \"agent.toml\"",
+    );
+    std::fs::write(
+        clash.join("agent.toml"),
+        "name = \"claude\"\ndisplay_name = \"Fake Claude\"\ntitle_markers = [\"x\"]",
+    )
+    .expect("write clashing agent manifest");
+    let custom = write_test_plugin(
+        base.path(),
+        "custom",
+        "name = \"custom\"\n[agent_manifest]\npath = \"agent.toml\"",
+    );
+    std::fs::write(
+        custom.join("agent.toml"),
+        "name = \"custombot\"\ntitle_markers = [\"custombot\"]",
+    )
+    .expect("write custom agent manifest");
+
+    let mut app = build_app_for_resize_test();
+    app.load_plugins_from(vec![base.path().to_path_buf()], fast_plugin_tuning());
+
+    let names: Vec<&str> = app
+        .agent_registry()
+        .iter()
+        .map(crate::agent::AgentManifest::name)
+        .collect();
+    assert_eq!(names, vec!["claude", "custombot"]);
+    // The built-in claude manifest won the collision, not the plugin's.
+    assert_eq!(app.agent_registry()[0].display_name(), "Claude Code");
+}
+
+#[test]
+fn reload_plugins_swaps_agent_registry() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let custom = write_test_plugin(
+        base.path(),
+        "custom",
+        "name = \"custom\"\n[agent_manifest]\npath = \"agent.toml\"",
+    );
+    std::fs::write(
+        custom.join("agent.toml"),
+        "name = \"custombot\"\ntitle_markers = [\"custombot\"]",
+    )
+    .expect("write custom agent manifest");
+
+    let mut app = build_app_for_resize_test();
+    app.load_plugins_from(vec![base.path().to_path_buf()], fast_plugin_tuning());
+    assert_eq!(app.agent_registry().len(), 2);
+
+    std::fs::remove_dir_all(&custom).expect("remove plugin dir");
+    app.reload_plugins();
+    let names: Vec<&str> = app
+        .agent_registry()
+        .iter()
+        .map(crate::agent::AgentManifest::name)
+        .collect();
+    assert_eq!(names, vec!["claude"]);
+}
+
+#[test]
+fn plugin_list_api_method_reports_loaded_plugins() {
+    let base = tempfile::tempdir().expect("tempdir");
+    write_test_plugin(
+        base.path(),
+        "full",
+        r#"
+name = "full"
+description = "the works"
+
+[[on_event]]
+events = ["agent.changed", "pane.closed"]
+command = ["./notify.sh", "{event}"]
+
+[service]
+command = ["/bin/sh", "-c", "sleep 30"]
+"#,
+    );
+
+    let mut app = build_app_for_resize_test();
+    app.load_plugins_from(vec![base.path().to_path_buf()], fast_plugin_tuning());
+
+    let response = api_response(&mut app, r#"{"id":1,"method":"plugin.list"}"#);
+    let plugins = response["result"].as_array().expect("result array");
+    assert_eq!(plugins.len(), 1);
+    assert_eq!(plugins[0]["name"], "full");
+    assert_eq!(plugins[0]["description"], "the works");
+    assert_eq!(plugins[0]["has_service"], true);
+    assert_eq!(plugins[0]["on_event_commands"], 1);
+    assert_eq!(
+        plugins[0]["events"],
+        serde_json::json!(["agent.changed", "pane.closed"])
+    );
+    assert!(plugins[0]["agent_manifest"].is_null());
+}
+
+#[test]
+fn plugin_list_is_empty_when_plugins_never_loaded() {
+    let mut app = build_app_for_resize_test();
+    let response = api_response(&mut app, r#"{"id":2,"method":"plugin.list"}"#);
+    assert_eq!(response["result"], serde_json::json!([]));
+}
+
+#[test]
+fn push_api_event_dispatches_plugin_on_event_command() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let dir = write_test_plugin(
+        base.path(),
+        "notify",
+        r#"
+name = "notify"
+
+[[on_event]]
+events = ["session.created"]
+command = ["/bin/sh", "handler.sh", "{event}"]
+"#,
+    );
+    std::fs::write(
+        dir.join("handler.sh"),
+        "cat > stdin.json\nprintf '%s' \"$1\" > arg.txt\n",
+    )
+    .expect("write handler");
+
+    let mut app = build_app_for_resize_test();
+    app.load_plugins_from(vec![base.path().to_path_buf()], fast_plugin_tuning());
+    app.push_api_event(
+        "session.created",
+        serde_json::json!({ "session_id": "main-1" }),
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if dir.join("stdin.json").exists() && dir.join("arg.txt").exists() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let stdin_json = std::fs::read_to_string(dir.join("stdin.json")).expect("stdin capture");
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdin_json.trim()).expect("stdin is one JSON line");
+    assert_eq!(parsed["event"], "session.created");
+    assert_eq!(parsed["params"]["session_id"], "main-1");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("arg.txt")).expect("arg capture"),
+        "session.created"
+    );
+}
+
+#[test]
+fn config_reload_rescans_plugin_directories() {
+    let base = tempfile::tempdir().expect("tempdir");
+    write_test_plugin(base.path(), "keep", "name = \"keep\"");
+    let removed = write_test_plugin(base.path(), "removed", "name = \"removed\"");
+
+    let mut app = build_app_for_resize_test();
+    app.load_plugins_from(vec![base.path().to_path_buf()], fast_plugin_tuning());
+    assert_eq!(app.api_plugins().len(), 2);
+
+    std::fs::remove_dir_all(&removed).expect("remove plugin dir");
+    let config = base.path().join("spectra.toml");
+    std::fs::write(&config, "").expect("write empty config");
+    app.reload_config_from_path(Some(config.to_str().expect("utf-8 path")))
+        .expect("reload config");
+
+    let plugins = app.api_plugins();
+    assert_eq!(plugins.len(), 1);
+    assert_eq!(plugins[0].name, "keep");
 }

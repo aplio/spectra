@@ -347,6 +347,7 @@ Read methods:
 - `session.list` — sessions with id/name/ordinal/active/window count
 - `pane.list` — panes (optional `session_id` filter) with window, focus, title, and detected `agent` (`{kind, state}`)
 - `pane.read` — pane text: `{pane_id, session_id?, lines?}`; default visible screen, `lines: N` = last N lines including scrollback
+- `plugin.list` — loaded plugins with `{name, description, has_service, on_event_commands, events, agent_manifest}` (see Plugins below)
 
 Write methods:
 - `pane.send_keys` — `{pane_id, session_id?, text}`: write `text` bytes verbatim to the pane's PTY (raw, no key encoding; same semantics as CLI `send-keys`)
@@ -363,6 +364,71 @@ printing pushed event lines until the server closes the connection or ctrl-c:
 ```bash
 spectra api --follow events.subscribe '{"events":["agent.changed"]}'
 ```
+
+## Plugins
+
+A plugin is a directory containing a `spectra-plugin.toml` manifest plus the
+scripts or binaries it references — any language, no SDK. Plugin commands are
+plain argv vectors (no shell), run with the plugin directory as working
+directory, and talk to spectra through the scripting API socket
+(`SPECTRA_API_SOCKET` is exported to every plugin process).
+
+Discovery locations, scanned when the server starts and re-scanned on every
+config reload (`source-file` / prefix `r`):
+- `$XDG_CONFIG_HOME/spectra/plugins/<name>/spectra-plugin.toml` (user-authored plugins; wins name collisions)
+- `$XDG_DATA_HOME/spectra/plugins/<name>/spectra-plugin.toml` (tool-installed plugins)
+
+The manifest `name` must match the directory name and consist of lowercase
+ASCII alphanumerics/dashes (max 32 chars). Invalid manifests are logged and
+skipped; plugin failures of any kind (parse errors, spawn failures, crash
+loops) never take the server down. `spectra api plugin.list` shows what is
+loaded.
+
+A plugin can declare three capabilities, all optional:
+
+- **`[[on_event]]`** — spawn a one-shot command when a subscribed API event
+  fires (same event set as `events.subscribe`). The event JSON line
+  (`{"event": ..., "params": {...}}`) arrives on stdin, `{event}` in any argv
+  element is replaced by the event name, and `SPECTRA_EVENT` is set.
+  Fire-and-forget like `[hooks]`; failures are logged to the session log.
+- **`[service]`** — a long-running process started with the server. It is
+  restarted on exit with capped exponential backoff (1s, 2s, 4s, ... max 30s),
+  gives up after 5 exits within a minute (logged), and is killed on server
+  shutdown and on removal during a reload. Its stdout/stderr are appended to
+  `service.log` in the plugin directory (truncated at startup when over 1 MiB).
+  A service typically connects to `SPECTRA_API_SOCKET` and subscribes to events.
+- **`[agent_manifest]`** — bundle an agent-detection manifest (same TOML
+  format as the built-in `claude` one) that is merged into the detection
+  registry, enabling custom agent detection without recompiling. On an agent
+  name collision the built-in manifest wins and a warning is logged.
+
+Full example — a desktop notifier at
+`~/.config/spectra/plugins/agent-notify/spectra-plugin.toml`:
+
+```toml
+name = "agent-notify"
+description = "notify-send when an agent changes state"
+
+[[on_event]]
+events = ["agent.changed"]
+command = ["./notify.sh", "{event}"]
+```
+
+with `notify.sh` next to it:
+
+```sh
+#!/bin/sh
+# stdin: {"event":"agent.changed","params":{"pane_id":3,"kind":"claude","state":"blocked",...}}
+payload=$(cat)
+state=$(printf '%s' "$payload" | sed -n 's/.*"state":"\([a-z]*\)".*/\1/p')
+[ "$state" = "blocked" ] && notify-send "spectra" "agent blocked ($1)"
+exit 0
+```
+
+The existing `[hooks]` config remains the lightweight one-liner alternative
+(`/bin/sh -lc` commands, `SPECTRA_*` env); plugins are the structured superset
+for anything that needs argv commands, event payloads, a supervised daemon, or
+distribution as a directory.
 
 ## Claude Code integration
 

@@ -69,6 +69,21 @@ pub struct AgentInfo {
     pub state: String,
 }
 
+/// One entry of the `plugin.list` result.
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginInfo {
+    pub name: String,
+    pub description: String,
+    /// Whether the plugin declares a supervised `[service]`.
+    pub has_service: bool,
+    /// Number of `[[on_event]]` command entries.
+    pub on_event_commands: usize,
+    /// Sorted, de-duplicated union of the subscribed event names.
+    pub events: Vec<String>,
+    /// Agent kind provided by a bundled agent manifest, `null` when none.
+    pub agent_manifest: Option<String>,
+}
+
 /// One server-pushed event line for subscribed API connections.
 #[derive(Debug, Clone)]
 pub struct ApiEvent {
@@ -160,6 +175,7 @@ fn handle_method(
         "pane.send_keys" => pane_send_keys(app, params),
         "pane.split" => pane_split(app, params),
         "agent.report" => agent_report(app, params),
+        "plugin.list" => plugin_list(app),
         "events.subscribe" => {
             let (result, accepted) = events_subscribe(params)?;
             *subscription = Some(accepted);
@@ -171,6 +187,12 @@ fn handle_method(
 
 fn session_list(app: &App) -> Result<Value, MethodError> {
     serde_json::to_value(app.api_sessions()).map_err(internal_error)
+}
+
+/// `plugin.list`: loaded plugins with their declared capabilities (empty
+/// outside the server, where plugins are never loaded).
+fn plugin_list(app: &App) -> Result<Value, MethodError> {
+    serde_json::to_value(app.api_plugins()).map_err(internal_error)
 }
 
 fn pane_list(app: &App, params: Option<&Value>) -> Result<Value, MethodError> {

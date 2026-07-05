@@ -7,7 +7,7 @@ use super::{AgentState, PaneSnapshot};
 
 /// One agent's detection manifest: identity markers plus prioritized
 /// screen-matching rules.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AgentManifest {
     name: String,
     display_name: String,
@@ -17,7 +17,7 @@ pub struct AgentManifest {
     rules: Vec<Rule>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Rule {
     state: AgentState,
     region: Region,
