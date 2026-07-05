@@ -2609,6 +2609,59 @@ fn side_window_tree_click_switches_window_and_stays_open() {
 }
 
 #[test]
+fn side_window_tree_hit_testing_honours_content_edges() {
+    let mut app = build_app_for_resize_test();
+    app.mouse_enabled = true;
+    app.current_session_mut()
+        .new_window(80, 24)
+        .expect("create second window");
+    app.current_session_mut()
+        .focus_window_number(1)
+        .expect("focus first window");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
+        .expect("enter prefix");
+    app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
+        .expect("open side window tree");
+    let side = app.side_window_tree_overlay().expect("sidebar overlay");
+    let rect = side.rect();
+
+    // Clicking the divider column (just past the content area) is ignored.
+    let divider_col = u16::try_from(rect.divider_x()).expect("divider col");
+    app.handle_mouse_event(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        divider_col,
+        2,
+    ))
+    .expect("click divider");
+    assert_eq!(app.current_session().focused_window_number(), Some(1));
+
+    // Clicking the first content column of the second row selects window 2.
+    let first_col = u16::try_from(rect.content_x()).expect("content col");
+    app.handle_mouse_event(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        first_col,
+        2,
+    ))
+    .expect("click first content column");
+    assert_eq!(app.current_session().focused_window_number(), Some(2));
+
+    // The last content column also hits the entry.
+    app.current_session_mut()
+        .focus_window_number(1)
+        .expect("refocus first window");
+    app.request_render(false);
+    let last_col = u16::try_from(rect.content_x() + rect.content_width() - 1).expect("last col");
+    app.handle_mouse_event(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        last_col,
+        2,
+    ))
+    .expect("click last content column");
+    assert_eq!(app.current_session().focused_window_number(), Some(2));
+}
+
+#[test]
 fn visible_side_window_tree_does_not_capture_navigation_keys() {
     let (mut app, writes) = build_recording_app_one_session();
     app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))

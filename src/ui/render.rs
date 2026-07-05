@@ -74,6 +74,69 @@ pub struct SideWindowTree {
     pub width: usize,
 }
 
+impl SideWindowTree {
+    /// Screen region this sidebar occupies. The left edge is currently the
+    /// only supported placement; every geometry consumer must derive
+    /// positions from this rect rather than assuming an origin.
+    pub fn rect(&self) -> SidebarRect {
+        SidebarRect::left_edge(self.width)
+    }
+}
+
+/// Screen region occupied by the sidebar, with an explicit origin shared by
+/// composition, input hit-testing and pane offset math. The divider column
+/// sits on the inner edge, adjacent to the panes. A future placement option
+/// only needs to construct a different rect (and flip the divider edge);
+/// nothing else may hardcode sidebar coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SidebarRect {
+    /// Leftmost column of the sidebar region.
+    pub x: usize,
+    /// Total width in columns, including the divider column.
+    pub width: usize,
+}
+
+impl SidebarRect {
+    /// Anchor the sidebar at the left screen edge (the only configuration
+    /// currently in use).
+    pub fn left_edge(width: usize) -> Self {
+        Self { x: 0, width }
+    }
+
+    /// Same region clamped to `total_cols` available screen columns.
+    pub fn clamped_to(self, total_cols: usize) -> Self {
+        Self {
+            x: self.x.min(total_cols),
+            width: self.width.min(total_cols.saturating_sub(self.x)),
+        }
+    }
+
+    /// First column of the header/entry content area.
+    pub fn content_x(&self) -> usize {
+        self.x
+    }
+
+    /// Columns available for content, excluding the divider column.
+    pub fn content_width(&self) -> usize {
+        self.width.saturating_sub(1)
+    }
+
+    /// Column of the divider separating the sidebar from the panes.
+    pub fn divider_x(&self) -> usize {
+        self.x + self.content_width()
+    }
+
+    /// Whether `col` lands inside the content area (divider excluded).
+    pub fn contains_content_col(&self, col: usize) -> bool {
+        (self.content_x()..self.content_x() + self.content_width()).contains(&col)
+    }
+
+    /// Columns panes must shift right by to clear the sidebar region.
+    pub fn pane_x_offset(&self) -> usize {
+        self.x + self.width
+    }
+}
+
 pub struct FrameRenderer {
     previous: Option<BackBuffer>,
 }
@@ -394,20 +457,18 @@ fn compose_side_window_tree(
     }
 
     let total_cols = usize::from(frame.cols);
-    let mut width = side.width.min(total_cols.saturating_sub(1));
-    if width < 4 {
+    let rect = side.rect().clamped_to(total_cols.saturating_sub(1));
+    if rect.width < 4 {
         return;
     }
-    if width > total_cols {
-        width = total_cols;
-    }
 
-    let divider_x = width.saturating_sub(1);
-    let content_w = width.saturating_sub(1);
+    let divider_x = rect.divider_x();
+    let content_x = rect.content_x();
+    let content_w = rect.content_width();
     let header = fixed_width(&side.title, content_w);
     draw_text_with_style(
         frame,
-        0,
+        content_x,
         0,
         &header,
         CellStyle {
@@ -467,7 +528,7 @@ fn compose_side_window_tree(
         };
         draw_text_with_style(
             frame,
-            0,
+            content_x,
             y,
             &line,
             if is_selected {
@@ -480,7 +541,7 @@ fn compose_side_window_tree(
             },
         );
         if let Some(indicator) = indicator {
-            frame.set_fg(content_w.saturating_sub(1), y, indicator.color);
+            frame.set_fg(content_x + content_w.saturating_sub(1), y, indicator.color);
         }
     }
 }
@@ -1787,6 +1848,45 @@ mod tests {
             ansi.contains("\x1b[2;1H\x1b[0m"),
             "second row should begin from reset/default style; output={ansi:?}"
         );
+    }
+
+    #[test]
+    fn sidebar_rect_left_edge_geometry() {
+        let rect = super::SidebarRect::left_edge(8);
+        assert_eq!(rect.content_x(), 0);
+        assert_eq!(rect.content_width(), 7);
+        assert_eq!(rect.divider_x(), 7);
+        assert_eq!(rect.pane_x_offset(), 8);
+        // Content spans [0, 7): both edges hit-test correctly.
+        assert!(rect.contains_content_col(0));
+        assert!(rect.contains_content_col(6));
+        assert!(!rect.contains_content_col(7), "divider is not content");
+        assert!(!rect.contains_content_col(8));
+    }
+
+    #[test]
+    fn sidebar_rect_geometry_follows_nonzero_origin() {
+        // Position is a parameter: nothing may assume the left screen edge.
+        let rect = super::SidebarRect { x: 5, width: 8 };
+        assert_eq!(rect.content_x(), 5);
+        assert_eq!(rect.content_width(), 7);
+        assert_eq!(rect.divider_x(), 12);
+        assert_eq!(rect.pane_x_offset(), 13);
+        assert!(!rect.contains_content_col(4), "before the sidebar");
+        assert!(rect.contains_content_col(5), "first content column");
+        assert!(rect.contains_content_col(11), "last content column");
+        assert!(!rect.contains_content_col(12), "divider is not content");
+        assert!(!rect.contains_content_col(13));
+    }
+
+    #[test]
+    fn sidebar_rect_clamps_to_available_columns() {
+        let rect = super::SidebarRect::left_edge(28).clamped_to(10);
+        assert_eq!(rect, super::SidebarRect { x: 0, width: 10 });
+        let offset = super::SidebarRect { x: 8, width: 8 }.clamped_to(10);
+        assert_eq!(offset, super::SidebarRect { x: 8, width: 2 });
+        let past_end = super::SidebarRect { x: 12, width: 8 }.clamped_to(10);
+        assert_eq!(past_end, super::SidebarRect { x: 10, width: 0 });
     }
 
     #[test]

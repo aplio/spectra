@@ -115,12 +115,18 @@ impl App {
     }
 
     pub(super) fn effective_pane_cols_for_view(cols: u16, side_window_tree_open: bool) -> u16 {
-        let sidebar_width = if side_window_tree_open {
-            Self::side_window_tree_width_for_cols(cols).unwrap_or(0)
+        // The reserve equals the sidebar rect's pane offset, so pane sizing
+        // and pane shifting cannot drift apart.
+        let reserved = if side_window_tree_open {
+            Self::side_window_tree_width_for_cols(cols)
+                .map(|width| {
+                    crate::ui::render::SidebarRect::left_edge(usize::from(width)).pane_x_offset()
+                })
+                .unwrap_or(0)
         } else {
             0
         };
-        cols.saturating_sub(sidebar_width)
+        u16::try_from(usize::from(cols).saturating_sub(reserved)).unwrap_or(0)
     }
 
     pub(super) fn current_effective_pane_dims(&self) -> (u16, u16) {
@@ -200,7 +206,7 @@ impl App {
 
         // Clicks must land on entry text area, not the divider/header/status rows.
         if workspace_rows <= 1
-            || col >= side.width.saturating_sub(1)
+            || !side.rect().contains_content_col(col)
             || row == 0
             || row >= workspace_rows
         {
@@ -230,20 +236,20 @@ impl App {
     fn shift_frame_for_side_window_tree(
         &self,
         frame: &mut crate::session::manager::RenderFrame,
-        width: usize,
+        rect: crate::ui::render::SidebarRect,
     ) {
-        if width == 0 {
+        let offset = rect.pane_x_offset();
+        if offset == 0 {
             return;
         }
-        let offset = width as u16;
         for pane in &mut frame.panes {
-            pane.rect.x = pane.rect.x.saturating_add(width);
+            pane.rect.x = pane.rect.x.saturating_add(offset);
         }
         for divider in &mut frame.dividers {
-            divider.x = divider.x.saturating_add(width);
+            divider.x = divider.x.saturating_add(offset);
         }
         if let Some((x, y)) = frame.focused_cursor {
-            frame.focused_cursor = Some((x.saturating_add(offset), y));
+            frame.focused_cursor = Some((x.saturating_add(offset as u16), y));
         }
     }
 
@@ -259,7 +265,7 @@ impl App {
             self.current_session().frame(pane_cols, self.view.rows)
         };
         if let Some(tree) = side_window_tree {
-            self.shift_frame_for_side_window_tree(&mut frame, tree.width);
+            self.shift_frame_for_side_window_tree(&mut frame, tree.rect());
         }
         frame
     }
