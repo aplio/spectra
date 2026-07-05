@@ -159,6 +159,12 @@ impl TerminalState {
         self.grid.mouse_protocol
     }
 
+    /// Absolute row (scrollback + viewport) of the most recent OSC 133;A
+    /// shell prompt mark, if the guest shell reports semantic prompts.
+    pub fn last_prompt_abs_row(&self) -> Option<usize> {
+        self.grid.last_prompt_abs_row
+    }
+
     /// Encode a mouse event for the guest according to its requested mouse
     /// protocol and encoding. `col`/`row` are 0-based pane-local cell
     /// coordinates. Returns `None` when the guest did not ask for this kind
@@ -410,6 +416,9 @@ struct TerminalGrid {
     /// flushed to clients. The timestamp bounds the hold so a misbehaving
     /// guest cannot freeze rendering.
     sync_output_since: Option<std::time::Instant>,
+    /// Absolute row (scrollback + viewport) of the most recent shell prompt
+    /// reported via OSC 133;A (semantic prompt / shell integration).
+    last_prompt_abs_row: Option<usize>,
     /// Mouse reporting level requested via DECSET 9/1000/1002/1003.
     mouse_protocol: MouseProtocol,
     /// SGR mouse encoding (DECSET 1006). Without it the legacy X10 byte
@@ -466,6 +475,7 @@ impl TerminalGrid {
             insert_mode: false,
             bracketed_paste: false,
             sync_output_since: None,
+            last_prompt_abs_row: None,
             mouse_protocol: MouseProtocol::None,
             mouse_sgr: false,
             allow_passthrough,
@@ -1624,6 +1634,18 @@ impl Perform for TerminalGrid {
                     self.terminal_events.push(TerminalEvent::CwdChanged { cwd });
                 }
             }
+            b"133" => {
+                // OSC 133 semantic prompt marks (shell integration). Only
+                // the prompt-start mark ("A") is tracked for now; it gives
+                // downstream consumers (e.g. agent detection) the location
+                // of the last shell prompt.
+                if params
+                    .get(1)
+                    .is_some_and(|kind| kind.first() == Some(&b'A'))
+                {
+                    self.last_prompt_abs_row = Some(self.scrollback.len() + self.cursor_y);
+                }
+            }
             b"52" => {
                 // OSC 52 clipboard write: params are (52, selection, base64
                 // data). Queries ("?") are not answered, and payloads that
@@ -1946,6 +1968,22 @@ mod tests {
             std::time::Instant::now() - (super::SYNC_OUTPUT_TIMEOUT + Duration::from_millis(50)),
         );
         assert!(!state.synchronized_output_active());
+    }
+
+    #[test]
+    fn osc133_prompt_marks_track_last_prompt_row() {
+        let mut state = TerminalState::new(20, 4);
+        assert_eq!(state.last_prompt_abs_row(), None);
+
+        state.feed(b"\x1b]133;A\x07$ echo hi\r\n");
+        assert_eq!(state.last_prompt_abs_row(), Some(0));
+
+        state.feed(b"hi\r\n\x1b]133;A\x07$ ");
+        assert_eq!(state.last_prompt_abs_row(), Some(2));
+
+        // Non-A marks don't move the prompt row.
+        state.feed(b"\x1b]133;C\x07");
+        assert_eq!(state.last_prompt_abs_row(), Some(2));
     }
 
     #[test]

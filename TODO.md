@@ -48,8 +48,10 @@ herdrはlibghostty-vt(vendored, Zig FFI)に委譲し、足りない分を `src/p
 - [x] DONE **OSC 52 inbound** — osc_dispatchで受けてbase64デコードし、全attachedクライアントへ
       OSC 52フレームをブロードキャスト(tmuxのset-clipboard相当)。256KiB上限・クエリ(`?`)は無応答で無視。
       vteはstd featureでOSCペイロード無制限Vecのためdispatch側でcap
-- [ ] **OSC 133 (semantic prompt)** — shell integration。agent検知の region 計算にも使える
-- [ ] OSC 10/11 (fg/bg色 query) — TUIのダークモード検知が壊れる原因になりがち
+- [x] DONE **OSC 133 (semantic prompt)** — `133;A` (prompt start) の絶対行をpane毎に追跡
+      (`last_prompt_abs_row`)。P3 agent検知の「最後のプロンプト以降」region計算に使う。B/C/Dマークは必要になったら
+- [ ] ⏸ 要判断 OSC 10/11 (fg/bg色 query) — 応答戦略の判断待ち: (a)固定デフォルト応答(ダーク/ライト誤検知リスク),
+      (b)ホスト端末へ問い合わせ中継(実装複雑・非同期), (c)現状維持(無応答=アプリ側タイムアウト)。推奨は(b)だが工数大
 - [ ] OSC 8 hyperlink をgridで解釈(現状passthrough転送のみ、自前URL検知でのemitはあり)
 - [ ] ⏸ 要判断 kitty keyboard protocol (herdr `src/pane/kitty_keyboard.rs`) — 対応範囲(パススルーのみか完全実装か)の判断待ち
 - [ ] ⏸ 要判断 kitty graphics — herdrはフルサポート(`src/kitty_graphics.rs`, 32MBフレーム上限)だが実装コスト大。採否の判断待ち
