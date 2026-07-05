@@ -21,12 +21,12 @@ use crate::cli::Cli;
 use crate::command_history::CommandHistory;
 use crate::config;
 use crate::input::{CommandAction, InputAction, KeyMapper, encode_key_to_bytes};
+use crate::runtime::event_loop::{FRAME_DURATION_60_FPS, poll_event_for};
 use crate::session::manager::SessionOptions;
 use crate::session::manager::{PaneTerminalEvent, SessionManager};
 use crate::session::terminal_state::{CellStyle, TerminalEvent};
 use crate::storage::{DataStore, unix_time_now};
 use crate::ui::window_manager::{Direction, WindowId};
-use crate::runtime::event_loop::{FRAME_DURATION_60_FPS, poll_event_for};
 use types::*;
 
 pub type ClientId = u64;

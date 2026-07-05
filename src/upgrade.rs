@@ -1,5 +1,3 @@
-#![cfg(unix)]
-
 use self_update::backends::github::{ReleaseList, Update as GithubUpdate};
 use self_update::update::Release;
 use semver::Version;
@@ -30,7 +28,8 @@ struct LatestRelease {
 
 trait UpdateSource {
     fn latest_release(&self, request: &UpdateRequest) -> Result<LatestRelease, String>;
-    fn perform_update(&self, request: &UpdateRequest, latest: &LatestRelease) -> Result<(), String>;
+    fn perform_update(&self, request: &UpdateRequest, latest: &LatestRelease)
+    -> Result<(), String>;
 }
 
 struct GithubUpdateSource;
@@ -53,7 +52,11 @@ impl UpdateSource for GithubUpdateSource {
         latest_release_from_release(release, request)
     }
 
-    fn perform_update(&self, request: &UpdateRequest, latest: &LatestRelease) -> Result<(), String> {
+    fn perform_update(
+        &self,
+        request: &UpdateRequest,
+        latest: &LatestRelease,
+    ) -> Result<(), String> {
         GithubUpdate::configure()
             .repo_owner(REPO_OWNER)
             .repo_name(REPO_NAME)
@@ -121,7 +124,11 @@ impl UpdateSource for MockUpdateSource {
         }
     }
 
-    fn perform_update(&self, _request: &UpdateRequest, _latest: &LatestRelease) -> Result<(), String> {
+    fn perform_update(
+        &self,
+        _request: &UpdateRequest,
+        _latest: &LatestRelease,
+    ) -> Result<(), String> {
         match self.state {
             MockUpdateState::Error => Err("mock upgrade failure".to_string()),
             MockUpdateState::UpToDate | MockUpdateState::HasUpdate => Ok(()),
@@ -223,14 +230,12 @@ fn latest_release_from_release(
     release: Release,
     request: &UpdateRequest,
 ) -> Result<LatestRelease, String> {
-    let asset = release
-        .asset_for(&request.target, None)
-        .ok_or_else(|| {
-            format!(
-                "latest release does not include an asset for target {}",
-                request.target
-            )
-        })?;
+    let asset = release.asset_for(&request.target, None).ok_or_else(|| {
+        format!(
+            "latest release does not include an asset for target {}",
+            request.target
+        )
+    })?;
     Ok(LatestRelease {
         version: normalize_version_string(&release.version),
         tag: release.version,

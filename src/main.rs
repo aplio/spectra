@@ -8,13 +8,21 @@ fn main() {
         std::process::exit(1);
     }
     let mode = cli.mode();
-    if mode == spectra::cli::CliMode::Update {
-        if spectra::runtime::client::server_is_active() {
+    if matches!(
+        mode,
+        spectra::cli::CliMode::Update | spectra::cli::CliMode::Check
+    ) {
+        if mode == spectra::cli::CliMode::Update && spectra::runtime::client::server_is_active() {
             eprintln!("Error: --update cannot run while a spectra server is active");
             std::process::exit(1);
         }
 
-        match spectra::upgrade::run(spectra::upgrade::UpdateCommand::Update) {
+        let command = if mode == spectra::cli::CliMode::Update {
+            spectra::upgrade::UpdateCommand::Update
+        } else {
+            spectra::upgrade::UpdateCommand::Check
+        };
+        match spectra::upgrade::run(command) {
             Ok(message) => {
                 println!("{message}");
                 return;
@@ -30,7 +38,9 @@ fn main() {
         std::process::exit(1);
     }
     let result = match mode {
-        spectra::cli::CliMode::Update => unreachable!("update mode handled above"),
+        spectra::cli::CliMode::Update | spectra::cli::CliMode::Check => {
+            unreachable!("update/check modes handled above")
+        }
         spectra::cli::CliMode::RunServer => spectra::runtime::server::run(cli),
         spectra::cli::CliMode::AttachOrCreate => {
             spectra::runtime::client::run_attach_or_create(cli)

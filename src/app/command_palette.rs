@@ -3,8 +3,8 @@ use std::mem;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::input::CommandAction;
 use crate::filtering::fzf_style_match;
+use crate::input::CommandAction;
 
 use super::types::*;
 use super::{App, AppSignal};

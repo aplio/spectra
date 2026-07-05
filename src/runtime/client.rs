@@ -475,10 +475,9 @@ fn bootstrap_server_cwd(cli: &Cli) -> io::Result<PathBuf> {
     }
 
     std::env::current_dir().map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("failed to detect current directory for --cwd: {err}"),
-        )
+        io::Error::other(format!(
+            "failed to detect current directory for --cwd: {err}"
+        ))
     })
 }
 
@@ -668,6 +667,7 @@ mod tests {
             cwd: Some(explicit_cwd.clone()),
             shell: None,
             update: false,
+            check: false,
             subcommand: None,
             command: Vec::new(),
         };
@@ -690,6 +690,7 @@ mod tests {
             cwd: None,
             shell: None,
             update: false,
+            check: false,
             subcommand: None,
             command: Vec::new(),
         };

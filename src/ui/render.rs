@@ -16,12 +16,10 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::session::manager::RenderFrame;
 use crate::session::terminal_state::{CellStyle, StyledCell};
-use crate::ui::window_manager::{Divider, DividerOrientation};
 use crate::ui::style::{apply_style, reset_style};
 use crate::ui::text::{display_width, truncate_to_width};
-use crate::ui::url::{
-    UrlSpan, find_web_url_spans, write_hyperlink_close, write_hyperlink_open,
-};
+use crate::ui::url::{UrlSpan, find_web_url_spans, write_hyperlink_close, write_hyperlink_open};
+use crate::ui::window_manager::{Divider, DividerOrientation};
 
 #[derive(Debug, Clone)]
 pub struct SystemOverlay {

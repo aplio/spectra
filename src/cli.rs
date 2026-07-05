@@ -8,6 +8,7 @@ pub enum CliMode {
     RunServer,
     RunCommand,
     Update,
+    Check,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -81,7 +82,11 @@ pub enum CliCommand {
 }
 
 #[derive(Debug, Clone, Parser)]
-#[command(name = "spectra", about = "tmux-like terminal session manager")]
+#[command(
+    name = "spectra",
+    about = "tmux-like terminal session manager",
+    version
+)]
 pub struct Cli {
     /// Internal flag: run only the socket server runtime.
     #[arg(long, hide = true)]
@@ -103,6 +108,10 @@ pub struct Cli {
     #[arg(long)]
     pub update: bool,
 
+    /// Check whether a newer spectra release is available without installing it.
+    #[arg(long, conflicts_with = "update")]
+    pub check: bool,
+
     /// Optional subcommand command surface.
     #[command(subcommand)]
     pub subcommand: Option<CliCommand>,
@@ -122,6 +131,8 @@ impl Cli {
             CliMode::RunServer
         } else if self.update {
             CliMode::Update
+        } else if self.check {
+            CliMode::Check
         } else if matches!(self.subcommand, Some(CliCommand::AttachSession { .. }))
             || self.subcommand.is_none()
         {
@@ -149,19 +160,22 @@ impl Cli {
         if self.attach.is_some() && self.subcommand.is_some() {
             return Err("--attach cannot be used with subcommands".to_string());
         }
-        if self.update && self.server {
-            return Err("--update cannot be used with --server".to_string());
-        }
-        if self.update && self.attach.is_some() {
-            return Err("--update cannot be used with --attach".to_string());
-        }
-        if self.update && self.subcommand.is_some() {
-            return Err("--update cannot be used with subcommands".to_string());
-        }
-        if self.update
-            && (self.cwd.is_some() || self.shell.is_some() || !self.command.is_empty())
-        {
-            return Err("--update cannot be used with startup options".to_string());
+        for (enabled, flag) in [(self.update, "--update"), (self.check, "--check")] {
+            if !enabled {
+                continue;
+            }
+            if self.server {
+                return Err(format!("{flag} cannot be used with --server"));
+            }
+            if self.attach.is_some() {
+                return Err(format!("{flag} cannot be used with --attach"));
+            }
+            if self.subcommand.is_some() {
+                return Err(format!("{flag} cannot be used with subcommands"));
+            }
+            if self.cwd.is_some() || self.shell.is_some() || !self.command.is_empty() {
+                return Err(format!("{flag} cannot be used with startup options"));
+            }
         }
         Ok(())
     }
@@ -218,6 +232,41 @@ mod tests {
         let cli = Cli::try_parse_from(["spectra", "--update"]).expect("parse update");
         assert!(cli.update);
         assert_eq!(cli.mode(), CliMode::Update);
+    }
+
+    #[test]
+    fn parses_check_flag() {
+        let cli = Cli::try_parse_from(["spectra", "--check"]).expect("parse check");
+        assert!(cli.check);
+        assert_eq!(cli.mode(), CliMode::Check);
+    }
+
+    #[test]
+    fn check_conflicts_with_update() {
+        let err = Cli::try_parse_from(["spectra", "--check", "--update"])
+            .expect_err("check/update conflict");
+        assert!(err.to_string().contains("cannot be used with"));
+    }
+
+    #[test]
+    fn rejects_check_with_startup_options() {
+        let cli = Cli::try_parse_from(["spectra", "--check", "--cwd", "/tmp"])
+            .expect("parse check startup option");
+        assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_check_with_command_subcommand() {
+        let cli = Cli::try_parse_from(["spectra", "--check", "new-session"])
+            .expect("parse check with command");
+        assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn version_flag_prints_version() {
+        let err = Cli::try_parse_from(["spectra", "--version"]).expect_err("version exits parse");
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert!(err.to_string().contains(env!("CARGO_PKG_VERSION")));
     }
 
     #[test]

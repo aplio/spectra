@@ -5,11 +5,11 @@ use crossterm::style::Color;
 use serde::{Deserialize, Serialize};
 
 use crate::config;
+use crate::input::text_input::TextInput;
 use crate::input::{CommandAction, KeyMapper};
 use crate::session::manager::SessionManager;
 use crate::session::terminal_state::{CellStyle, StyledCell};
 use crate::ui::window_manager::WindowId;
-use crate::input::text_input::TextInput;
 
 pub(super) struct ManagedSession {
     pub ordinal: usize,
