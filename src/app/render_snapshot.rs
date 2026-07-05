@@ -380,7 +380,7 @@ impl App {
             } => self.system_tree_overlay_for_state(state, Some((*target, buffer))),
             InputMode::SystemTree { state } => self.system_tree_overlay_for_state(state, None),
             InputMode::CommandPalette { state } => {
-                let entries = Self::command_palette_entries_for(self.view.locked_input);
+                let entries = Self::command_palette_entries_for(self.command_palette_context());
                 let recent_command_ids = self.command_history.get_recent_commands(100);
                 let candidates =
                     Self::command_palette_candidates(state, &entries, &recent_command_ids);

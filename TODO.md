@@ -20,7 +20,7 @@
       本バッチ完了時に 0.2.0 へ bump するか要確認 → とりあえず bump して push する方針
 - [x] DONE cursor mode の `v` anchor toggle が効かない疑い — 原因判明: 移動キーが無条件に selection_anchor をクリアしていた。`visual` フラグ導入で v 選択は移動で伸長し、y はヤンク後 Normal へ戻る(vi 準拠)
 - [ ] windowtree(SideWindowTree)の左端固定(x=0)ジオメトリのhardcode修正(P4の既知項目)
-- [ ] enter/leave cursor mode のアクションを command palette で文脈フィルタ(cursor mode中はleaveのみ、normal中はenterのみ表示)
+- [x] DONE enter/leave cursor mode のアクションを command palette で文脈フィルタ — `CommandPaletteContext` 導入でエントリ毎に表示可否を判定。palette は Normal からしか開けないため通常は enter のみ表示・leave は非表示(lock mode の enter/leave も同機構に統合)
 - [ ] アーキテクチャ+テストカバレッジの再確認。カバレッジの穴にテストを実装(最後に実施)
 - [ ] spectra内でClaude Codeを開くと下線が無駄に残ることがある(スクショ確認済み: プロンプト行に下線残留)。
       SGR underline の追跡/リセットまわりを調査→修正

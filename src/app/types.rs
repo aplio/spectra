@@ -228,6 +228,14 @@ pub(super) struct CommandPaletteState {
     pub selected: usize,
 }
 
+/// App-state snapshot used to decide which command-palette entries are
+/// applicable; extend it when future entries need more context.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct CommandPaletteContext {
+    pub locked_input: bool,
+    pub cursor_mode_active: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct PeekAllWindowsState {
     pub session_id: String,

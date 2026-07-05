@@ -2149,11 +2149,40 @@ fn command_palette_includes_enter_cursor_mode() {
 }
 
 #[test]
-fn command_palette_includes_leave_cursor_mode() {
+fn command_palette_hides_leave_cursor_mode_outside_cursor_mode() {
     let entries = App::command_palette_entries();
+    assert!(
+        !entries.iter().any(|entry| entry.id == "cursor-mode.leave"),
+        "leave entry is dead weight while not in cursor mode"
+    );
+}
+
+#[test]
+fn command_palette_shows_only_leave_cursor_mode_in_cursor_mode() {
+    let entries = App::command_palette_entries_for(super::CommandPaletteContext {
+        locked_input: false,
+        cursor_mode_active: true,
+    });
     assert!(entries.iter().any(|entry| {
         entry.id == "cursor-mode.leave" && entry.action == CommandAction::LeaveCursorMode
     }));
+    assert!(!entries.iter().any(|entry| entry.id == "cursor-mode.enter"));
+}
+
+#[test]
+fn command_palette_context_tracks_lock_and_cursor_mode() {
+    let mut app = build_app_with_history();
+    let ctx = app.command_palette_context();
+    assert!(!ctx.locked_input);
+    assert!(!ctx.cursor_mode_active);
+
+    app.view.locked_input = true;
+    app.view.input_mode = InputMode::CursorMode {
+        state: super::CursorModeState::default(),
+    };
+    let ctx = app.command_palette_context();
+    assert!(ctx.locked_input);
+    assert!(ctx.cursor_mode_active);
 }
 
 #[test]

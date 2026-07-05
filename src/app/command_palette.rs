@@ -27,7 +27,7 @@ impl App {
         }
 
         let recent_command_ids = self.command_history.get_recent_commands(100);
-        let entries = Self::command_palette_entries_for(self.view.locked_input);
+        let entries = Self::command_palette_entries_for(self.command_palette_context());
         let mut candidates =
             Self::command_palette_candidates(&state, &entries, &recent_command_ids);
         Self::command_palette_clamp_selected(&mut state, candidates.len());
@@ -213,7 +213,33 @@ impl App {
         });
     }
 
-    pub(super) fn command_palette_entries_for(locked_input: bool) -> Vec<CommandPaletteEntry> {
+    /// Context-filtered variant: the entry is only listed when `visible`
+    /// (derived from [`CommandPaletteContext`]) holds.
+    #[allow(clippy::too_many_arguments)]
+    fn push_command_palette_entry_if(
+        entries: &mut Vec<CommandPaletteEntry>,
+        visible: bool,
+        id: &str,
+        action: CommandAction,
+        label: &str,
+        search_key: &str,
+        preview_lines: &[&str],
+    ) {
+        if visible {
+            Self::push_command_palette_entry(entries, id, action, label, search_key, preview_lines);
+        }
+    }
+
+    pub(super) fn command_palette_context(&self) -> CommandPaletteContext {
+        CommandPaletteContext {
+            locked_input: self.view.locked_input,
+            cursor_mode_active: matches!(self.view.input_mode, InputMode::CursorMode { .. }),
+        }
+    }
+
+    pub(super) fn command_palette_entries_for(
+        ctx: CommandPaletteContext,
+    ) -> Vec<CommandPaletteEntry> {
         let mut entries = Vec::new();
 
         Self::push_command_palette_entry(
@@ -402,8 +428,9 @@ impl App {
                 "exit: any key restores previous focus",
             ],
         );
-        Self::push_command_palette_entry(
+        Self::push_command_palette_entry_if(
             &mut entries,
+            !ctx.cursor_mode_active,
             "cursor-mode.enter",
             CommandAction::EnterCursorMode,
             "Enter cursor mode",
@@ -413,8 +440,9 @@ impl App {
                 "view: freeze current pane viewport + scrollback snapshot",
             ],
         );
-        Self::push_command_palette_entry(
+        Self::push_command_palette_entry_if(
             &mut entries,
+            ctx.cursor_mode_active,
             "cursor-mode.leave",
             CommandAction::LeaveCursorMode,
             "Leave cursor mode",
@@ -570,36 +598,35 @@ impl App {
             ],
         );
 
-        if locked_input {
-            Self::push_command_palette_entry(
-                &mut entries,
-                "client.leave_lock_mode",
-                CommandAction::LeaveLockMode,
-                "Leave lock mode",
-                "leave lock mode unlock",
-                &["action: leave lock mode", "scope: current client"],
-            );
-        } else {
-            Self::push_command_palette_entry(
-                &mut entries,
-                "client.enter_lock_mode",
-                CommandAction::EnterLockMode,
-                "Enter lock mode",
-                "enter lock mode lock",
-                &[
-                    "action: enter lock mode",
-                    "scope: current client",
-                    "all keys forwarded to pane",
-                ],
-            );
-        }
+        Self::push_command_palette_entry_if(
+            &mut entries,
+            ctx.locked_input,
+            "client.leave_lock_mode",
+            CommandAction::LeaveLockMode,
+            "Leave lock mode",
+            "leave lock mode unlock",
+            &["action: leave lock mode", "scope: current client"],
+        );
+        Self::push_command_palette_entry_if(
+            &mut entries,
+            !ctx.locked_input,
+            "client.enter_lock_mode",
+            CommandAction::EnterLockMode,
+            "Enter lock mode",
+            "enter lock mode lock",
+            &[
+                "action: enter lock mode",
+                "scope: current client",
+                "all keys forwarded to pane",
+            ],
+        );
 
         entries
     }
 
     #[cfg(test)]
     pub(super) fn command_palette_entries() -> Vec<CommandPaletteEntry> {
-        Self::command_palette_entries_for(false)
+        Self::command_palette_entries_for(CommandPaletteContext::default())
     }
 
     pub(super) fn command_palette_candidates(

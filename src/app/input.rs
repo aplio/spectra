@@ -570,6 +570,7 @@ impl App {
 
     pub(super) fn handle_paste(&mut self, text: String) -> io::Result<AppSignal> {
         self.needs_render = true;
+        let palette_ctx = self.command_palette_context();
         match &mut self.view.input_mode {
             InputMode::RenameTreeItem { buffer, .. } => {
                 buffer.push_str(&text);
@@ -580,7 +581,7 @@ impl App {
             InputMode::CommandPalette { state } => {
                 let text = text.trim_end_matches(['\r', '\n']).trim_end_matches('\0');
                 if state.text_input.insert_text(text) {
-                    let entries = Self::command_palette_entries_for(self.view.locked_input);
+                    let entries = Self::command_palette_entries_for(palette_ctx);
                     let recent_command_ids = self.command_history.get_recent_commands(100);
                     let candidates =
                         Self::command_palette_candidates(state, &entries, &recent_command_ids);
