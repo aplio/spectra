@@ -1790,6 +1790,36 @@ mod tests {
     }
 
     #[test]
+    fn claude_code_style_underline_off_reaches_renderer_output() {
+        // End-to-end regression for stray underlines: a guest draws a curly
+        // underline (SGR 4:3), turns it off colon-style (SGR 4:0), then
+        // prints a plain prompt line. The renderer must emit the plain row
+        // from a reset (underline-off) state and never re-underline it.
+        let mut state = crate::session::terminal_state::TerminalState::new(16, 2);
+        state.feed(b"\x1b[4:3munderlined\x1b[4:0m\r\nplain>");
+
+        let mut renderer = FrameRenderer::new();
+        let frame = frame_with_rows(16, vec![state.row_cells(0), state.row_cells(1)]);
+        let mut out = Vec::new();
+        renderer
+            .render_to_writer(&mut out, &frame, "s", 16, 3, true, None, None)
+            .expect("full render");
+        let ansi = String::from_utf8_lossy(&out);
+
+        let (_, after_second_row) = ansi
+            .split_once("\x1b[2;1H")
+            .expect("second row is rendered");
+        assert!(
+            after_second_row.contains("\x1b[0m") && after_second_row.contains("plain>"),
+            "plain row must start from a reset style; output={ansi:?}"
+        );
+        assert!(
+            !after_second_row.contains("\x1b[4m"),
+            "plain row must not re-enable underline; output={ansi:?}"
+        );
+    }
+
+    #[test]
     fn compose_frame_styles_adjacent_dividers_for_focused_pane_when_split() {
         let frame = RenderFrame {
             panes: vec![

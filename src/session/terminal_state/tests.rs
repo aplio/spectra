@@ -492,6 +492,85 @@ fn applies_sgr_styles_and_resets() {
 }
 
 #[test]
+fn sgr_colon_underline_subparams_toggle_underline_only() {
+    let mut state = TerminalState::new(8, 1);
+    // Curly underline (kitty-style 4:3) must set underline without leaking
+    // the style subparameter as an independent SGR code (3 = italic).
+    state.feed(b"\x1b[31m\x1b[4:3mA\x1b[4:0mB");
+
+    let row = state.row_cells(0);
+    assert!(row[0].style.underlined);
+    assert!(!row[0].style.italic);
+    // 4:0 turns underline off without resetting other attributes.
+    assert!(!row[1].style.underlined);
+    assert_eq!(row[1].style.fg, Some(Color::AnsiValue(1)));
+}
+
+#[test]
+fn sgr_underline_color_arguments_do_not_leak_into_codes() {
+    let mut state = TerminalState::new(8, 1);
+    // 58 (underline color) arguments must be consumed, not interpreted as
+    // codes: flattened, `58:5:4` would enable blink (5) and underline (4).
+    state.feed(b"\x1b[58:5:4mA\x1b[58;5;4mB\x1b[58:2::255:4:9mC\x1b[59mD");
+
+    let row = state.row_cells(0);
+    for cell in row.iter().take(4) {
+        assert_eq!(
+            cell.style,
+            CellStyle::default(),
+            "underline-color SGR must have no attribute side effects: {cell:?}"
+        );
+    }
+}
+
+#[test]
+fn sgr_21_is_double_underline_not_bold_off() {
+    let mut state = TerminalState::new(4, 1);
+    state.feed(b"\x1b[1;21mA\x1b[24mB");
+
+    let row = state.row_cells(0);
+    assert!(row[0].style.bold);
+    assert!(row[0].style.underlined);
+    assert!(!row[1].style.underlined);
+}
+
+#[test]
+fn claude_code_style_underline_does_not_stick_to_next_line() {
+    // Regression: styled underline plus underline color, then colon-form
+    // underline off (Claude Code style). The following plain prompt line
+    // must not inherit the underline.
+    let mut state = TerminalState::new(16, 2);
+    state.feed(b"\x1b[4:3m\x1b[58:5:12munderlined\x1b[4:0m\x1b[59m\r\nplain");
+
+    let underlined_row = state.row_cells(0);
+    assert!(underlined_row[0].style.underlined);
+    let plain_row = state.row_cells(1);
+    for cell in plain_row.iter().take(5) {
+        assert!(
+            !cell.style.underlined,
+            "plain prompt line must not keep the underline: {cell:?}"
+        );
+    }
+}
+
+#[test]
+fn parses_colon_form_extended_colors() {
+    let mut state = TerminalState::new(4, 1);
+    state.feed(b"\x1b[38:5:196mA\x1b[0m\x1b[38:2:12:34:56mB\x1b[0m\x1b[38:2::12:34:56mC");
+
+    let row = state.row_cells(0);
+    assert_eq!(row[0].style.fg, Some(Color::AnsiValue(196)));
+    let rgb = Some(Color::Rgb {
+        r: 12,
+        g: 34,
+        b: 56,
+    });
+    assert_eq!(row[1].style.fg, rgb);
+    // ITU colon form with an (empty) colorspace id.
+    assert_eq!(row[2].style.fg, rgb);
+}
+
+#[test]
 fn parses_256_and_rgb_colors() {
     let mut state = TerminalState::new(4, 1);
     state.feed(b"\x1b[38;5;196;48;2;12;34;56mX");

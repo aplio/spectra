@@ -563,54 +563,69 @@ impl TerminalGrid {
         value.and_then(|v| u8::try_from(v).ok())
     }
 
-    fn sgr_values(params: &Params) -> Vec<Option<u16>> {
-        let mut values = Vec::new();
-        for param in params.iter() {
-            if param.is_empty() {
-                values.push(None);
-            } else {
-                values.extend(param.iter().copied().map(Some));
+    /// Parse the color arguments of an SGR 38/48/58 extended-color
+    /// introducer. `args` starts at the color mode (`5` or `2`). Colon-form
+    /// direct color may carry an ITU colorspace id (`2:cs:r:g:b`), which is
+    /// skipped. Returns the parsed color (if complete) and how many of
+    /// `args` were consumed.
+    fn parse_color_args(args: &[u16], colon_form: bool) -> (Option<Color>, usize) {
+        match args.first() {
+            Some(5) => {
+                let color = Self::to_u8(args.get(1).copied()).map(Color::AnsiValue);
+                (color, args.len().min(2))
             }
-        }
-        if values.is_empty() {
-            values.push(Some(0));
-        }
-        values
-    }
-
-    fn parse_extended_color(values: &[Option<u16>], start: usize) -> (Option<Color>, usize) {
-        let Some(mode) = values.get(start).copied().flatten() else {
-            return (None, 0);
-        };
-
-        match mode {
-            5 => {
-                let consumed = values.len().saturating_sub(start).min(2);
-                let color =
-                    Self::to_u8(values.get(start + 1).copied().flatten()).map(Color::AnsiValue);
-                (color, consumed.max(1))
-            }
-            2 => {
-                let consumed = values.len().saturating_sub(start).min(4);
+            Some(2) => {
+                // Colon form with >=5 args carries a colorspace id between
+                // the mode and the components; the semicolon form never does.
+                let rgb_start = if colon_form && args.len() >= 5 { 2 } else { 1 };
                 let color = match (
-                    Self::to_u8(values.get(start + 1).copied().flatten()),
-                    Self::to_u8(values.get(start + 2).copied().flatten()),
-                    Self::to_u8(values.get(start + 3).copied().flatten()),
+                    Self::to_u8(args.get(rgb_start).copied()),
+                    Self::to_u8(args.get(rgb_start + 1).copied()),
+                    Self::to_u8(args.get(rgb_start + 2).copied()),
                 ) {
                     (Some(r), Some(g), Some(b)) => Some(Color::Rgb { r, g, b }),
                     _ => None,
                 };
-                (color, consumed.max(1))
+                (color, args.len().min(rgb_start + 3))
             }
-            _ => (None, 1),
+            Some(_) => (None, 1),
+            None => (None, 0),
+        }
+    }
+
+    /// Parse the payload of an SGR 38/48/58 parameter. `group` is the
+    /// parameter the introducer arrived in (colon subparameters travel in
+    /// the same group), `rest` the following parameters (legacy semicolon
+    /// form). Returns the color and how many *following* parameters were
+    /// consumed (always 0 for the colon form).
+    fn parse_sgr_color(group: &[u16], rest: &[&[u16]]) -> (Option<Color>, usize) {
+        if group.len() > 1 {
+            let (color, _) = Self::parse_color_args(&group[1..], true);
+            (color, 0)
+        } else {
+            let args = rest
+                .iter()
+                .take(4)
+                .map(|group| group.first().copied().unwrap_or(0))
+                .collect::<Vec<_>>();
+            Self::parse_color_args(&args, false)
         }
     }
 
     fn apply_sgr(&mut self, params: &Params) {
-        let values = Self::sgr_values(params);
+        // Keep each parameter's colon subparameters grouped: flattening them
+        // into the top-level code stream desynchronizes attribute state
+        // (e.g. `4:0` would enable underline via `4`, `58:5:4` would enable
+        // blink and underline via its color arguments).
+        let groups = params.iter().collect::<Vec<_>>();
+        if groups.is_empty() {
+            self.active_style = CellStyle::default();
+            return;
+        }
         let mut i = 0;
-        while i < values.len() {
-            let code = values[i].unwrap_or(0);
+        while i < groups.len() {
+            let group = groups[i];
+            let code = group.first().copied().unwrap_or(0);
             match code {
                 0 => {
                     self.active_style = CellStyle::default();
@@ -618,13 +633,22 @@ impl TerminalGrid {
                 1 => self.active_style.bold = true,
                 2 => self.active_style.dim = true,
                 3 => self.active_style.italic = true,
-                4 => self.active_style.underlined = true,
+                // `4` may carry an underline-style subparameter (kitty
+                // extension): 4:0 disables, 4:1..=4:5 select styled
+                // underlines, all rendered here as a plain underline.
+                4 => {
+                    self.active_style.underlined =
+                        group.get(1).copied().is_none_or(|style| style != 0);
+                }
                 5 => self.active_style.slow_blink = true,
                 6 => self.active_style.rapid_blink = true,
                 7 => self.active_style.reverse = true,
                 8 => self.active_style.hidden = true,
                 9 => self.active_style.crossed_out = true,
-                21 => self.active_style.bold = false,
+                // ECMA-48 defines 21 as doubly underlined; xterm, kitty and
+                // ghostty agree (bold-off is 22). Rendered as a plain
+                // underline.
+                21 => self.active_style.underlined = true,
                 22 => {
                     self.active_style.bold = false;
                     self.active_style.dim = false;
@@ -648,18 +672,29 @@ impl TerminalGrid {
                 100..=107 => {
                     self.active_style.bg = Some(Color::AnsiValue((code - 100 + 8) as u8));
                 }
-                38 | 48 => {
-                    let (color, consumed) = Self::parse_extended_color(&values, i + 1);
-                    if let Some(color) = color {
-                        if code == 38 {
-                            self.active_style.fg = Some(color);
-                        } else {
-                            self.active_style.bg = Some(color);
+                38 | 48 | 58 => {
+                    let (color, consumed) = Self::parse_sgr_color(group, &groups[i + 1..]);
+                    match code {
+                        38 => {
+                            if let Some(color) = color {
+                                self.active_style.fg = Some(color);
+                            }
                         }
+                        48 => {
+                            if let Some(color) = color {
+                                self.active_style.bg = Some(color);
+                            }
+                        }
+                        // 58 (underline color) is parsed only so its
+                        // arguments cannot leak into the code stream; the
+                        // color itself is not tracked.
+                        _ => {}
                     }
                     i += consumed + 1;
                     continue;
                 }
+                // 59 resets the underline color, which is not tracked.
+                59 => {}
                 _ => {}
             }
             i += 1;

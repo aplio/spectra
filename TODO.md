@@ -22,8 +22,9 @@
 - [ ] windowtree(SideWindowTree)の左端固定(x=0)ジオメトリのhardcode修正(P4の既知項目)
 - [x] DONE enter/leave cursor mode のアクションを command palette で文脈フィルタ — `CommandPaletteContext` 導入でエントリ毎に表示可否を判定。palette は Normal からしか開けないため通常は enter のみ表示・leave は非表示(lock mode の enter/leave も同機構に統合)
 - [ ] アーキテクチャ+テストカバレッジの再確認。カバレッジの穴にテストを実装(最後に実施)
-- [ ] spectra内でClaude Codeを開くと下線が無駄に残ることがある(スクショ確認済み: プロンプト行に下線残留)。
-      SGR underline の追跡/リセットまわりを調査→修正
+- [x] DONE spectra内でClaude Codeを開くと下線が無駄に残ることがある(スクショ確認済み: プロンプト行に下線残留)。
+      原因判明: SGRパーサがコロン下位パラメータを平坦化していた — `4:3`(波下線)が下線+イタリック、`4:0`(下線オフ)が「下線オン→全リセット」、`58:5:n`(下線色)の引数が独立コード(5=blink、4=下線!)として誤解釈され下線が固着。
+      修正: vteのparamスライスを保ったままSGR解釈(`4:0`=off/`4:1..5`=on/`21`=二重下線(ECMA-48・xterm/kitty/ghostty準拠)/`38:48:58`のコロン・セミコロン両形式consume/`59` no-op)。レンダラ側は全リセット+再構築方式で元々正しいことをテストで確認
 - [x] DONE drag中に status bar へ `shift+drag to select` 的なヒントを表示 — guest が mouse を掴む pane で左drag が転送された時のみ `shift+drag to select text` を2秒表示(drag継続中はリフレッシュ・通常paneのdragや単独クリックでは出さない・spectra側mouse無効時も出さない)
 - [ ] ghosttyでURL(`https://...`)のcmd+clickがspectra経由だと効かない。OSC 8送出の差分フレーム破損 or
       mouse capture干渉の疑い。調査→修正
