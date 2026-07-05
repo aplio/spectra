@@ -47,7 +47,10 @@ pub fn run(cli: Cli) -> io::Result<()> {
 
         did_work |= queue_pending_passthrough_messages(&mut clients, &mut app)?;
 
-        if app.has_pending_render() {
+        // A synchronized-output hold (DECSET 2026) defers frame delivery
+        // until the guest releases it or the hold times out; needs_render
+        // stays set so the frame flushes on the next pass.
+        if app.has_pending_render() && !app.render_hold_for_sync_output() {
             did_work = true;
             did_work |= queue_render_for_clients(&mut clients, &mut app)?;
         }

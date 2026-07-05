@@ -5381,6 +5381,63 @@ fn normal_key_on_closed_multi_pane_closes_focused_pane() {
 }
 
 #[test]
+fn paste_wraps_in_markers_when_guest_enables_bracketed_paste() {
+    let (mut app, writes) = build_recording_app_with_output(vec![b"\x1b[?2004h".to_vec()]);
+    app.tick();
+    take_recorded_writes(&writes);
+
+    app.handle_paste("hello".to_string()).expect("paste");
+
+    let recorded = take_recorded_writes(&writes);
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].1, b"\x1b[200~hello\x1b[201~".to_vec());
+}
+
+#[test]
+fn paste_sends_plain_text_when_guest_disables_bracketed_paste() {
+    let (mut app, writes) =
+        build_recording_app_with_output(vec![b"\x1b[?2004h\x1b[?2004l".to_vec()]);
+    app.tick();
+    take_recorded_writes(&writes);
+
+    app.handle_paste("hello".to_string()).expect("paste");
+
+    let recorded = take_recorded_writes(&writes);
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].1, b"hello".to_vec());
+}
+
+#[test]
+fn bracketed_paste_strips_embedded_end_marker() {
+    let (mut app, writes) = build_recording_app_with_output(vec![b"\x1b[?2004h".to_vec()]);
+    app.tick();
+    take_recorded_writes(&writes);
+
+    app.handle_paste("evil\x1b[201~rm -rf /\r".to_string())
+        .expect("paste");
+
+    let recorded = take_recorded_writes(&writes);
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].1, b"\x1b[200~evilrm -rf /\r\x1b[201~".to_vec());
+}
+
+#[test]
+fn sync_output_hold_follows_guest_requests() {
+    let (mut app, _writes) = build_recording_app_with_output(vec![b"\x1b[?2026h".to_vec()]);
+    assert!(!app.render_hold_for_sync_output());
+    app.tick();
+    assert!(app.render_hold_for_sync_output());
+}
+
+#[test]
+fn sync_output_hold_releases_on_reset() {
+    let (mut app, _writes) =
+        build_recording_app_with_output(vec![b"\x1b[?2026h\x1b[?2026l".to_vec()]);
+    app.tick();
+    assert!(!app.render_hold_for_sync_output());
+}
+
+#[test]
 fn exit_command_closed_process_multi_pane_closes_on_tick() {
     let mut app = build_app_with_close_on_write_behavior(CloseOnWriteBehavior::EXIT_COMMAND);
     app.current_session_mut()

@@ -337,6 +337,22 @@ impl SessionManager {
         self.panes.get(&pane_id).map(Pane::scrollback_text)
     }
 
+    /// Whether the focused pane's guest program enabled bracketed paste.
+    pub fn focused_bracketed_paste(&self) -> bool {
+        self.focused_pane_id()
+            .and_then(|pane_id| self.panes.get(&pane_id))
+            .is_some_and(Pane::bracketed_paste)
+    }
+
+    /// Whether any pane in the active window is holding frame output via
+    /// synchronized output (DECSET 2026).
+    pub fn active_window_sync_output_hold(&self) -> bool {
+        self.active_window_pane_ids()
+            .iter()
+            .filter_map(|pane_id| self.panes.get(pane_id))
+            .any(Pane::synchronized_output_active)
+    }
+
     pub fn focused_history_lines(&self) -> Option<Vec<String>> {
         let pane_id = self.focused_pane_id()?;
         self.panes.get(&pane_id).map(Pane::history_lines)

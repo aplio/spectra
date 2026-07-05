@@ -113,6 +113,14 @@ impl Pane {
         std::mem::take(&mut self.pending_passthrough)
     }
 
+    pub fn bracketed_paste(&self) -> bool {
+        self.terminal.bracketed_paste()
+    }
+
+    pub fn synchronized_output_active(&self) -> bool {
+        self.terminal.synchronized_output_active()
+    }
+
     pub fn take_terminal_events(&mut self) -> Vec<TerminalEvent> {
         std::mem::take(&mut self.pending_terminal_events)
     }

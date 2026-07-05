@@ -127,6 +127,19 @@ impl TerminalState {
         std::mem::take(&mut self.grid.response_queue)
     }
 
+    /// Whether the guest program enabled bracketed paste (DECSET 2004).
+    pub fn bracketed_paste(&self) -> bool {
+        self.grid.bracketed_paste
+    }
+
+    /// Whether the guest asked to hold frame output (DECSET 2026) and the
+    /// hold has not yet exceeded [`SYNC_OUTPUT_TIMEOUT`].
+    pub fn synchronized_output_active(&self) -> bool {
+        self.grid
+            .sync_output_since
+            .is_some_and(|since| since.elapsed() < SYNC_OUTPUT_TIMEOUT)
+    }
+
     pub fn row_text(&self, row: usize) -> String {
         self.grid.row_text(row)
     }
@@ -291,12 +304,24 @@ struct TerminalGrid {
     /// Insert Replacement Mode (IRM, CSI 4 h/l). When true, printing shifts
     /// existing characters to the right instead of overwriting.
     insert_mode: bool,
+    /// Bracketed paste (DECSET 2004) requested by the guest program. When
+    /// true, pasted text must be wrapped in ESC[200~ / ESC[201~ markers.
+    bracketed_paste: bool,
+    /// Synchronized output (DECSET 2026): while set, frames should not be
+    /// flushed to clients. The timestamp bounds the hold so a misbehaving
+    /// guest cannot freeze rendering.
+    sync_output_since: Option<std::time::Instant>,
     allow_passthrough: bool,
     passthrough_queue: Vec<Vec<u8>>,
     terminal_events: Vec<TerminalEvent>,
 }
 
 const MAX_SCROLLBACK_LINES: usize = 10_000;
+
+/// Upper bound on how long a synchronized-output hold (DECSET 2026) may
+/// suppress rendering. Mirrors the ~150 ms cap used by other terminals so a
+/// guest that never sends the reset cannot freeze the UI.
+pub const SYNC_OUTPUT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(150);
 
 impl TerminalGrid {
     fn new(width: usize, height: usize, allow_passthrough: bool) -> Self {
@@ -320,6 +345,8 @@ impl TerminalGrid {
             saved_screen: None,
             response_queue: Vec::new(),
             insert_mode: false,
+            bracketed_paste: false,
+            sync_output_since: None,
             allow_passthrough,
             passthrough_queue: Vec::new(),
             terminal_events: Vec::new(),
@@ -1618,15 +1645,21 @@ impl Perform for TerminalGrid {
             }
             'h' if intermediates == [b'?'] => {
                 for param in params.iter() {
-                    if matches!(param[0], 47 | 1047 | 1049) {
-                        self.enter_alternate_screen();
+                    match param[0] {
+                        47 | 1047 | 1049 => self.enter_alternate_screen(),
+                        2004 => self.bracketed_paste = true,
+                        2026 => self.sync_output_since = Some(std::time::Instant::now()),
+                        _ => {}
                     }
                 }
             }
             'l' if intermediates == [b'?'] => {
                 for param in params.iter() {
-                    if matches!(param[0], 47 | 1047 | 1049) {
-                        self.leave_alternate_screen();
+                    match param[0] {
+                        47 | 1047 | 1049 => self.leave_alternate_screen(),
+                        2004 => self.bracketed_paste = false,
+                        2026 => self.sync_output_since = None,
+                        _ => {}
                     }
                 }
             }
@@ -1723,6 +1756,8 @@ impl Perform for TerminalGrid {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use crossterm::style::Color;
 
     use super::{CellStyle, StyledCell, TerminalEvent, TerminalState};
@@ -1733,6 +1768,47 @@ mod tests {
         state.feed(b"abcde");
         assert_eq!(state.row_text(0), "abcd");
         assert_eq!(state.row_text(1), "e   ");
+    }
+
+    #[test]
+    fn bracketed_paste_mode_tracks_decset_2004() {
+        let mut state = TerminalState::new(10, 2);
+        assert!(!state.bracketed_paste());
+        state.feed(b"\x1b[?2004h");
+        assert!(state.bracketed_paste());
+        state.feed(b"\x1b[?2004l");
+        assert!(!state.bracketed_paste());
+    }
+
+    #[test]
+    fn synchronized_output_tracks_decset_2026() {
+        let mut state = TerminalState::new(10, 2);
+        assert!(!state.synchronized_output_active());
+        state.feed(b"\x1b[?2026h");
+        assert!(state.synchronized_output_active());
+        state.feed(b"\x1b[?2026l");
+        assert!(!state.synchronized_output_active());
+    }
+
+    #[test]
+    fn synchronized_output_hold_expires_after_timeout() {
+        let mut state = TerminalState::new(10, 2);
+        state.feed(b"\x1b[?2026h");
+        state.grid.sync_output_since = Some(
+            std::time::Instant::now() - (super::SYNC_OUTPUT_TIMEOUT + Duration::from_millis(50)),
+        );
+        assert!(!state.synchronized_output_active());
+    }
+
+    #[test]
+    fn combined_private_modes_apply_all_params() {
+        let mut state = TerminalState::new(10, 2);
+        state.feed(b"\x1b[?2004;2026h");
+        assert!(state.bracketed_paste());
+        assert!(state.synchronized_output_active());
+        state.feed(b"\x1b[?2004;2026l");
+        assert!(!state.bracketed_paste());
+        assert!(!state.synchronized_output_active());
     }
 
     #[test]

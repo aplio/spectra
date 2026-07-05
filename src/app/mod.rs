@@ -458,6 +458,13 @@ impl App {
         self.needs_render
     }
 
+    /// Whether rendering should be deferred because a pane in the active
+    /// window requested synchronized output (DECSET 2026). The hold is
+    /// bounded by [`crate::session::terminal_state::SYNC_OUTPUT_TIMEOUT`].
+    pub fn render_hold_for_sync_output(&self) -> bool {
+        self.current_session().active_window_sync_output_hold()
+    }
+
     pub fn render_snapshot_for_client(&mut self, client_id: ClientId) -> Option<RenderSnapshot> {
         if !self.needs_render {
             return None;
@@ -2139,7 +2146,18 @@ impl App {
             }
             InputMode::PeekAllWindows { .. } => Ok(AppSignal::None),
             InputMode::Normal => {
-                self.send_input_to_active_window(text.as_bytes())?;
+                if self.current_session().focused_bracketed_paste() {
+                    // Strip any embedded end marker so pasted content cannot
+                    // break out of the bracketed-paste region.
+                    let sanitized = text.replace("\x1b[201~", "");
+                    let mut bytes = Vec::with_capacity(sanitized.len() + 12);
+                    bytes.extend_from_slice(b"\x1b[200~");
+                    bytes.extend_from_slice(sanitized.as_bytes());
+                    bytes.extend_from_slice(b"\x1b[201~");
+                    self.send_input_to_active_window(&bytes)?;
+                } else {
+                    self.send_input_to_active_window(text.as_bytes())?;
+                }
                 Ok(AppSignal::None)
             }
         }
