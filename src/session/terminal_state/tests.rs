@@ -1204,26 +1204,23 @@ fn tmux_passthrough_can_be_disabled() {
 }
 
 #[test]
-fn osc8_sequences_are_forwarded_to_passthrough_queue() {
+fn osc8_sequences_are_not_forwarded_to_passthrough_queue() {
+    // OSC 8 is modelled per-cell (see `osc8_marks_printed_cells_with_hyperlink`)
+    // and re-emitted by the renderer aligned with the frame, so the raw guest
+    // sequence must NOT also be forwarded to the host. Double-emitting used to
+    // leave the host stuck in an open hyperlink state whenever a guest's open
+    // and close arrived in different output bursts, bleeding underline/link
+    // styling across the whole frame including spectra's own status line.
     let mut state = TerminalState::new(16, 2);
     state.feed(b"\x1b]8;;https://example.com\x07link\x1b]8;;\x07");
 
-    let passthrough = state.drain_passthrough();
-    assert_eq!(
-        passthrough,
-        vec![
-            b"\x1b]8;;https://example.com\x07".to_vec(),
-            b"\x1b]8;;\x07".to_vec()
-        ]
+    assert!(
+        state.drain_passthrough().is_empty(),
+        "OSC 8 must not be forwarded to the host passthrough channel"
     );
     assert_eq!(state.row_text(0), "link            ");
-}
-
-#[test]
-fn osc8_passthrough_respects_allow_passthrough_toggle() {
-    let mut state = TerminalState::new_with_passthrough(16, 2, false);
-    state.feed(b"\x1b]8;;https://example.com\x07link\x1b]8;;\x07");
-    assert!(state.drain_passthrough().is_empty());
+    // The link is still tracked per-cell for the renderer to emit.
+    assert_eq!(state.row_cells(0)[0].link.as_deref(), Some("https://example.com"));
 }
 
 #[test]

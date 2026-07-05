@@ -77,8 +77,12 @@ herdrはlibghostty-vt(vendored, Zig FFI)に委譲し、足りない分を `src/p
       (`last_prompt_abs_row`)。P3 agent検知の「最後のプロンプト以降」region計算に使う。B/C/Dマークは必要になったら
 - [x] DONE **OSC 10/11 (fg/bg色 query)** — 戦略(b)を採用: client起動時にホスト端末へ1回クエリ(150ms上限・非tty時スキップ)→Helloで報告→server cacheから即答(rgb 16bit形式・BEL/ST終端はクエリに追従)・未取得時は無応答維持・guest側setは無視(v1)
 - [x] DONE **OSC 8 hyperlink をgridで解釈** — `StyledCell` に `link: Option<Arc<str>>` を追加し、OSC 8 の
-      URIをアクティブリンクとして追跡して印字セルにスタンプ(URI上限2083B・passthrough転送は従来通り維持)。
+      URIをアクティブリンクとして追跡して印字セルにスタンプ(URI上限2083B)。
       レンダラはセルリンクを自前URL検知より優先してOSC 8でラップ出力
+- [x] FIX **OSC 8 のhost passthrough転送を廃止** — 従来はper-cell描画に加え生のOSC 8列もhostへpassthroughしていた(二重出力)。
+      guestのopen/closeが別々の出力バーストに分かれるとhostがopen-link状態のまま固定され、フレーム全体(spectra自身の
+      ステータスライン含む)に下線/リンクが漏れる(Claude Code等の頻繁再描画TUIで顕著)。per-cellレンダラがフレーム整合で
+      OSC 8を正しく再emitするため、passthrough転送は冗長かつ有害として削除。回帰テスト2本を更新(host非転送を保証)
 - [x] DONE kitty keyboard protocol — パススルー相当の軽量実装: pane毎(main/alt画面別)のflagスタック(push/pop/set/上限16)+`CSI ? u` クエリ応答+bit1(disambiguate)/bit8(report-all)のCSI-uエンコード(bit2/4/16は追跡のみ)。クライアントは `supports_keyboard_enhancement` 検出時のみ DISAMBIGUATE|REPORT_ALTERNATE_KEYS をpush。フル実装(イベント種別/associated text等)ではない
 - [x] 不採用 kitty graphics — ユーザー判断で不採用(2026-07-05)。必要になったら再検討
 
