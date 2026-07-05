@@ -114,6 +114,7 @@ pub struct App {
     should_quit: bool,
     needs_render: bool,
     needs_full_clear: bool,
+    available_update: Option<String>,
     renderer: crate::ui::render::FrameRenderer,
 }
 
@@ -231,6 +232,7 @@ impl App {
             should_quit: false,
             needs_render: true,
             needs_full_clear: true,
+            available_update: None,
             renderer: crate::ui::render::FrameRenderer::new(),
         };
 
@@ -336,6 +338,7 @@ impl App {
             should_quit: false,
             needs_render: true,
             needs_full_clear: true,
+            available_update: None,
             renderer: crate::ui::render::FrameRenderer::new(),
         };
 
@@ -520,6 +523,54 @@ impl App {
         if full_clear {
             self.needs_full_clear = true;
         }
+    }
+
+    /// Apply a fresh cached update-check result, if one exists. Returns
+    /// true when the cache was fresh, i.e. no background check is needed.
+    pub fn load_cached_update_check(&mut self) -> bool {
+        let now_unix = unix_time_now() as i64;
+        let Some(cache) = crate::upgrade::read_fresh_update_cache(self.store.base_dir(), now_unix)
+        else {
+            return false;
+        };
+        self.set_available_update(cache.newer_version());
+        true
+    }
+
+    /// Store the outcome of a background update check: successful checks
+    /// are cached and an available update is exposed to the status line;
+    /// errors are logged without caching so the next startup retries.
+    pub fn apply_update_check_result(&mut self, result: Result<Option<String>, String>) {
+        match result {
+            Ok(newer_version) => {
+                let cache = crate::upgrade::UpdateCheckCache::from_check_result(
+                    unix_time_now() as i64,
+                    newer_version.as_deref(),
+                );
+                if let Err(err) = crate::upgrade::write_update_cache(self.store.base_dir(), &cache)
+                {
+                    self.write_log(&format!("update check cache write failed: {err}"));
+                }
+                self.set_available_update(newer_version);
+            }
+            Err(err) => self.write_log(&format!("update check failed: {err}")),
+        }
+    }
+
+    fn set_available_update(&mut self, version: Option<String>) {
+        if version.is_some() {
+            self.request_render(false);
+        }
+        self.available_update = version;
+    }
+
+    /// `{update}` status token: `update available: vX.Y.Z` when a newer
+    /// release is known, empty otherwise.
+    fn update_token(&self) -> String {
+        self.available_update
+            .as_ref()
+            .map(|version| format!("update available: v{version}"))
+            .unwrap_or_default()
     }
 
     pub fn apply_attach_target(&mut self, target: &AttachTarget) -> Result<(), String> {
@@ -2997,6 +3048,7 @@ impl App {
             ("{pane_count}", session.pane_count().to_string()),
             ("{prefix}", prefix_state.to_string()),
             ("{agent}", self.focused_agent_token()),
+            ("{update}", self.update_token()),
             (
                 "{lock}",
                 if self.view.locked_input {

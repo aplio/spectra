@@ -327,6 +327,7 @@ fn build_app_for_resize_test() -> App {
         should_quit: false,
         needs_render: false,
         needs_full_clear: false,
+        available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     }
 }
@@ -444,6 +445,7 @@ fn build_app_with_history() -> App {
         should_quit: false,
         needs_render: false,
         needs_full_clear: false,
+        available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     }
 }
@@ -554,6 +556,7 @@ fn build_app_with_write_behavior(behavior: WriteBehavior) -> App {
         should_quit: false,
         needs_render: false,
         needs_full_clear: false,
+        available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     }
 }
@@ -621,6 +624,7 @@ fn build_app_with_close_on_write_behavior(behavior: CloseOnWriteBehavior) -> App
         should_quit: false,
         needs_render: false,
         needs_full_clear: false,
+        available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     }
 }
@@ -727,6 +731,7 @@ fn build_recording_app_one_session() -> (App, RecordedWrites) {
         should_quit: false,
         needs_render: false,
         needs_full_clear: false,
+        available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     };
 
@@ -815,6 +820,7 @@ fn build_recording_app_with_history() -> (App, RecordedWrites) {
         should_quit: false,
         needs_render: false,
         needs_full_clear: false,
+        available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     };
 
@@ -881,6 +887,7 @@ fn build_recording_app_with_output(output: Vec<Vec<u8>>) -> (App, RecordedWrites
         should_quit: false,
         needs_render: false,
         needs_full_clear: false,
+        available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     };
 
@@ -969,6 +976,7 @@ fn build_recording_app_multi_session() -> (App, RecordedWrites) {
         should_quit: false,
         needs_render: false,
         needs_full_clear: false,
+        available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     };
 
@@ -1073,6 +1081,7 @@ fn build_editor_command_app() -> (App, RecordedSpawnConfigs, BackendClosedFlags)
         should_quit: false,
         needs_render: false,
         needs_full_clear: false,
+        available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     };
 
@@ -6073,4 +6082,83 @@ fn status_agent_token_reports_derived_state_and_render_marks_focused_seen() {
     app.request_render(true);
     let snapshot = app.take_render_snapshot().expect("render snapshot");
     assert_eq!(snapshot.status_line, "agent=[claude:idle]");
+}
+
+#[test]
+fn status_update_token_expands_only_when_update_is_known() {
+    let mut app = build_app_for_resize_test();
+    app.status_format = "update=[{update}]".to_string();
+
+    assert_eq!(app.status_line(), "update=[]");
+
+    // Inject the checker result instead of the mock env vars so the test is
+    // hermetic and free of env races.
+    app.apply_update_check_result(Ok(Some("9.9.9".to_string())));
+    assert_eq!(app.status_line(), "update=[update available: v9.9.9]");
+}
+
+#[test]
+fn injected_update_check_result_lands_in_app_state_and_cache() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut app = build_app_for_resize_test();
+    app.store = DataStore::from_base_dir_for_tests(dir.path().to_path_buf());
+
+    app.apply_update_check_result(Ok(Some("9.9.9".to_string())));
+
+    assert_eq!(app.available_update, Some("9.9.9".to_string()));
+    assert!(
+        app.has_pending_render(),
+        "an available update requests a render"
+    );
+    assert!(dir.path().join("update_check.toml").exists());
+
+    // A restarted app answers from the fresh cache without a network check.
+    let mut restarted = build_app_for_resize_test();
+    restarted.store = DataStore::from_base_dir_for_tests(dir.path().to_path_buf());
+    assert!(restarted.load_cached_update_check());
+    assert_eq!(restarted.available_update, Some("9.9.9".to_string()));
+}
+
+#[test]
+fn up_to_date_check_result_is_cached_without_requesting_render() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut app = build_app_for_resize_test();
+    app.store = DataStore::from_base_dir_for_tests(dir.path().to_path_buf());
+
+    app.apply_update_check_result(Ok(None));
+
+    assert_eq!(app.available_update, None);
+    assert!(!app.has_pending_render());
+    assert!(dir.path().join("update_check.toml").exists());
+
+    let mut restarted = build_app_for_resize_test();
+    restarted.store = DataStore::from_base_dir_for_tests(dir.path().to_path_buf());
+    assert!(restarted.load_cached_update_check());
+    assert_eq!(restarted.available_update, None);
+}
+
+#[test]
+fn update_check_error_is_logged_and_never_cached() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut app = build_app_for_resize_test();
+    app.store = DataStore::from_base_dir_for_tests(dir.path().to_path_buf());
+
+    app.apply_update_check_result(Err("mock update source failure".to_string()));
+
+    assert_eq!(app.available_update, None);
+    assert!(
+        !dir.path().join("update_check.toml").exists(),
+        "errors must not be cached so the next startup retries"
+    );
+    let log = std::fs::read_to_string(dir.path().join("sessions/main-1/session.log"))
+        .expect("session log");
+    assert!(
+        log.contains("update check failed: mock update source failure"),
+        "got log: {log}"
+    );
+
+    // Without a cache the next startup falls back to a background check.
+    let mut restarted = build_app_for_resize_test();
+    restarted.store = DataStore::from_base_dir_for_tests(dir.path().to_path_buf());
+    assert!(!restarted.load_cached_update_check());
 }

@@ -223,6 +223,7 @@ Per session directory stores:
 
 Global data files:
 - `command-history.db` (SQLite command palette history; used to prioritize recently run commands)
+- `update_check.toml` (cached background update-check result, TTL 24h)
 
 ## Default keybindings
 
@@ -279,6 +280,7 @@ Status format tokens:
 - `{pane_id}` `{pane_index}` `{pane_count}`
 - `{prefix}` `{lock}` `{zoom}` `{sync}` `{mouse}` `{message}`
 - `{agent}` — detected AI agent of the focused pane as `kind:state` (for example `claude:working`; states `unknown`/`idle`/`working`/`blocked`), empty when none. Not part of the default format; add it to `[status].format` to use it. The same detection result is exposed as the `agent` field of JSON-RPC `pane.list`
+- `{update}` — `update available: vX.Y.Z` when the background update check found a newer release, empty otherwise. Not part of the default format; add it to `[status].format` to use it. The server checks once at startup with a 24h TTL cache (`update_check.toml` in the data dir, invalidated when the binary version changes); the check runs on a background thread and never blocks the server
 
 Status style defaults:
 - `[status].background = "#2E3440"`

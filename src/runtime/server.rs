@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::thread;
 
 use crossterm::event::{KeyEvent, MouseEvent};
@@ -38,6 +39,14 @@ pub fn run(cli: Cli) -> io::Result<()> {
     let mut app = App::new_with_size(cli.without_server_flag(), DEFAULT_COLS, DEFAULT_ROWS)?;
     app.request_render(true);
 
+    // Update check: a fresh cache answers immediately; otherwise one named
+    // background thread performs the check so startup is never delayed.
+    let mut update_check_rx = if app.load_cached_update_check() {
+        None
+    } else {
+        spawn_update_check(crate::upgrade::check_latest)
+    };
+
     let mut clients = Vec::new();
     let mut api_connections: Vec<ApiConnection> = Vec::new();
     let mut next_client_id: ClientId = 1;
@@ -48,6 +57,7 @@ pub fn run(cli: Cli) -> io::Result<()> {
         did_work |= process_client_input(&mut clients, &mut app)?;
         did_work |= accept_api_connections(&api_listener, &mut api_connections)?;
         did_work |= process_api_input(&mut api_connections, &app);
+        did_work |= poll_update_check(&mut update_check_rx, &mut app);
 
         let had_pending_render_before_tick = app.has_pending_render();
         app.tick();
@@ -83,6 +93,47 @@ pub fn run(cli: Cli) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+type UpdateCheckResult = Result<Option<String>, String>;
+
+/// Spawn the named background update-check thread. The checker is injected
+/// so tests never touch the network; production passes
+/// [`crate::upgrade::check_latest`].
+fn spawn_update_check<F>(checker: F) -> Option<mpsc::Receiver<UpdateCheckResult>>
+where
+    F: FnOnce() -> UpdateCheckResult + Send + 'static,
+{
+    let (tx, rx) = mpsc::channel();
+    thread::Builder::new()
+        .name("spectra-update-check".to_string())
+        .spawn(move || {
+            let _ = tx.send(checker());
+        })
+        .ok()
+        .map(|_handle| rx)
+}
+
+/// Drain the update-check channel without ever blocking the server loop.
+fn poll_update_check(
+    receiver: &mut Option<mpsc::Receiver<UpdateCheckResult>>,
+    app: &mut App,
+) -> bool {
+    let Some(rx) = receiver else {
+        return false;
+    };
+    match rx.try_recv() {
+        Ok(result) => {
+            app.apply_update_check_result(result);
+            *receiver = None;
+            true
+        }
+        Err(mpsc::TryRecvError::Empty) => false,
+        Err(mpsc::TryRecvError::Disconnected) => {
+            *receiver = None;
+            false
+        }
+    }
 }
 
 fn accept_api_connections(
@@ -637,6 +688,24 @@ mod tests {
 
     use super::{ClientConnection, QueuedMessage, render_payload_with_window_title};
     use crate::ipc::protocol::ServerMessage;
+
+    #[test]
+    fn spawn_update_check_delivers_injected_result_from_named_thread() {
+        let rx = super::spawn_update_check(|| {
+            assert_eq!(
+                std::thread::current().name(),
+                Some("spectra-update-check"),
+                "update check must run on the named background thread"
+            );
+            Ok(Some("9.9.9".to_string()))
+        })
+        .expect("spawn update check thread");
+
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("update check result over channel");
+        assert_eq!(result, Ok(Some("9.9.9".to_string())));
+    }
 
     fn decode(entry: &QueuedMessage) -> ServerMessage {
         let payload = std::str::from_utf8(entry.bytes()).expect("valid utf-8 message payload");

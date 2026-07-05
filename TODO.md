@@ -24,8 +24,8 @@
 - [x] DONE clap の `#[command(version)]` を付けた — `--version`/`-V` が動作
 - [x] DONE `--check`: `upgrade.rs` に `UpdateCommand::Check` が実装済みだったのでCLI露出のみ追加。
       server起動中でも実行可(バイナリ置換しないため)。unit+E2Eテスト追加済み
-- [ ] (任意) バックグラウンドTTL付き更新チェック + status barへの通知
-      (gargo `src/command/update_check_runtime.rs` + `UpdateCheckCache`, TTL 24h, `update_check.toml` にキャッシュ)
+- [x] DONE (任意) バックグラウンドTTL付き更新チェック + status barへの通知 — server起動時にdata dirの `update_check.toml`(TTL 24h・binary version不一致で無効)が新鮮なら即反映、
+      なければ named thread("spectra-update-check")+mpsc で非同期チェックしループは try_recv で非ブロッキング回収。結果は `{update}` トークン(`update available: vX.Y.Z`)で露出(デフォルトformat未追加)、エラーはログのみでキャッシュしない
 - [x] DONE テストシーム: `SPECTRA_TEST_UPDATE_SOURCE=mock` / `SPECTRA_TEST_UPDATE_STATE` が既に存在(gargoと同設計)。確認のみ
 
 ### 2. FIXME.md の削除/書き直し
