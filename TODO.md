@@ -152,7 +152,7 @@ spectraタスク:
 - [ ] alt-screen resizeがnaive(reflowなし, `terminal_state.rs:354`)
 - [ ] ⏸ 要判断 (面白い候補) **SCM_RIGHTSによるlive handoff** — herdrはPTYのfdをUnix socket越しに新serverへ渡してpaneを殺さずserver更新 (`src/server/handoff.rs`)。self-updateと組み合わせると「動作中に無停止アップグレード」が可能に。採否の判断待ち
 - [ ] IPCのバイナリ化(bincode+length-prefix)は**急がない** — NDJSONで困ってから。protocol versionフィールドはP5(remote attach)で導入済み
-- [ ] keybindの拡張: 固定enumに加えて任意シェルコマンド/APIメソッドをbind可能に(tmuxユーザの期待値)
+- [x] DONE keybindの拡張 — `run:` プレフィクスで任意シェルコマンドをbind可・hooks実行基盤を流用・paletteには出さない
 
 ## spectraがherdrに勝っている点（維持すべき資産)
 

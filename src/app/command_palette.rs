@@ -144,7 +144,7 @@ impl App {
                 if let Some(candidate) = candidates.get(state.selected).copied() {
                     let entry = &entries[candidate.entry_index];
                     let _ = self.command_history.record_execution(&entry.id);
-                    *signal = self.handle_action(entry.action);
+                    *signal = self.handle_action(entry.action.clone());
                     let next_mode = mem::replace(&mut self.view.input_mode, InputMode::Normal);
                     match next_mode {
                         InputMode::CommandPalette { .. } => InputMode::Normal,

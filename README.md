@@ -203,6 +203,20 @@ n = "new-session"
 "C-w" = "window-tree"
 ```
 
+Bind arbitrary shell commands with a `run:` value in `[prefix_bindings]` or
+`[global_bindings]`:
+
+```toml
+[prefix_bindings]
+N = "run: notify-send 'hello from spectra'"
+```
+
+The command runs fire-and-forget via `/bin/sh -lc` on a detached thread with the
+same `SPECTRA_*` env context as hooks (`SPECTRA_SESSION_ID`, `SPECTRA_SESSION_NAME`,
+`SPECTRA_WINDOW_ID`, `SPECTRA_WINDOW_NUMBER`, `SPECTRA_PANE_ID`); failures are
+appended to the session log. `run:` bindings do not appear in the command palette.
+Binding a key to `"none"`/`"unbound"`/`"disabled"` unbinds it.
+
 Custom action name for bindings/command palette:
 - `open-current-pane-buffer-in-editor` (also accepts `open-current-pane-buffef-in-editor`)
 - `focus-next-pane` / `focus-prev-pane` (also accepts `focus-previous-pane`)

@@ -36,8 +36,34 @@ impl App {
             return;
         }
 
-        let event_name = event.as_str().to_string();
-        let command = command.to_string();
+        let event_name = event.as_str();
+        self.spawn_shell_detached(
+            &format!("hook {event_name}"),
+            command.to_string(),
+            context,
+            vec![("SPECTRA_HOOK_EVENT".to_string(), event_name.to_string())],
+        );
+    }
+
+    /// Execute a `run:` key-binding command using the same fire-and-forget
+    /// shell machinery as hooks (`/bin/sh -lc`, detached thread, SPECTRA_*
+    /// env context, output to the session log on failure).
+    pub(super) fn run_shell_binding(&mut self, command: &str) {
+        let command = command.trim();
+        if command.is_empty() {
+            return;
+        }
+        let context = self.current_hook_context();
+        self.spawn_shell_detached("run binding", command.to_string(), context, Vec::new());
+    }
+
+    fn spawn_shell_detached(
+        &mut self,
+        label: &str,
+        command: String,
+        context: HookContext,
+        mut envs: Vec<(String, String)>,
+    ) {
         let log_session_id = context
             .session_id
             .clone()
@@ -49,7 +75,6 @@ impl App {
             .unwrap_or_else(|| "global".to_string());
         let store = self.store.clone();
 
-        let mut envs = vec![("SPECTRA_HOOK_EVENT".to_string(), event_name.clone())];
         if let Some(session_id) = context.session_id {
             envs.push(("SPECTRA_SESSION_ID".to_string(), session_id));
         }
@@ -69,8 +94,10 @@ impl App {
             envs.push(("SPECTRA_PANE_ID".to_string(), pane_id.to_string()));
         }
 
+        let thread_label = label.replace(' ', "-");
+        let log_label = label.to_string();
         let spawn_result = thread::Builder::new()
-            .name(format!("spectra-hook-{event_name}"))
+            .name(format!("spectra-{thread_label}"))
             .spawn(move || {
                 let status = Command::new("/bin/sh")
                     .arg("-lc")
@@ -86,13 +113,13 @@ impl App {
                     Ok(status) => {
                         let _ = store.append_log_line(
                             &log_session_id,
-                            &format!("hook {} failed: {}", event_name, status),
+                            &format!("{log_label} failed: {status}"),
                         );
                     }
                     Err(err) => {
                         let _ = store.append_log_line(
                             &log_session_id,
-                            &format!("hook {} failed to spawn: {err}", event_name),
+                            &format!("{log_label} failed to spawn: {err}"),
                         );
                     }
                 }
@@ -100,10 +127,10 @@ impl App {
 
         if let Err(err) = spawn_result {
             self.set_message(
-                &format!("hook {} spawn failed: {err}", event.as_str()),
+                &format!("{label} spawn failed: {err}"),
                 Duration::from_secs(3),
             );
-            self.write_log(&format!("hook {} spawn failed: {err}", event.as_str()));
+            self.write_log(&format!("{label} spawn failed: {err}"));
         }
     }
 }

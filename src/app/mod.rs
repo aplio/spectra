@@ -2868,6 +2868,7 @@ impl App {
                     }
                 }
             }
+            CommandAction::RunShell(command) => self.run_shell_binding(&command),
             CommandAction::CloseWindow => {
                 match self.current_session_mut().close_active_window(cols, rows) {
                     Ok(()) => {

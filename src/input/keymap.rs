@@ -7,7 +7,7 @@ use crate::ui::window_manager::{Direction, SplitAxis};
 
 const DEFAULT_PREFIX_KEY: &str = "C-j";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandAction {
     Split(SplitAxis),
     Focus(Direction),
@@ -46,6 +46,8 @@ pub enum CommandAction {
     OpenConfigInEditor,
     EnterLockMode,
     LeaveLockMode,
+    /// Run an arbitrary shell command bound via a `run:` binding value.
+    RunShell(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,7 +137,7 @@ impl KeyMapper {
                     return InputAction::Ignore;
                 }
 
-                if let Some(action) = self.bindings.prefix_bindings.get(key_name).copied() {
+                if let Some(action) = self.bindings.prefix_bindings.get(key_name).cloned() {
                     if action.should_exit_prefix_mode(self.bindings.prefix_sticky) {
                         self.prefix_active = false;
                     }
@@ -145,7 +147,7 @@ impl KeyMapper {
                 self.prefix_active = false;
             }
 
-            if let Some(action) = self.bindings.global_bindings.get(key_name).copied() {
+            if let Some(action) = self.bindings.global_bindings.get(key_name).cloned() {
                 return InputAction::Command(action);
             }
         }
@@ -158,7 +160,7 @@ impl KeyMapper {
 
     pub fn check_global_action(&self, key: KeyEvent) -> Option<CommandAction> {
         canonical_key_event(&key)
-            .and_then(|key_name| self.bindings.global_bindings.get(&key_name).copied())
+            .and_then(|key_name| self.bindings.global_bindings.get(&key_name).cloned())
     }
 }
 
@@ -258,7 +260,18 @@ fn apply_overrides(map: &mut HashMap<String, CommandAction>, overrides: &HashMap
 }
 
 fn parse_action(spec: &str) -> Option<CommandAction> {
-    let normalized = spec.trim().to_ascii_lowercase().replace(['_', ' '], "-");
+    let trimmed = spec.trim();
+    if let Some(command) = trimmed.strip_prefix("run:") {
+        let command = command.trim();
+        // An empty command is treated like an unknown action name: the
+        // override is ignored and the default binding stays in place.
+        if command.is_empty() {
+            return None;
+        }
+        return Some(CommandAction::RunShell(command.to_string()));
+    }
+
+    let normalized = trimmed.to_ascii_lowercase().replace(['_', ' '], "-");
 
     match normalized.as_str() {
         "split-vertical" => Some(CommandAction::Split(SplitAxis::Vertical)),
@@ -848,6 +861,72 @@ mod tests {
             parse_action("prev-pane"),
             Some(CommandAction::FocusPrevPane)
         );
+    }
+
+    #[test]
+    fn parses_run_binding_into_run_shell_action() {
+        assert_eq!(
+            parse_action("run: echo hi"),
+            Some(CommandAction::RunShell("echo hi".to_string()))
+        );
+        assert_eq!(
+            parse_action("  run:notify-send 'hello'  "),
+            Some(CommandAction::RunShell("notify-send 'hello'".to_string()))
+        );
+    }
+
+    #[test]
+    fn rejects_empty_run_binding() {
+        assert_eq!(parse_action("run:"), None);
+        assert_eq!(parse_action("run:   "), None);
+    }
+
+    #[test]
+    fn run_binding_works_in_prefix_and_global_maps() {
+        let mut prefix = HashMap::new();
+        prefix.insert("x".to_string(), "run: touch /tmp/marker".to_string());
+        let mut global = HashMap::new();
+        global.insert("M-x".to_string(), "run: echo global".to_string());
+
+        let mut mapper = KeyMapper::with_config(None, true, &prefix, &global);
+
+        mapper.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(
+            action,
+            InputAction::Command(CommandAction::RunShell("touch /tmp/marker".to_string()))
+        );
+
+        let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT));
+        assert_eq!(
+            action,
+            InputAction::Command(CommandAction::RunShell("echo global".to_string()))
+        );
+    }
+
+    #[test]
+    fn unbind_still_removes_default_binding() {
+        let mut prefix = HashMap::new();
+        prefix.insert("x".to_string(), "none".to_string());
+
+        let mut mapper = KeyMapper::with_config(None, true, &prefix, &HashMap::new());
+
+        mapper.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        // Unbound prefix key passes through to the pane instead of closing it.
+        let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(action, InputAction::SendBytes(vec![b'x']));
+    }
+
+    #[test]
+    fn empty_run_binding_keeps_default_binding() {
+        let mut prefix = HashMap::new();
+        prefix.insert("x".to_string(), "run:  ".to_string());
+
+        let mut mapper = KeyMapper::with_config(None, true, &prefix, &HashMap::new());
+
+        mapper.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(action, InputAction::Command(CommandAction::ClosePane));
     }
 
     #[test]

@@ -2187,6 +2187,41 @@ fn session_created_hook_executes_with_env_context() {
 }
 
 #[test]
+fn run_shell_binding_action_executes_with_env_context() {
+    let mut app = build_app_for_resize_test();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("run-binding.out");
+    let command = format!("printf '%s' \"$SPECTRA_SESSION_ID\" > '{}'", out.display());
+
+    let signal = app.handle_action(CommandAction::RunShell(command));
+    assert_eq!(signal, AppSignal::None);
+    assert!(!app.should_quit);
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut content = None;
+    while Instant::now() < deadline {
+        if let Ok(read) = std::fs::read_to_string(&out) {
+            content = Some(read);
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    let expected = app.current_session_id().to_string();
+    assert_eq!(content.as_deref(), Some(expected.as_str()));
+}
+
+#[test]
+fn command_palette_excludes_run_shell_entries() {
+    let entries = App::command_palette_entries();
+    assert!(
+        entries
+            .iter()
+            .all(|entry| !matches!(entry.action, CommandAction::RunShell(_)))
+    );
+}
+
+#[test]
 fn hook_command_failure_is_logged_without_interrupting_flow() {
     let mut app = build_app_for_resize_test();
     app.hooks.session_created = Some("exit 9".to_string());
