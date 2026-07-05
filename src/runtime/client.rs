@@ -405,6 +405,10 @@ fn command_request_from_cli(command: &CliCommand) -> io::Result<CommandRequest> 
         CliCommand::SourceFile { path } => Ok(CommandRequest::SourceFile {
             path: path.as_ref().map(|path| path.display().to_string()),
         }),
+        CliCommand::Api { .. } => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "api requests are dispatched directly to the api socket",
+        )),
         CliCommand::RemoteClientBridge => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "remote-client-bridge is not a one-shot command",

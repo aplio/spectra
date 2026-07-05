@@ -7,6 +7,7 @@ pub enum CliMode {
     AttachOrCreate,
     RunServer,
     RunCommand,
+    ApiRequest,
     Update,
     Check,
     RemoteAttach,
@@ -81,6 +82,15 @@ pub enum CliCommand {
         #[arg(value_name = "PATH")]
         path: Option<PathBuf>,
     },
+    /// Send one JSON-RPC request to the read-only API socket and print the result.
+    Api {
+        /// JSON-RPC method name, e.g. session.list, pane.list, pane.read.
+        #[arg(value_name = "METHOD")]
+        method: String,
+        /// Optional JSON params object, e.g. '{"pane_id":1,"lines":50}'.
+        #[arg(value_name = "PARAMS_JSON")]
+        params: Option<String>,
+    },
     /// Internal: relay stdio to the local client socket (remote end of --remote).
     #[command(hide = true)]
     RemoteClientBridge,
@@ -147,6 +157,8 @@ impl Cli {
             CliMode::RemoteClientBridge
         } else if self.remote.is_some() {
             CliMode::RemoteAttach
+        } else if matches!(self.subcommand, Some(CliCommand::Api { .. })) {
+            CliMode::ApiRequest
         } else if matches!(self.subcommand, Some(CliCommand::AttachSession { .. }))
             || self.subcommand.is_none()
         {
@@ -442,6 +454,40 @@ mod tests {
             }
             _ => panic!("expected source-file"),
         }
+    }
+
+    #[test]
+    fn parses_api_subcommand_with_method_only() {
+        let cli = Cli::try_parse_from(["spectra", "api", "session.list"]).expect("parse api");
+        match &cli.subcommand {
+            Some(CliCommand::Api { method, params }) => {
+                assert_eq!(method, "session.list");
+                assert!(params.is_none());
+            }
+            _ => panic!("expected api subcommand"),
+        }
+        assert_eq!(cli.mode(), CliMode::ApiRequest);
+        assert!(cli.validate().is_ok());
+    }
+
+    #[test]
+    fn parses_api_subcommand_with_params_json() {
+        let cli =
+            Cli::try_parse_from(["spectra", "api", "pane.read", r#"{"pane_id":1,"lines":50}"#])
+                .expect("parse api with params");
+        match &cli.subcommand {
+            Some(CliCommand::Api { method, params }) => {
+                assert_eq!(method, "pane.read");
+                assert_eq!(params.as_deref(), Some(r#"{"pane_id":1,"lines":50}"#));
+            }
+            _ => panic!("expected api subcommand"),
+        }
+        assert_eq!(cli.mode(), CliMode::ApiRequest);
+    }
+
+    #[test]
+    fn api_subcommand_requires_method() {
+        assert!(Cli::try_parse_from(["spectra", "api"]).is_err());
     }
 
     #[test]

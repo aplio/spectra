@@ -310,6 +310,21 @@ Hook events (`[hooks]`) run via `/bin/sh -lc` with env context:
 - `SPECTRA_WINDOW_ID` `SPECTRA_WINDOW_NUMBER`
 - `SPECTRA_PANE_ID`
 
+## Scripting API
+
+A running server also serves a read-only JSON-RPC API over a second Unix socket:
+- `$XDG_RUNTIME_DIR/spectra/spectra-api.sock`
+- fallback: `$XDG_DATA_HOME/spectra/run/spectra-api.sock`
+
+`spectra api <METHOD> [PARAMS_JSON]` sends one request and prints the raw result
+JSON to stdout (errors go to stderr with exit code 1; it never auto-spawns a server):
+
+```bash
+spectra api pane.read '{"pane_id":1,"lines":50}'
+```
+
+Available methods for now: `session.list`, `pane.list`, `pane.read`.
+
 ## Development checks
 
 ```bash

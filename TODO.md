@@ -78,7 +78,7 @@ plugin = 「`herdr-plugin.toml` マニフェスト + 任意言語のargvコマ�
 - [x] 一部DONE **最初のメソッドセット** — 読み取り系 `session.list` / `pane.list`(session_idフィルタ・title解決) /
       `pane.read`(デフォルト可視画面・`lines:N`でscrollback込み末尾N行) は実装済み。
       書き込み系 `pane.send_keys` / `pane.split` と `events.subscribe` は未実装(⏸ 要判断につき方針確認後)
-- [ ] CLIサブコマンドをこのAPIのラッパーとして生やす (`spectra pane read <id>` 等) — agentからの操作面にもなる
+- [x] 一部DONE CLIサブコマンドをこのAPIのラッパーとして生やす — 汎用 `spectra api <method> [json]` を実装(agent/スクリプト向けの脱出ハッチ)。`spectra pane read` 等のpretty wrapperはAPI表面の⏸判断後
 - [ ] plugin manifest (`spectra-plugin.toml`): 名前/コマンド/購読イベント。イベント発火でargv起動 or 常駐プロセスにNDJSON配送
 - [ ] 既存 `[hooks]` はこのイベント購読の特殊ケースとして統合を検討
 

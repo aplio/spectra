@@ -139,6 +139,81 @@ impl ApiClient {
     }
 }
 
+fn run_api_cli(
+    runtime_dir: &Path,
+    data_home: &Path,
+    args: &[&str],
+) -> io::Result<std::process::Output> {
+    let bin = resolve_spectra_binary()?;
+    let config_home = data_home.join("config-home");
+    Command::new(bin)
+        .arg("api")
+        .args(args)
+        .env("XDG_RUNTIME_DIR", runtime_dir)
+        .env("XDG_DATA_HOME", data_home)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .stdin(Stdio::null())
+        .output()
+}
+
+#[test]
+fn api_cli_round_trips_json_rpc_against_running_server() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime_dir = dir.path().join("runtime");
+    let data_home = dir.path().join("data");
+    std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+    std::fs::create_dir_all(&data_home).expect("create data dir");
+
+    let _server = spawn_server(&runtime_dir, &data_home).expect("spawn server");
+    let api_socket = api_socket_path(&runtime_dir);
+    wait_for_socket(&api_socket).expect("wait for api socket");
+
+    let output = run_api_cli(&runtime_dir, &data_home, &["session.list"]).expect("run spectra api");
+    assert!(output.status.success(), "expected exit 0: {output:?}",);
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    let result: Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    let sessions = result.as_array().expect("session.list result array");
+    assert!(!sessions.is_empty(), "expected at least one session");
+    assert!(sessions[0]["session_id"].is_string());
+
+    // Unknown method: exit 1 with the server error message on stderr.
+    let output =
+        run_api_cli(&runtime_dir, &data_home, &["nosuch.method"]).expect("run spectra api");
+    assert_eq!(output.status.code(), Some(1), "expected exit 1: {output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains("Error:") && stderr.contains("method not found"),
+        "unexpected stderr: {stderr:?}"
+    );
+
+    // Invalid params JSON is a usage error (reported before connecting).
+    let output = run_api_cli(&runtime_dir, &data_home, &["pane.read", "{not json"])
+        .expect("run spectra api");
+    assert_eq!(output.status.code(), Some(1), "expected exit 1: {output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains("invalid PARAMS_JSON"),
+        "unexpected stderr: {stderr:?}"
+    );
+}
+
+#[test]
+fn api_cli_reports_missing_server() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime_dir = dir.path().join("runtime");
+    let data_home = dir.path().join("data");
+    std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+    std::fs::create_dir_all(&data_home).expect("create data dir");
+
+    let output = run_api_cli(&runtime_dir, &data_home, &["session.list"]).expect("run spectra api");
+    assert_eq!(output.status.code(), Some(1), "expected exit 1: {output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains("no spectra server is running"),
+        "unexpected stderr: {stderr:?}"
+    );
+}
+
 #[test]
 fn api_socket_serves_read_only_json_rpc_methods() {
     let dir = tempfile::tempdir().expect("tempdir");
