@@ -211,24 +211,6 @@ where
         })
     }
 
-    pub fn set_focused_item(&mut self, item_id: ItemId) {
-        if let Some(current) = self.windows.get_mut(&self.focused_window) {
-            *current = item_id;
-            return;
-        }
-        let window_id = self.root.first_leaf();
-        self.focused_window = window_id;
-        self.windows.insert(window_id, item_id);
-    }
-
-    pub fn replace_item_refs(&mut self, old_item_id: ItemId, new_item_id: ItemId) {
-        for item_id in self.windows.values_mut() {
-            if *item_id == old_item_id {
-                *item_id = new_item_id;
-            }
-        }
-    }
-
     pub fn split_focused(&mut self, axis: SplitAxis, new_item_id: ItemId) {
         let new_window_id = self.next_window_id;
         self.next_window_id += 1;
@@ -398,13 +380,6 @@ where
         }
     }
 
-    pub fn focused_pane(&self, area: PaneRect) -> Option<PaneLayout<ItemId>> {
-        self.layout(area)
-            .panes
-            .into_iter()
-            .find(|pane| pane.window_id == self.focused_window)
-    }
-
     pub fn focus_direction(&mut self, direction: Direction, area: PaneRect) -> Result<(), String> {
         let layout = self.layout(area);
         let focused = layout
@@ -417,45 +392,6 @@ where
             return Err("No pane in that direction".to_string());
         };
         self.focused_window = target.window_id;
-        Ok(())
-    }
-
-    pub fn focus_next_by_geometry(&mut self, area: PaneRect) -> Result<(), String> {
-        let mut panes = self.layout(area).panes;
-        if panes.is_empty() {
-            return Err("No panes available".to_string());
-        }
-        panes.sort_by_key(|pane| (pane.rect.y, pane.rect.x, pane.window_id));
-        let idx = panes
-            .iter()
-            .position(|pane| pane.window_id == self.focused_window)
-            .unwrap_or(0);
-        let next_idx = (idx + 1) % panes.len();
-        self.focused_window = panes[next_idx].window_id;
-        Ok(())
-    }
-
-    pub fn swap_direction(&mut self, direction: Direction, area: PaneRect) -> Result<(), String> {
-        let layout = self.layout(area);
-        let focused = layout
-            .panes
-            .iter()
-            .find(|pane| pane.window_id == self.focused_window)
-            .copied()
-            .ok_or_else(|| "No focused pane".to_string())?;
-        let Some(target) = Self::directional_neighbor(&layout.panes, focused, direction) else {
-            return Err("No pane in that direction".to_string());
-        };
-
-        let Some(focused_item) = self.windows.get(&focused.window_id).copied() else {
-            return Err("Focused pane missing".to_string());
-        };
-        let Some(target_item) = self.windows.get(&target.window_id).copied() else {
-            return Err("Target pane missing".to_string());
-        };
-
-        self.windows.insert(focused.window_id, target_item);
-        self.windows.insert(target.window_id, focused_item);
         Ok(())
     }
 

@@ -67,10 +67,6 @@ impl TextInput {
         char_len(&self.text)
     }
 
-    pub fn byte_index_at_cursor(&self) -> usize {
-        byte_index_from_char(&self.text, self.cursor)
-    }
-
     pub fn clamp(&mut self) {
         let max = char_len(&self.text);
         let min = self.min_cursor.min(max);

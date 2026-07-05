@@ -364,6 +364,29 @@ impl SessionManager {
         Ok(sent)
     }
 
+    /// Send pasted text to every pane in the active window (synchronized
+    /// paste), wrapping it in bracketed-paste markers for exactly the panes
+    /// whose guest enabled DECSET 2004 — the per-pane states can differ
+    /// within one synchronized window.
+    pub fn send_paste_to_active_window(&mut self, text: &str) -> io::Result<usize> {
+        let pane_ids = self.active_window_pane_ids();
+        let mut wrapped: Option<Vec<u8>> = None;
+        let mut sent = 0usize;
+        for pane_id in pane_ids {
+            let Some(pane) = self.panes.get_mut(&pane_id) else {
+                continue;
+            };
+            if pane.bracketed_paste() {
+                let bytes = wrapped.get_or_insert_with(|| bracketed_paste_bytes(text));
+                pane.write(bytes)?;
+            } else {
+                pane.write(text.as_bytes())?;
+            }
+            sent += 1;
+        }
+        Ok(sent)
+    }
+
     pub fn send_to_pane(&mut self, pane_id: PaneId, bytes: &[u8]) -> io::Result<()> {
         let Some(pane) = self.panes.get_mut(&pane_id) else {
             return Err(io::Error::new(
@@ -461,12 +484,6 @@ impl SessionManager {
 
     pub fn focused_view_row_origin(&self, view_rows: usize) -> Option<usize> {
         let pane_id = self.focused_pane_id()?;
-        self.panes
-            .get(&pane_id)
-            .map(|pane| pane.view_row_origin_for(view_rows))
-    }
-
-    pub fn pane_view_row_origin(&self, pane_id: PaneId, view_rows: usize) -> Option<usize> {
         self.panes
             .get(&pane_id)
             .map(|pane| pane.view_row_origin_for(view_rows))
@@ -586,11 +603,6 @@ impl SessionManager {
             .map(|pane| pane.history_tail_lines(max_lines))
     }
 
-    pub fn focused_export_text_hard_lf(&self) -> Option<String> {
-        let pane_id = self.focused_pane_id()?;
-        self.panes.get(&pane_id).map(Pane::export_text_hard_lf)
-    }
-
     pub fn resize(&mut self, cols: u16, rows: u16) -> io::Result<()> {
         self.apply_layout_sizes(cols, rows)
     }
@@ -675,6 +687,17 @@ pub(super) fn spawn_pane(
     let mut pane = Pane::new(width, height, options.allow_passthrough, backend);
     pane.set_host_colors(options.host_colors);
     Ok(pane)
+}
+
+/// Wrap pasted text in bracketed-paste markers, stripping any embedded end
+/// marker so pasted content cannot break out of the bracketed-paste region.
+pub fn bracketed_paste_bytes(text: &str) -> Vec<u8> {
+    let sanitized = text.replace("\x1b[201~", "");
+    let mut bytes = Vec::with_capacity(sanitized.len() + 12);
+    bytes.extend_from_slice(b"\x1b[200~");
+    bytes.extend_from_slice(sanitized.as_bytes());
+    bytes.extend_from_slice(b"\x1b[201~");
+    bytes
 }
 
 pub(super) fn workspace_area(cols: u16, rows: u16) -> PaneRect {

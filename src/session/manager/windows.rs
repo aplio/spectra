@@ -329,42 +329,11 @@ impl SessionManager {
             .collect()
     }
 
-    pub fn window_list_text(&self) -> String {
-        let windows = self.window_entries();
-        if windows.is_empty() {
-            return "windows: <none>".to_string();
-        }
-        let items = windows
-            .iter()
-            .map(|entry| {
-                if entry.focused {
-                    format!("{}:{}*", entry.index, entry.pane_id)
-                } else {
-                    format!("{}:{}", entry.index, entry.pane_id)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        format!("windows: {items}")
-    }
-
     pub fn pane_ids_for_window_number(&self, number: usize) -> Option<Vec<PaneId>> {
         let index = number.checked_sub(1)?;
         self.windows
             .get(index)
             .map(|window| window.manager.ordered_pane_ids())
-    }
-
-    pub fn window_id_for_number(&self, number: usize) -> Option<WindowId> {
-        let index = number.checked_sub(1)?;
-        self.windows.get(index).map(|window| window.id)
-    }
-
-    pub fn window_number_for_pane(&self, pane_id: PaneId) -> Option<usize> {
-        self.windows
-            .iter()
-            .position(|window| window.manager.contains_pane_id(pane_id))
-            .map(|index| index + 1)
     }
 
     pub fn window_id_for_pane(&self, pane_id: PaneId) -> Option<WindowId> {

@@ -600,14 +600,15 @@ impl App {
             }
             InputMode::PeekAllWindows { .. } => Ok(AppSignal::None),
             InputMode::Normal => {
-                if self.current_session().focused_bracketed_paste() {
-                    // Strip any embedded end marker so pasted content cannot
-                    // break out of the bracketed-paste region.
-                    let sanitized = text.replace("\x1b[201~", "");
-                    let mut bytes = Vec::with_capacity(sanitized.len() + 12);
-                    bytes.extend_from_slice(b"\x1b[200~");
-                    bytes.extend_from_slice(sanitized.as_bytes());
-                    bytes.extend_from_slice(b"\x1b[201~");
+                if self.current_session().active_window_synchronize_panes() {
+                    // Panes in a synchronized window can disagree on
+                    // bracketed paste; wrap per pane instead of fanning out
+                    // one encoding keyed off the focused pane.
+                    let _ = self
+                        .current_session_mut()
+                        .send_paste_to_active_window(&text)?;
+                } else if self.current_session().focused_bracketed_paste() {
+                    let bytes = crate::session::manager::bracketed_paste_bytes(&text);
                     self.send_input_to_active_window(&bytes)?;
                 } else {
                     self.send_input_to_active_window(text.as_bytes())?;
