@@ -149,7 +149,7 @@ spectraタスク:
 - [ ] ⏸ 要判断 **イベントループのepoll化** — 現状1ms sleepのbusy-poll (`src/runtime/server.rs:22,67`)。アイドル時CPUを常時食う。mio/pollingへ。herdrはtokio multi-thread。依存追加(mio/polling/tokioのどれか)と改修範囲が大きいため方針確認したい
 - [ ] **unwrap/expect監査** — 非テストコードに~149箇所。herdrは「prod unwrap禁止」を規約で強制
 - [ ] **god object分割** — `app/mod.rs` 2838行 / `terminal_state.rs` 2685行。herdrの「AppState=純データ、render=純関数、runtime分離」規律 + `assert_invariants_for_test()` パターンが参考になる
-- [ ] alt-screen resizeがnaive(reflowなし, `terminal_state.rs:354`)
+- [x] DONE alt-screen resizeがnaive(reflowなし) — 保存中のprimary画面をalt中のresizeでも通常経路と同じsoft-wrap reflowで追随(`reflow_saved_screen`)・alt画面自体はclip/pad維持・連続resize合成もtwin-grid同値でテスト
 - [ ] ⏸ 要判断 (面白い候補) **SCM_RIGHTSによるlive handoff** — herdrはPTYのfdをUnix socket越しに新serverへ渡してpaneを殺さずserver更新 (`src/server/handoff.rs`)。self-updateと組み合わせると「動作中に無停止アップグレード」が可能に。採否の判断待ち
 - [ ] IPCのバイナリ化(bincode+length-prefix)は**急がない** — NDJSONで困ってから。protocol versionフィールドはP5(remote attach)で導入済み
 - [x] DONE keybindの拡張 — `run:` プレフィクスで任意シェルコマンドをbind可・hooks実行基盤を流用・paletteには出さない

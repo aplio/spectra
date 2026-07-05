@@ -3145,6 +3145,89 @@ mod tests {
         assert_eq!(state.row_text(1), "def");
     }
 
+    /// Resizing while on the alt screen must reflow the saved primary screen
+    /// exactly like resizing the primary screen directly would.
+    #[test]
+    fn alt_screen_resize_reflows_saved_primary_like_twin() {
+        let mut state = TerminalState::new(8, 3);
+        let mut twin = TerminalState::new(8, 3);
+        for s in [&mut state, &mut twin] {
+            s.feed(b"first line!\r\nsecond\r\n$ ");
+        }
+
+        state.feed(b"\x1b[?1049h");
+        state.feed(b"FULLSCREEN APP");
+        state.resize(5, 3);
+        twin.resize(5, 3);
+        state.feed(b"\x1b[?1049l");
+
+        for row in 0..3 {
+            assert_eq!(state.row_text(row), twin.row_text(row), "row {row}");
+        }
+        assert_eq!(state.history_lines(), twin.history_lines());
+        assert_eq!(state.cursor(), twin.cursor());
+        let (cx, cy) = state.cursor();
+        assert!(cx < state.width() && cy < state.height());
+    }
+
+    /// A soft-wrapped long line on the saved primary screen must survive an
+    /// alt-screen resize without losing characters.
+    #[test]
+    fn alt_screen_resize_preserves_soft_wrapped_saved_line() {
+        let mut state = TerminalState::new(6, 2);
+        state.feed(b"abcdefghij"); // soft-wraps: "abcdef" / "ghij  "
+        state.feed(b"\x1b[?1049h");
+        state.resize(4, 2);
+        state.feed(b"\x1b[?1049l");
+
+        // scrollback_text() covers scrollback plus the visible rows
+        let flattened: String = state
+            .scrollback_text()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert_eq!(flattened, "abcdefghij");
+    }
+
+    /// Consecutive resizes while on the alt screen must compose the same way
+    /// consecutive resizes on the primary screen do.
+    #[test]
+    fn alt_screen_shrink_then_grow_matches_twin() {
+        let mut state = TerminalState::new(6, 3);
+        let mut twin = TerminalState::new(6, 3);
+        for s in [&mut state, &mut twin] {
+            s.feed(b"hello\r\nabcdef\r\nx");
+        }
+
+        state.feed(b"\x1b[?1049h");
+        state.resize(3, 2);
+        twin.resize(3, 2);
+        state.resize(6, 3);
+        twin.resize(6, 3);
+        state.feed(b"\x1b[?1049l");
+
+        for row in 0..3 {
+            assert_eq!(state.row_text(row), twin.row_text(row), "row {row}");
+        }
+        assert_eq!(state.history_lines(), twin.history_lines());
+        assert_eq!(state.cursor(), twin.cursor());
+    }
+
+    /// The alt screen itself keeps clip/pad semantics on resize: growing pads
+    /// with blanks, it never reflows (fullscreen apps repaint themselves).
+    #[test]
+    fn alt_screen_resize_clips_and_pads_alt_content() {
+        let mut state = TerminalState::new(3, 2);
+        state.feed(b"\x1b[?1049h");
+        state.feed(b"XYZAB"); // row0="XYZ" (soft wrap), row1="AB "
+        state.resize(6, 3);
+
+        // No reflow on the alt screen: rows are padded in place
+        assert_eq!(state.row_text(0), "XYZ   ");
+        assert_eq!(state.row_text(1), "AB    ");
+        assert_eq!(state.row_text(2), "      ");
+    }
+
     #[test]
     fn reflow_wide_char_wraps_at_boundary() {
         let mut state = TerminalState::new(3, 2);
