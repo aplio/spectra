@@ -119,6 +119,15 @@ impl App {
             && self.view.text_selection.is_none()
             && self.forward_mouse_to_guest(&mouse)
         {
+            // A left-drag consumed by the guest is almost always a user
+            // trying to select text; surface the shift bypass. Re-arming the
+            // message on every drag event keeps it visible while dragging.
+            // Skip it when spectra's own mouse handling is off (shift+drag
+            // would not select anything either).
+            if self.mouse_enabled && matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left)) {
+                self.set_message("shift+drag to select text", Duration::from_secs(2));
+                self.needs_render = true;
+            }
             return;
         }
 

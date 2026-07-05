@@ -5803,6 +5803,76 @@ fn mouse_events_are_not_forwarded_without_guest_request() {
 }
 
 #[test]
+fn drag_forwarded_to_guest_shows_shift_drag_hint() {
+    let (mut app, writes) = build_recording_app_with_output(vec![b"\x1b[?1002;1006h".to_vec()]);
+    app.mouse_enabled = true;
+    app.tick();
+    take_recorded_writes(&writes);
+
+    app.handle_mouse_event(mouse_event_with_modifiers(
+        MouseEventKind::Down(MouseButton::Left),
+        5,
+        3,
+        KeyModifiers::NONE,
+    ))
+    .expect("mouse down");
+    assert!(
+        app.view.status_message.is_none(),
+        "a forwarded press alone must not trigger the hint"
+    );
+
+    app.handle_mouse_event(mouse_event_with_modifiers(
+        MouseEventKind::Drag(MouseButton::Left),
+        6,
+        3,
+        KeyModifiers::NONE,
+    ))
+    .expect("mouse drag");
+
+    let message = app
+        .view
+        .status_message
+        .as_ref()
+        .expect("hint after forwarded drag");
+    assert_eq!(message.text, "shift+drag to select text");
+    assert!(
+        !take_recorded_writes(&writes).is_empty(),
+        "mouse events still reach the guest"
+    );
+}
+
+#[test]
+fn drag_on_non_reporting_pane_shows_no_shift_drag_hint() {
+    let (mut app, _writes) = build_recording_app_with_output(vec![b"plain output".to_vec()]);
+    app.mouse_enabled = true;
+    app.tick();
+
+    app.handle_mouse_event(mouse_event_with_modifiers(
+        MouseEventKind::Down(MouseButton::Left),
+        5,
+        3,
+        KeyModifiers::NONE,
+    ))
+    .expect("mouse down");
+    app.handle_mouse_event(mouse_event_with_modifiers(
+        MouseEventKind::Drag(MouseButton::Left),
+        6,
+        3,
+        KeyModifiers::NONE,
+    ))
+    .expect("mouse drag");
+
+    assert!(
+        app.view.status_message.is_none(),
+        "normal spectra selection drag must stay hint-free"
+    );
+    assert!(
+        app.view.text_selection.is_some(),
+        "drag on a non-reporting pane drives spectra selection"
+    );
+}
+
+#[test]
 fn sync_output_hold_follows_guest_requests() {
     let (mut app, _writes) = build_recording_app_with_output(vec![b"\x1b[?2026h".to_vec()]);
     assert!(!app.render_hold_for_sync_output());

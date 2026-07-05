@@ -24,7 +24,7 @@
 - [ ] アーキテクチャ+テストカバレッジの再確認。カバレッジの穴にテストを実装(最後に実施)
 - [ ] spectra内でClaude Codeを開くと下線が無駄に残ることがある(スクショ確認済み: プロンプト行に下線残留)。
       SGR underline の追跡/リセットまわりを調査→修正
-- [ ] drag中に status bar へ `shift+drag to select` 的なヒントを表示(特にguestがmouseを掴んでいるpaneでのdrag転送時)
+- [x] DONE drag中に status bar へ `shift+drag to select` 的なヒントを表示 — guest が mouse を掴む pane で左drag が転送された時のみ `shift+drag to select text` を2秒表示(drag継続中はリフレッシュ・通常paneのdragや単独クリックでは出さない・spectra側mouse無効時も出さない)
 - [ ] ghosttyでURL(`https://...`)のcmd+clickがspectra経由だと効かない。OSC 8送出の差分フレーム破損 or
       mouse capture干渉の疑い。調査→修正
 
