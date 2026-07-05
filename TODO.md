@@ -14,6 +14,23 @@
 >
 > (2026-07-05 判断済み: kitty keyboard はパススルー相当で実装済み・kitty graphics は不採用・OSC 10/11 は(b)ホスト端末中継で実装済み)
 
+---
+
+## P7: バグ修正・改善 (2026-07-05 ユーザー報告)
+
+- [ ] `spectra --version` 対応(gargo風) — **リポジトリでは実装済み**(コミット3a3a094、`spectra 0.1.5` を出力)。
+      インストール済みバイナリが古いだけ。対応=リリース(Cargo.tomlのversion bump → push → tag → `--update`/install.sh で配布)。
+      本バッチ完了時に 0.2.0 へ bump するか要確認 → とりあえず bump して push する方針
+- [ ] cursor mode の `v` anchor toggle が効かない疑い(v→cursor rightで選択されずyankも不発)。再現テスト→修正
+- [ ] windowtree(SideWindowTree)の左端固定(x=0)ジオメトリのhardcode修正(P4の既知項目)
+- [ ] enter/leave cursor mode のアクションを command palette で文脈フィルタ(cursor mode中はleaveのみ、normal中はenterのみ表示)
+- [ ] アーキテクチャ+テストカバレッジの再確認。カバレッジの穴にテストを実装(最後に実施)
+- [ ] spectra内でClaude Codeを開くと下線が無駄に残ることがある(スクショ確認済み: プロンプト行に下線残留)。
+      SGR underline の追跡/リセットまわりを調査→修正
+- [ ] drag中に status bar へ `shift+drag to select` 的なヒントを表示(特にguestがmouseを掴んでいるpaneでのdrag転送時)
+- [ ] ghosttyでURL(`https://...`)のcmd+clickがspectra経由だと効かない。OSC 8送出の差分フレーム破損 or
+      mouse capture干渉の疑い。調査→修正
+
 ## 現状サマリ（希望機能の実在チェック）
 
 | 希望機能 | spectraの現状 |
