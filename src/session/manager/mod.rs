@@ -422,6 +422,17 @@ impl SessionManager {
             .is_some_and(Pane::wants_mouse_reporting)
     }
 
+    /// Whether any pane in the active window requested mouse reporting
+    /// (DECSET 9/1000/1002/1003). Drives host-terminal mouse capture: while
+    /// no guest wants the mouse and spectra's own mouse handling is off,
+    /// leaving the host uncaptured keeps native terminal features (e.g.
+    /// ghostty link clicks) working.
+    pub fn active_window_wants_mouse_reporting(&self) -> bool {
+        self.active_window_pane_ids()
+            .iter()
+            .any(|pane_id| self.pane_wants_mouse_reporting(*pane_id))
+    }
+
     /// Encode a mouse event for the pane's guest program, honouring its
     /// requested protocol/encoding. Returns `None` when the guest did not
     /// ask for this kind of event.

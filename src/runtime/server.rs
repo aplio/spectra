@@ -710,6 +710,15 @@ fn queue_render_for_clients(clients: &mut [ClientConnection], app: &mut App) -> 
         let Some(snapshot) = app.render_snapshot_for_client(client.id) else {
             continue;
         };
+        // Keep the client's host-terminal mouse capture in sync with what
+        // this frame needs. Sent as a control message so a later render
+        // replacing this one in the queue cannot drop the toggle.
+        if snapshot.wants_mouse_capture != client.host_mouse_capture {
+            client.queue_control_message(&ServerMessage::Passthrough {
+                ansi: terminal::mouse_capture_sequence(snapshot.wants_mouse_capture),
+            })?;
+            client.host_mouse_capture = snapshot.wants_mouse_capture;
+        }
         let mut bytes = Vec::new();
         let full_clear = snapshot.full_clear
             || client.force_full_clear
@@ -794,6 +803,11 @@ struct ClientConnection {
     renders_enabled: bool,
     close_after_flush: bool,
     disconnected: bool,
+    /// Whether the client's host terminal currently has mouse capture
+    /// enabled. Starts false (client setup does not capture); toggles are
+    /// sent as passthrough control messages when render snapshots demand a
+    /// different state.
+    host_mouse_capture: bool,
 }
 
 impl ClientConnection {
@@ -809,6 +823,7 @@ impl ClientConnection {
             renders_enabled: false,
             close_after_flush: false,
             disconnected: false,
+            host_mouse_capture: false,
         }
     }
 

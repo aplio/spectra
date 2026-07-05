@@ -2633,6 +2633,44 @@ fn visible_side_window_tree_does_not_capture_navigation_keys() {
 }
 
 #[test]
+fn render_snapshot_requests_mouse_capture_only_when_needed() {
+    let mut app = build_app_for_resize_test();
+
+    // Default: spectra [mouse] off and no guest mouse reporting, so the
+    // host terminal stays uncaptured (native selection/link clicks work).
+    app.request_render(false);
+    let snapshot = app.take_render_snapshot().expect("snapshot");
+    assert!(!snapshot.wants_mouse_capture);
+
+    // A guest in the active window requesting mouse reporting flips
+    // capture on so its events can be forwarded...
+    let pane_id = app
+        .current_session()
+        .focused_pane_id()
+        .expect("focused pane");
+    app.sessions[0]
+        .session
+        .feed_pane_replay(pane_id, b"\x1b[?1002h");
+    app.request_render(false);
+    let snapshot = app.take_render_snapshot().expect("snapshot");
+    assert!(snapshot.wants_mouse_capture);
+
+    // ...and releases the host again when the guest turns it off.
+    app.sessions[0]
+        .session
+        .feed_pane_replay(pane_id, b"\x1b[?1002l");
+    app.request_render(false);
+    let snapshot = app.take_render_snapshot().expect("snapshot");
+    assert!(!snapshot.wants_mouse_capture);
+
+    // spectra's own [mouse] handling keeps capture on regardless of guests.
+    app.mouse_enabled = true;
+    app.request_render(false);
+    let snapshot = app.take_render_snapshot().expect("snapshot");
+    assert!(snapshot.wants_mouse_capture);
+}
+
+#[test]
 fn side_window_tree_overlay_marks_selected_window_with_gt_prefix() {
     let mut app = build_app_for_resize_test();
     app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))

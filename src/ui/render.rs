@@ -2056,6 +2056,140 @@ mod tests {
         );
     }
 
+    /// Number of OSC 8 opens (non-empty URI) and closes in renderer output.
+    fn osc8_open_close_counts(rendered: &str) -> (usize, usize) {
+        let total = rendered.matches("\u{1b}]8;;").count();
+        let closes = rendered.matches("\u{1b}]8;;\u{1b}\\").count();
+        (total - closes, closes)
+    }
+
+    #[test]
+    fn incremental_repaint_of_linked_row_reopens_and_closes_osc8() {
+        let cols = 40;
+        let rows = 3;
+        let mut renderer = FrameRenderer::new();
+
+        let before = frame_with_rows(
+            cols as usize,
+            vec![plain_cells("see https://example.com/docs now")],
+        );
+        let after = frame_with_rows(
+            cols as usize,
+            vec![plain_cells("SEE https://example.com/docs now")],
+        );
+
+        let mut full_out = Vec::new();
+        renderer
+            .render_to_writer(&mut full_out, &before, "s", cols, rows, true, None, None)
+            .expect("full render");
+
+        let mut out = Vec::new();
+        renderer
+            .render_to_writer(&mut out, &after, "s", cols, rows, false, None, None)
+            .expect("incremental render");
+        let rendered = String::from_utf8(out).expect("utf8");
+
+        // The repainted tail crosses the linked region: the URL must be
+        // re-emitted as a complete OSC 8 open + close pair.
+        assert!(
+            rendered.contains(
+                "\u{1b}]8;;https://example.com/docs\u{1b}\\https://example.com/docs\u{1b}]8;;\u{1b}\\"
+            ),
+            "expected re-opened and closed hyperlink in incremental output, got: {rendered:?}"
+        );
+        let (opens, closes) = osc8_open_close_counts(&rendered);
+        assert_eq!(
+            opens, closes,
+            "incremental output must not leave an OSC 8 region open: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn incremental_repaint_inside_cell_level_link_stays_balanced() {
+        let cols = 24;
+        let rows = 3;
+        let mut renderer = FrameRenderer::new();
+        let link: std::sync::Arc<str> = std::sync::Arc::from("https://example.com");
+
+        let linked_row = |text: &str| {
+            let mut row = plain_cells(text);
+            for cell in row.iter_mut().take(4) {
+                cell.link = Some(link.clone());
+            }
+            row
+        };
+        let before = frame_with_rows(cols as usize, vec![linked_row("docs and more")]);
+        let after = frame_with_rows(cols as usize, vec![linked_row("dXcs and more")]);
+
+        let mut full_out = Vec::new();
+        renderer
+            .render_to_writer(&mut full_out, &before, "s", cols, rows, true, None, None)
+            .expect("full render");
+
+        let mut out = Vec::new();
+        renderer
+            .render_to_writer(&mut out, &after, "s", cols, rows, false, None, None)
+            .expect("incremental render");
+        let rendered = String::from_utf8(out).expect("utf8");
+
+        // Repaint starts mid-link: the repainted linked cells must be
+        // wrapped in a fresh OSC 8 open + close, and the close must land
+        // before the unlinked tail.
+        assert!(
+            rendered
+                .contains("\u{1b}]8;;https://example.com\u{1b}\\Xcs\u{1b}]8;;\u{1b}\\ and more"),
+            "expected repainted linked cells wrapped in OSC 8, got: {rendered:?}"
+        );
+        let (opens, closes) = osc8_open_close_counts(&rendered);
+        assert_eq!(
+            opens, closes,
+            "incremental output must not leave an OSC 8 region open: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn incremental_repaint_after_link_does_not_touch_link_region() {
+        let cols = 40;
+        let rows = 3;
+        let mut renderer = FrameRenderer::new();
+
+        let before = frame_with_rows(
+            cols as usize,
+            vec![plain_cells("https://example.com/docs now")],
+        );
+        let after = frame_with_rows(
+            cols as usize,
+            vec![plain_cells("https://example.com/docs NOW")],
+        );
+
+        let mut full_out = Vec::new();
+        renderer
+            .render_to_writer(&mut full_out, &before, "s", cols, rows, true, None, None)
+            .expect("full render");
+        let full_rendered = String::from_utf8(full_out).expect("utf8");
+        let (full_opens, full_closes) = osc8_open_close_counts(&full_rendered);
+        assert!(full_opens > 0, "full frame must emit the link");
+        assert_eq!(full_opens, full_closes, "full frame must close its links");
+
+        let mut out = Vec::new();
+        renderer
+            .render_to_writer(&mut out, &after, "s", cols, rows, false, None, None)
+            .expect("incremental render");
+        let rendered = String::from_utf8(out).expect("utf8");
+
+        // The change is after the URL, so the repaint may skip the link
+        // entirely - but whatever is emitted must stay balanced.
+        let (opens, closes) = osc8_open_close_counts(&rendered);
+        assert_eq!(
+            opens, closes,
+            "incremental output must not leave an OSC 8 region open: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("NOW"),
+            "changed tail must be repainted: {rendered:?}"
+        );
+    }
+
     fn frame_with_rows(cols: usize, rows: Vec<Vec<StyledCell>>) -> RenderFrame {
         RenderFrame {
             panes: vec![RenderPane {

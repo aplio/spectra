@@ -24,12 +24,17 @@ static KEYBOARD_ENHANCEMENT_PUSHED: AtomicBool = AtomicBool::new(false);
 pub fn setup() -> std::io::Result<std::io::Stdout> {
     let mut stdout = stdout();
     terminal::enable_raw_mode()?;
+    // Host mouse capture is NOT enabled here: it is driven dynamically by
+    // the server (see `mouse_capture_sequence`), so the host terminal keeps
+    // native mouse behaviour - most importantly link hover/click, which
+    // terminals like ghostty disable entirely while an application has
+    // mouse reporting active - whenever neither spectra ([mouse] enabled)
+    // nor a guest program needs mouse events.
     if let Err(err) = execute!(
         stdout,
         terminal::EnterAlternateScreen,
         terminal::Clear(ClearType::All),
         EnableBracketedPaste,
-        EnableMouseCapture,
         cursor::Show,
     ) {
         let _ = terminal::disable_raw_mode();
@@ -88,6 +93,24 @@ pub fn teardown(mut stdout: std::io::Stdout) {
     );
 }
 
+/// Build the ANSI sequence that enables or disables host-terminal mouse
+/// capture. Sent by the server to attached clients when the need for mouse
+/// events changes (spectra's [mouse] config, or a guest requesting mouse
+/// reporting), so the host terminal is only captured while someone actually
+/// consumes mouse input. Disabling when never enabled is harmless.
+pub fn mouse_capture_sequence(enable: bool) -> String {
+    use crossterm::Command;
+
+    let mut ansi = String::new();
+    // Writing into a String cannot fail.
+    let _ = if enable {
+        EnableMouseCapture.write_ansi(&mut ansi)
+    } else {
+        DisableMouseCapture.write_ansi(&mut ansi)
+    };
+    ansi
+}
+
 /// Build an OSC 2 escape sequence for setting the host window title.
 pub fn osc2_title_sequence(title: &str) -> String {
     format!("\x1b]2;{title}\x07")
@@ -102,7 +125,20 @@ pub fn osc9_notification_sequence(message: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{osc2_title_sequence, osc9_notification_sequence};
+    use super::{mouse_capture_sequence, osc2_title_sequence, osc9_notification_sequence};
+
+    #[test]
+    fn mouse_capture_sequence_toggles_xterm_mouse_modes() {
+        let enable = mouse_capture_sequence(true);
+        assert!(enable.contains("\x1b[?1000h"), "enable={enable:?}");
+        assert!(enable.contains("\x1b[?1006h"), "enable={enable:?}");
+        assert!(!enable.contains('l'), "enable={enable:?}");
+
+        let disable = mouse_capture_sequence(false);
+        assert!(disable.contains("\x1b[?1000l"), "disable={disable:?}");
+        assert!(disable.contains("\x1b[?1006l"), "disable={disable:?}");
+        assert!(!disable.contains('h'), "disable={disable:?}");
+    }
 
     #[test]
     fn osc2_title_sequence_uses_bell_terminator() {

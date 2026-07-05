@@ -112,6 +112,12 @@ pub struct RenderSnapshot {
     pub cols: u16,
     pub rows: u16,
     pub full_clear: bool,
+    /// Whether the client's host terminal should have mouse capture enabled
+    /// for this frame: spectra's own mouse handling is on, or a guest in the
+    /// viewed window requested mouse reporting. Otherwise the host stays
+    /// uncaptured so native terminal mouse features (text selection, link
+    /// clicks) keep working.
+    pub wants_mouse_capture: bool,
 }
 
 pub struct App {
@@ -443,6 +449,9 @@ impl App {
     }
 
     pub fn run(&mut self, stdout: &mut std::io::Stdout) -> io::Result<()> {
+        // Host mouse capture starts disabled (terminal setup no longer
+        // enables it) and follows the per-frame snapshot state.
+        let mut host_mouse_capture = false;
         while !self.should_quit {
             if let Some(event) = poll_event_for(FRAME_DURATION_60_FPS)? {
                 match event {
@@ -475,6 +484,12 @@ impl App {
             }
 
             if let Some(snapshot) = self.take_render_snapshot() {
+                if snapshot.wants_mouse_capture != host_mouse_capture {
+                    let sequence =
+                        crate::io::terminal::mouse_capture_sequence(snapshot.wants_mouse_capture);
+                    stdout.write_all(sequence.as_bytes())?;
+                    host_mouse_capture = snapshot.wants_mouse_capture;
+                }
                 if let Some(window_title) = snapshot.window_title.as_deref() {
                     let sequence = crate::io::terminal::osc2_title_sequence(window_title);
                     stdout.write_all(sequence.as_bytes())?;

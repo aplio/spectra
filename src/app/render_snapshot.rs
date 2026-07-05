@@ -46,9 +46,18 @@ impl App {
                 cols: app.view.cols,
                 rows: app.view.rows,
                 full_clear: app.needs_full_clear,
+                wants_mouse_capture: app.wants_host_mouse_capture(),
             }
         });
         Some(snapshot)
+    }
+
+    /// Whether the host terminal of the active client should capture mouse
+    /// events: spectra's own mouse handling is enabled, or a guest program
+    /// in the active window requested mouse reporting. While false, the
+    /// host terminal keeps native mouse behaviour (selection, link clicks).
+    pub(super) fn wants_host_mouse_capture(&self) -> bool {
+        self.mouse_enabled || self.current_session().active_window_wants_mouse_reporting()
     }
 
     pub fn finish_render_cycle(&mut self) {

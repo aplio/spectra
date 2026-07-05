@@ -26,8 +26,11 @@
       原因判明: SGRパーサがコロン下位パラメータを平坦化していた — `4:3`(波下線)が下線+イタリック、`4:0`(下線オフ)が「下線オン→全リセット」、`58:5:n`(下線色)の引数が独立コード(5=blink、4=下線!)として誤解釈され下線が固着。
       修正: vteのparamスライスを保ったままSGR解釈(`4:0`=off/`4:1..5`=on/`21`=二重下線(ECMA-48・xterm/kitty/ghostty準拠)/`38:48:58`のコロン・セミコロン両形式consume/`59` no-op)。レンダラ側は全リセット+再構築方式で元々正しいことをテストで確認
 - [x] DONE drag中に status bar へ `shift+drag to select` 的なヒントを表示 — guest が mouse を掴む pane で左drag が転送された時のみ `shift+drag to select text` を2秒表示(drag継続中はリフレッシュ・通常paneのdragや単独クリックでは出さない・spectra側mouse無効時も出さない)
-- [ ] ghosttyでURL(`https://...`)のcmd+clickがspectra経由だと効かない。OSC 8送出の差分フレーム破損 or
-      mouse capture干渉の疑い。調査→修正
+- [x] DONE ghosttyでURL(`https://...`)のcmd+clickがspectra経由だと効かない。
+      原因判明: mouse capture干渉が本命。ghosttyはアプリがmouse reportingを有効にしている間リンク検知(hover/cmd+click)を完全に無効化する仕様(ghostty discussion #9514/#4618、回避はshift+cmd+click)で、spectraはclient起動時に無条件でEnableMouseCaptureしていた。
+      OSC 8送出の差分フレーム破損疑いはテストで潔白を証明(部分再描画でもopen/close均衡・リンク再emit正常、regressionテスト3本追加)。
+      修正: hostのmouse captureを動的化 — [mouse] enabled または active windowのguestがmouse reporting要求時のみcapture(server→clientへPassthrough制御メッセージで?1000h/l送出)。
+      ※実ghosttyでの最終確認はユーザー依頼: シェルプロンプト表示中にcmd+clickが効くこと・guestがmouse使用中はshift+cmd+clickで開けること
 
 ## 現状サマリ（希望機能の実在チェック）
 
