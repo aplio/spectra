@@ -711,18 +711,6 @@ impl TerminalGrid {
         }
         payload
     }
-
-    fn encode_osc_sequence(params: &[&[u8]], bell_terminated: bool) -> Vec<u8> {
-        let mut sequence = Vec::with_capacity(8);
-        sequence.extend_from_slice(b"\x1b]");
-        sequence.extend(Self::osc_payload_bytes(params, 0));
-        if bell_terminated {
-            sequence.push(0x07);
-        } else {
-            sequence.extend_from_slice(b"\x1b\\");
-        }
-        sequence
-    }
 }
 
 fn parse_osc7_path(raw: &str) -> Option<String> {
@@ -818,10 +806,15 @@ impl Perform for TerminalGrid {
 
         match *ps {
             b"8" => {
-                if self.allow_passthrough {
-                    self.passthrough_queue
-                        .push(Self::encode_osc_sequence(params, bell_terminated));
-                }
+                // OSC 8 is modelled per-cell (see `active_link` below) and the
+                // renderer re-emits balanced hyperlink sequences aligned with the
+                // frame. Forwarding the raw guest sequence to the host as well
+                // double-emits and, when a guest's open and close land in
+                // different output bursts, leaves the host stuck in an open
+                // hyperlink state that bleeds underline/link styling across the
+                // whole frame (status line included). So OSC 8 is intentionally
+                // not passed through.
+                //
                 // OSC 8 ; params ; uri — an empty URI closes the hyperlink,
                 // a non-empty one opens it for subsequently printed cells.
                 let uri = Self::osc_payload_bytes(params, 2);

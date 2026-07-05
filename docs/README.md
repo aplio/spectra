@@ -49,7 +49,7 @@ spectra is a terminal multiplexer style app.
 - pane shell process environment includes `SPECTRA=1` so nested interactive launches can be detected
 - interactive panes use login-shell startup and add prompt hooks for bash/zsh so each prompt emits OSC `2` (title) and OSC `7` (cwd)
 - pane output bytes are parsed by vte into a styled terminal grid
-- optional pass-through forwards tmux-style wrapped payloads (`DCS tmux;...ST`) and OSC 8 hyperlink control sequences directly to attached client terminals; config key `[terminal].allow_passthrough` defaults to `true`
+- optional pass-through forwards tmux-style wrapped payloads (`DCS tmux;...ST`) directly to attached client terminals; config key `[terminal].allow_passthrough` defaults to `true`. OSC 8 hyperlinks are deliberately *not* forwarded raw — they are modelled per-cell and re-emitted by the renderer aligned with the frame (see below), which avoids leaving the outer terminal in a stuck open-link/underline state when a guest's open and close arrive in separate output bursts
 - terminal grid keeps visible content on resize and captures scrollback lines
 - terminal LF is normalized to CRLF behavior for expected prompt positioning
 - terminal grid handles CSI `K` erase-line modes (`0`,`1`,`2`) used by shell prompt repaint flows

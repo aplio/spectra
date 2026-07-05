@@ -237,36 +237,29 @@ fn tmux_passthrough_output_respects_allow_passthrough_toggle() {
 }
 
 #[test]
-fn osc8_passthrough_output_respects_allow_passthrough_toggle() {
+fn osc8_is_not_forwarded_to_host_passthrough() {
+    // Regression: OSC 8 hyperlinks are modelled per-cell and re-emitted by the
+    // renderer aligned with the frame. Forwarding the raw guest sequence to the
+    // host as well used to leave the host stuck in an open hyperlink state (its
+    // open and close arriving in different output bursts), bleeding underline
+    // across the whole frame including spectra's own status line. OSC 8 must not
+    // reach the host passthrough channel, even when passthrough is enabled.
     let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
     let bytes = b"\x1b]8;;https://example.com\x07link\x1b]8;;\x07".to_vec();
 
-    let mut enabled = SessionManager::with_factory(
-        options.clone(),
-        Arc::new(StaticOutputFactory {
-            bytes: bytes.clone(),
-        }),
+    let mut session = SessionManager::with_factory(
+        options,
+        Arc::new(StaticOutputFactory { bytes }),
         80,
         24,
     )
     .expect("create passthrough-enabled session");
-    assert!(enabled.allow_passthrough());
-    assert!(enabled.poll_output(), "expected pane output");
-    assert_eq!(
-        enabled.take_passthrough_output(),
-        vec![
-            b"\x1b]8;;https://example.com\x07".to_vec(),
-            b"\x1b]8;;\x07".to_vec()
-        ]
+    assert!(session.allow_passthrough());
+    assert!(session.poll_output(), "expected pane output");
+    assert!(
+        session.take_passthrough_output().is_empty(),
+        "OSC 8 must not be forwarded to the host"
     );
-
-    let mut disabled =
-        SessionManager::with_factory(options, Arc::new(StaticOutputFactory { bytes }), 80, 24)
-            .expect("create passthrough-disabled session");
-    disabled.set_allow_passthrough(false);
-    assert!(!disabled.allow_passthrough());
-    assert!(disabled.poll_output(), "expected pane output");
-    assert!(disabled.take_passthrough_output().is_empty());
 }
 
 #[test]
