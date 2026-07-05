@@ -45,7 +45,9 @@ herdrはlibghostty-vt(vendored, Zig FFI)に委譲し、足りない分を `src/p
       ゲストが有効化した時のみpasteを `ESC[200~`/`ESC[201~` でラップ。埋め込みend markerは除去(paste injection対策)
 - [x] DONE **synchronized output (?2026)** — pane毎に追跡し、active windowのpaneがhold中は
       server loopがフレーム送出を遅延(needs_renderは保持)。150ms上限で暴走ガード(`SYNC_OUTPUT_TIMEOUT`)
-- [ ] **OSC 52 inbound** — pane内プログラムからのクリップボード書き込みを受けて外側へ転送(herdrの `Osc52Forwarder`, `src/pane/osc.rs:302`, 256KiB上限)。現状spectra発のOSC 52送出のみ
+- [x] DONE **OSC 52 inbound** — osc_dispatchで受けてbase64デコードし、全attachedクライアントへ
+      OSC 52フレームをブロードキャスト(tmuxのset-clipboard相当)。256KiB上限・クエリ(`?`)は無応答で無視。
+      vteはstd featureでOSCペイロード無制限Vecのためdispatch側でcap
 - [ ] **OSC 133 (semantic prompt)** — shell integration。agent検知の region 計算にも使える
 - [ ] OSC 10/11 (fg/bg色 query) — TUIのダークモード検知が壊れる原因になりがち
 - [ ] OSC 8 hyperlink をgridで解釈(現状passthrough転送のみ、自前URL検知でのemitはあり)

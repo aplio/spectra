@@ -685,6 +685,7 @@ impl App {
         };
 
         let mut changed = false;
+        let mut clipboard_texts = Vec::new();
         for pane_event in events {
             let pane_id = pane_event.pane_id;
             match pane_event.event {
@@ -693,6 +694,10 @@ impl App {
                 }
                 TerminalEvent::CwdChanged { cwd } => {
                     changed |= Self::set_name(&mut managed.cwd_fallbacks, pane_id, Some(cwd));
+                }
+                TerminalEvent::ClipboardSet { text } => {
+                    clipboard_texts.push(text);
+                    continue;
                 }
             }
 
@@ -703,7 +708,22 @@ impl App {
             }
         }
 
+        for text in clipboard_texts {
+            self.broadcast_clipboard_to_clients(&text);
+        }
+
         changed
+    }
+
+    /// Queue an OSC 52 clipboard frame for every attached client so a
+    /// guest-initiated clipboard write (OSC 52) reaches each client's host
+    /// terminal, mirroring how tmux forwards set-clipboard.
+    fn broadcast_clipboard_to_clients(&mut self, text: &str) {
+        let sequence = crate::clipboard::osc52_sequence(text);
+        self.view.pending_clipboard_ansi.push(sequence.clone());
+        for state in self.inactive_client_states.values_mut() {
+            state.pending_clipboard_ansi.push(sequence.clone());
+        }
     }
 
     fn prune_side_window_tree_state(&mut self) {

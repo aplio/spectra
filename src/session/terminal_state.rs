@@ -51,8 +51,16 @@ fn trim_trailing_default_cells(cells: &mut Vec<StyledCell>) {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminalEvent {
-    TitleChanged { title: Option<String> },
-    CwdChanged { cwd: String },
+    TitleChanged {
+        title: Option<String>,
+    },
+    CwdChanged {
+        cwd: String,
+    },
+    /// The guest program set the clipboard via OSC 52.
+    ClipboardSet {
+        text: String,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -68,6 +76,12 @@ enum TmuxPassthroughState {
         escaped: bool,
     },
 }
+
+/// Upper bound for an inbound OSC 52 base64 payload (~256 KiB of decoded
+/// clipboard text, matching common terminal caps). vte's std parser
+/// accumulates OSC payloads in an unbounded Vec, so the cap is enforced at
+/// dispatch time.
+const MAX_OSC52_BASE64_LEN: usize = 256 * 1024 * 4 / 3 + 4;
 
 pub struct TerminalState {
     parser: Parser,
@@ -1610,6 +1624,26 @@ impl Perform for TerminalGrid {
                     self.terminal_events.push(TerminalEvent::CwdChanged { cwd });
                 }
             }
+            b"52" => {
+                // OSC 52 clipboard write: params are (52, selection, base64
+                // data). Queries ("?") are not answered, and payloads that
+                // fail to decode (including parser-truncated ones) are
+                // dropped.
+                let payload: &[u8] = params.get(2).copied().unwrap_or(b"");
+                if payload.is_empty() || payload == b"?" || payload.len() > MAX_OSC52_BASE64_LEN {
+                    return;
+                }
+                use base64::Engine as _;
+                let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(payload) else {
+                    return;
+                };
+                let text = String::from_utf8_lossy(&decoded).into_owned();
+                if text.is_empty() {
+                    return;
+                }
+                self.terminal_events
+                    .push(TerminalEvent::ClipboardSet { text });
+            }
             _ => {}
         }
     }
@@ -1912,6 +1946,33 @@ mod tests {
             std::time::Instant::now() - (super::SYNC_OUTPUT_TIMEOUT + Duration::from_millis(50)),
         );
         assert!(!state.synchronized_output_active());
+    }
+
+    #[test]
+    fn osc52_clipboard_write_emits_event() {
+        let mut state = TerminalState::new(10, 2);
+        state.feed(b"\x1b]52;c;aGVsbG8=\x07");
+        let events = state.drain_events();
+        assert!(events.contains(&TerminalEvent::ClipboardSet {
+            text: "hello".to_string()
+        }));
+
+        // ST-terminated form works too.
+        state.feed(b"\x1b]52;c;d29ybGQ=\x1b\\");
+        let events = state.drain_events();
+        assert!(events.contains(&TerminalEvent::ClipboardSet {
+            text: "world".to_string()
+        }));
+    }
+
+    #[test]
+    fn osc52_query_and_invalid_payloads_are_ignored() {
+        let mut state = TerminalState::new(10, 2);
+        state.feed(b"\x1b]52;c;?\x07");
+        state.feed(b"\x1b]52;c;%%%not-base64%%%\x07");
+        state.feed(b"\x1b]52;c;\x07");
+        state.feed(b"\x1b]52;c\x07");
+        assert!(state.drain_events().is_empty());
     }
 
     #[test]

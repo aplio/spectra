@@ -5521,6 +5521,24 @@ fn sync_output_hold_follows_guest_requests() {
 }
 
 #[test]
+fn osc52_from_guest_forwards_clipboard_to_active_client() {
+    let (mut app, _writes) =
+        build_recording_app_with_output(vec![b"\x1b]52;c;aGVsbG8=\x07".to_vec()]);
+    let remote_client_id = 7;
+    app.register_client(remote_client_id, 80, 24);
+
+    app.tick();
+
+    let ansi = app.take_pending_clipboard_ansi_for_client(remote_client_id);
+    assert_eq!(ansi.len(), 1);
+    assert!(
+        ansi[0].contains("52;c;aGVsbG8="),
+        "unexpected clipboard frame: {:?}",
+        ansi[0]
+    );
+}
+
+#[test]
 fn sync_output_hold_releases_on_reset() {
     let (mut app, _writes) =
         build_recording_app_with_output(vec![b"\x1b[?2026h\x1b[?2026l".to_vec()]);
