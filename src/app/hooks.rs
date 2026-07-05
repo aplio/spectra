@@ -29,6 +29,10 @@ impl App {
     }
 
     pub(super) fn emit_hook(&mut self, event: HookEvent, context: HookContext) {
+        // Bridge every hook emission to the JSON-RPC API event queue with the
+        // same context fields, independent of whether a hook command is set.
+        self.push_api_event(event.api_event_name(), context.api_event_params());
+
         let Some(command) = self.hook_command(event).map(str::trim) else {
             return;
         };

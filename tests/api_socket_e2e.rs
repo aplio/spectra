@@ -285,3 +285,156 @@ fn api_socket_serves_read_only_json_rpc_methods() {
     assert_eq!(second_response["id"], "x");
     assert!(second_response["result"].is_array());
 }
+
+impl ApiClient {
+    /// Read one server-pushed line (event push after `events.subscribe`).
+    fn read_line(&mut self) -> io::Result<Value> {
+        let mut line = String::new();
+        self.reader.read_line(&mut line)?;
+        serde_json::from_str(line.trim_end()).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid api event line {line:?}: {err}"),
+            )
+        })
+    }
+}
+
+#[test]
+fn api_socket_send_keys_effect_is_visible_via_pane_read() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime_dir = dir.path().join("runtime");
+    let data_home = dir.path().join("data");
+    std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+    std::fs::create_dir_all(&data_home).expect("create data dir");
+
+    let _server = spawn_server(&runtime_dir, &data_home).expect("spawn server");
+    let api_socket = api_socket_path(&runtime_dir);
+    wait_for_socket(&api_socket).expect("wait for api socket");
+
+    let mut client = ApiClient::connect(&api_socket).expect("connect api client");
+
+    // The server pane runs `cat`, so sent text is echoed back into the pane.
+    let sent = client
+        .request(r#"{"id":1,"method":"pane.send_keys","params":{"pane_id":1,"text":"spectra-e2e-marker\n"}}"#)
+        .expect("send_keys response");
+    assert_eq!(sent["result"]["ok"], true, "unexpected response: {sent}");
+
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let read = client
+            .request(r#"{"id":2,"method":"pane.read","params":{"pane_id":1}}"#)
+            .expect("pane.read response");
+        let text = read["result"]["text"].as_str().expect("pane text");
+        if text.contains("spectra-e2e-marker") {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("sent text never appeared in pane.read output: {text:?}");
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn api_socket_pushes_subscribed_events_to_other_connection() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime_dir = dir.path().join("runtime");
+    let data_home = dir.path().join("data");
+    std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+    std::fs::create_dir_all(&data_home).expect("create data dir");
+
+    let _server = spawn_server(&runtime_dir, &data_home).expect("spawn server");
+    let api_socket = api_socket_path(&runtime_dir);
+    wait_for_socket(&api_socket).expect("wait for api socket");
+
+    let mut subscriber = ApiClient::connect(&api_socket).expect("connect subscriber");
+    let subscribed = subscriber
+        .request(r#"{"id":1,"method":"events.subscribe","params":{"events":["pane.split"]}}"#)
+        .expect("subscribe response");
+    assert_eq!(
+        subscribed["result"]["subscribed"],
+        serde_json::json!(["pane.split"]),
+        "unexpected subscribe response: {subscribed}"
+    );
+
+    let mut actor = ApiClient::connect(&api_socket).expect("connect actor");
+    let split = actor
+        .request(r#"{"id":2,"method":"pane.split","params":{"axis":"vertical"}}"#)
+        .expect("split response");
+    let new_pane_id = split["result"]["pane_id"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("expected new pane id: {split}"));
+    assert!(new_pane_id >= 2);
+
+    let event = subscriber.read_line().expect("event line");
+    assert_eq!(event["event"], "pane.split", "unexpected event: {event}");
+    assert!(event["params"]["session_id"].is_string());
+    assert!(event["params"]["pane_id"].is_u64());
+
+    // The actor connection did not subscribe: a follow-up request still gets
+    // its own response as the next line (no event interleaved before it).
+    let panes = actor
+        .request(r#"{"id":3,"method":"pane.list"}"#)
+        .expect("pane.list response");
+    assert_eq!(panes["id"], 3);
+}
+
+#[test]
+fn api_cli_follow_prints_pushed_event_lines() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime_dir = dir.path().join("runtime");
+    let data_home = dir.path().join("data");
+    std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+    std::fs::create_dir_all(&data_home).expect("create data dir");
+
+    let _server = spawn_server(&runtime_dir, &data_home).expect("spawn server");
+    let api_socket = api_socket_path(&runtime_dir);
+    wait_for_socket(&api_socket).expect("wait for api socket");
+
+    let bin = resolve_spectra_binary().expect("spectra binary");
+    let config_home = data_home.join("config-home");
+    let mut follower = Command::new(bin)
+        .args(["api", "--follow", "events.subscribe"])
+        .env("XDG_RUNTIME_DIR", &runtime_dir)
+        .env("XDG_DATA_HOME", &data_home)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn follower");
+
+    // Stream the follower's stdout from a thread so we can wait with a
+    // timeout for each line.
+    let stdout = follower.stdout.take().expect("follower stdout");
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let reader_thread = thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    let first = rx.recv_timeout(WAIT_TIMEOUT).expect("subscription result");
+    assert!(
+        first.contains("subscribed"),
+        "expected subscription result first, got {first:?}"
+    );
+
+    let mut actor = ApiClient::connect(&api_socket).expect("connect actor");
+    actor
+        .request(r#"{"id":1,"method":"pane.split","params":{"axis":"horizontal"}}"#)
+        .expect("split response");
+
+    let event_line = rx.recv_timeout(WAIT_TIMEOUT).expect("event line");
+    let event: Value = serde_json::from_str(&event_line).expect("event line is JSON");
+    assert_eq!(event["event"], "pane.split", "unexpected event: {event}");
+
+    let _ = follower.kill();
+    let _ = follower.wait();
+    let _ = reader_thread.join();
+}

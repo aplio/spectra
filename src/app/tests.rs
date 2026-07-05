@@ -22,8 +22,9 @@ use crate::session::terminal_state::TerminalEvent;
 use crate::storage::DataStore;
 
 use super::{
-    AgentTracking, App, AppSignal, AttachTarget, InputMode, ManagedSession, RenameTarget,
-    RuntimeUiConfig, TreeRowKind, is_closed_pane_error, session_id_for,
+    API_EVENT_QUEUE_MAX, AgentTracking, App, AppSignal, AttachTarget, InputMode, ManagedSession,
+    REPORTED_AGENT_TTL, RenameTarget, RuntimeUiConfig, TreeRowKind, is_closed_pane_error,
+    session_id_for,
 };
 
 type RecordedWrites = Arc<Mutex<Vec<(usize, Vec<u8>)>>>;
@@ -328,6 +329,7 @@ fn build_app_for_resize_test() -> App {
         should_quit: false,
         needs_render: false,
         needs_full_clear: false,
+        pending_api_events: Vec::new(),
         available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     }
@@ -447,6 +449,7 @@ fn build_app_with_history() -> App {
         should_quit: false,
         needs_render: false,
         needs_full_clear: false,
+        pending_api_events: Vec::new(),
         available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     }
@@ -559,6 +562,7 @@ fn build_app_with_write_behavior(behavior: WriteBehavior) -> App {
         should_quit: false,
         needs_render: false,
         needs_full_clear: false,
+        pending_api_events: Vec::new(),
         available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     }
@@ -628,6 +632,7 @@ fn build_app_with_close_on_write_behavior(behavior: CloseOnWriteBehavior) -> App
         should_quit: false,
         needs_render: false,
         needs_full_clear: false,
+        pending_api_events: Vec::new(),
         available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     }
@@ -736,6 +741,7 @@ fn build_recording_app_one_session() -> (App, RecordedWrites) {
         should_quit: false,
         needs_render: false,
         needs_full_clear: false,
+        pending_api_events: Vec::new(),
         available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     };
@@ -826,6 +832,7 @@ fn build_recording_app_with_history() -> (App, RecordedWrites) {
         should_quit: false,
         needs_render: false,
         needs_full_clear: false,
+        pending_api_events: Vec::new(),
         available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     };
@@ -894,6 +901,7 @@ fn build_recording_app_with_output(output: Vec<Vec<u8>>) -> (App, RecordedWrites
         should_quit: false,
         needs_render: false,
         needs_full_clear: false,
+        pending_api_events: Vec::new(),
         available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     };
@@ -984,6 +992,7 @@ fn build_recording_app_multi_session() -> (App, RecordedWrites) {
         should_quit: false,
         needs_render: false,
         needs_full_clear: false,
+        pending_api_events: Vec::new(),
         available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     };
@@ -1090,6 +1099,7 @@ fn build_editor_command_app() -> (App, RecordedSpawnConfigs, BackendClosedFlags)
         should_quit: false,
         needs_render: false,
         needs_full_clear: false,
+        pending_api_events: Vec::new(),
         available_update: None,
         renderer: crate::ui::render::FrameRenderer::new(),
     };
@@ -5725,14 +5735,14 @@ fn closed_error_classifier_matches_eio_and_broken_pipe() {
 
 // --- JSON-RPC API dispatch (src/api.rs) ---
 
-fn api_response(app: &App, request: &str) -> serde_json::Value {
-    serde_json::from_str(&crate::api::dispatch(app, request)).expect("valid JSON response")
+fn api_response(app: &mut App, request: &str) -> serde_json::Value {
+    serde_json::from_str(&crate::api::dispatch(app, request).response).expect("valid JSON response")
 }
 
 #[test]
 fn api_dispatch_unknown_method_returns_method_not_found() {
-    let app = build_app_with_history();
-    let response = api_response(&app, r#"{"id":7,"method":"nope.nope"}"#);
+    let mut app = build_app_with_history();
+    let response = api_response(&mut app, r#"{"id":7,"method":"nope.nope"}"#);
 
     assert_eq!(response["id"], 7);
     assert_eq!(response["error"]["code"], crate::api::METHOD_NOT_FOUND);
@@ -5741,8 +5751,8 @@ fn api_dispatch_unknown_method_returns_method_not_found() {
 
 #[test]
 fn api_dispatch_unparseable_request_returns_parse_error_with_null_id() {
-    let app = build_app_with_history();
-    let response = api_response(&app, "this is not json");
+    let mut app = build_app_with_history();
+    let response = api_response(&mut app, "this is not json");
 
     assert!(response["id"].is_null());
     assert_eq!(response["error"]["code"], crate::api::PARSE_ERROR);
@@ -5750,8 +5760,8 @@ fn api_dispatch_unparseable_request_returns_parse_error_with_null_id() {
 
 #[test]
 fn api_session_list_reports_all_sessions() {
-    let (app, _) = build_recording_app_multi_session();
-    let response = api_response(&app, r#"{"id":"a","method":"session.list"}"#);
+    let (mut app, _) = build_recording_app_multi_session();
+    let response = api_response(&mut app, r#"{"id":"a","method":"session.list"}"#);
 
     assert_eq!(response["id"], "a");
     let sessions = response["result"].as_array().expect("result array");
@@ -5775,7 +5785,7 @@ fn api_pane_list_reports_panes_with_titles_and_focus() {
         .terminal_titles
         .insert(1, "vim notes".to_string());
 
-    let response = api_response(&app, r#"{"id":1,"method":"pane.list"}"#);
+    let response = api_response(&mut app, r#"{"id":1,"method":"pane.list"}"#);
     let panes = response["result"].as_array().expect("result array");
     assert_eq!(panes.len(), 3);
 
@@ -5798,9 +5808,9 @@ fn api_pane_list_reports_panes_with_titles_and_focus() {
 
 #[test]
 fn api_pane_list_filters_by_session_id() {
-    let (app, _) = build_recording_app_multi_session();
+    let (mut app, _) = build_recording_app_multi_session();
     let response = api_response(
-        &app,
+        &mut app,
         r#"{"id":2,"method":"pane.list","params":{"session_id":"alt-2"}}"#,
     );
 
@@ -5813,9 +5823,9 @@ fn api_pane_list_filters_by_session_id() {
 
 #[test]
 fn api_pane_read_returns_visible_screen_text() {
-    let (app, _) = build_recording_app_with_history();
+    let (mut app, _) = build_recording_app_with_history();
     let response = api_response(
-        &app,
+        &mut app,
         r#"{"id":3,"method":"pane.read","params":{"pane_id":1}}"#,
     );
 
@@ -5830,9 +5840,9 @@ fn api_pane_read_returns_visible_screen_text() {
 
 #[test]
 fn api_pane_read_with_lines_includes_scrollback() {
-    let (app, _) = build_recording_app_with_history();
+    let (mut app, _) = build_recording_app_with_history();
     let response = api_response(
-        &app,
+        &mut app,
         r#"{"id":4,"method":"pane.read","params":{"pane_id":1,"lines":30}}"#,
     );
 
@@ -5845,9 +5855,9 @@ fn api_pane_read_with_lines_includes_scrollback() {
 
 #[test]
 fn api_pane_read_unknown_pane_returns_pane_not_found() {
-    let (app, _) = build_recording_app_multi_session();
+    let (mut app, _) = build_recording_app_multi_session();
     let response = api_response(
-        &app,
+        &mut app,
         r#"{"id":5,"method":"pane.read","params":{"pane_id":999}}"#,
     );
 
@@ -5857,17 +5867,17 @@ fn api_pane_read_unknown_pane_returns_pane_not_found() {
 
 #[test]
 fn api_pane_read_without_pane_id_returns_invalid_params() {
-    let (app, _) = build_recording_app_multi_session();
-    let response = api_response(&app, r#"{"id":6,"method":"pane.read","params":{}}"#);
+    let (mut app, _) = build_recording_app_multi_session();
+    let response = api_response(&mut app, r#"{"id":6,"method":"pane.read","params":{}}"#);
 
     assert_eq!(response["error"]["code"], crate::api::INVALID_PARAMS);
 }
 
 #[test]
 fn api_pane_read_respects_session_id_filter() {
-    let (app, _) = build_recording_app_multi_session();
+    let (mut app, _) = build_recording_app_multi_session();
     let response = api_response(
-        &app,
+        &mut app,
         r#"{"id":8,"method":"pane.read","params":{"pane_id":1,"session_id":"missing"}}"#,
     );
 
@@ -5968,7 +5978,7 @@ fn api_pane_list_reports_agent_state() {
     let (mut app, _) = build_recording_app_with_output(claude_working_screen_output());
     app.tick();
 
-    let response = api_response(&app, r#"{"id":9,"method":"pane.list"}"#);
+    let response = api_response(&mut app, r#"{"id":9,"method":"pane.list"}"#);
     let panes = response["result"].as_array().expect("result array");
     assert_eq!(panes.len(), 1);
     assert_eq!(panes[0]["agent"]["kind"], "claude");
@@ -5981,7 +5991,7 @@ fn api_pane_list_agent_is_null_when_no_agent_detected() {
         build_recording_app_with_output(vec![b"$ ls\r\nCargo.toml src\r\n$ ".to_vec()]);
     app.tick();
 
-    let response = api_response(&app, r#"{"id":10,"method":"pane.list"}"#);
+    let response = api_response(&mut app, r#"{"id":10,"method":"pane.list"}"#);
     let panes = response["result"].as_array().expect("result array");
     assert_eq!(panes.len(), 1);
     assert!(panes[0]["agent"].is_null());
@@ -6179,7 +6189,7 @@ fn api_pane_list_reports_done_for_unseen_idle_agent() {
         .expect("create second window");
     app.tick();
 
-    let response = api_response(&app, r#"{"id":11,"method":"pane.list"}"#);
+    let response = api_response(&mut app, r#"{"id":11,"method":"pane.list"}"#);
     let panes = response["result"].as_array().expect("result array");
     assert_eq!(panes.len(), 2);
     assert_eq!(panes[0]["pane_id"], 1);
@@ -6432,5 +6442,334 @@ fn agent_notification_debounces_per_pane_state_and_rearms_on_change() {
             AgentNotifyMode::Blocked,
         ),
         Some(AgentDisplayState::Blocked)
+    );
+}
+
+// --- JSON-RPC API write methods & events (src/api.rs) ---
+
+#[test]
+fn api_send_keys_writes_text_verbatim_to_pane() {
+    let (mut app, writes) = build_recording_app_one_session();
+
+    let response = api_response(
+        &mut app,
+        r#"{"id":1,"method":"pane.send_keys","params":{"pane_id":1,"text":"ls\n"}}"#,
+    );
+
+    assert_eq!(response["result"]["ok"], true);
+    assert_eq!(take_recorded_writes(&writes), vec![(1, b"ls\n".to_vec())]);
+}
+
+#[test]
+fn api_send_keys_unknown_pane_returns_pane_not_found() {
+    let (mut app, writes) = build_recording_app_one_session();
+
+    let response = api_response(
+        &mut app,
+        r#"{"id":2,"method":"pane.send_keys","params":{"pane_id":99,"text":"ls\n"}}"#,
+    );
+
+    assert_eq!(response["error"]["code"], crate::api::PANE_NOT_FOUND);
+    assert_eq!(response["error"]["message"], "pane not found");
+    assert!(take_recorded_writes(&writes).is_empty());
+}
+
+#[test]
+fn api_send_keys_respects_session_id_filter() {
+    let (mut app, writes) = build_recording_app_multi_session();
+
+    let response = api_response(
+        &mut app,
+        r#"{"id":3,"method":"pane.send_keys","params":{"pane_id":1,"session_id":"missing","text":"x"}}"#,
+    );
+
+    assert_eq!(response["error"]["code"], crate::api::PANE_NOT_FOUND);
+    assert!(take_recorded_writes(&writes).is_empty());
+}
+
+#[test]
+fn api_pane_split_returns_new_pane_id_and_adds_pane() {
+    let (mut app, _) = build_recording_app_one_session();
+    let before = app.current_session().pane_count();
+
+    let response = api_response(
+        &mut app,
+        r#"{"id":4,"method":"pane.split","params":{"axis":"vertical"}}"#,
+    );
+
+    let new_pane_id = response["result"]["pane_id"].as_u64().expect("new pane id") as usize;
+    assert_eq!(app.current_session().pane_count(), before + 1);
+    assert_eq!(app.current_session().focused_pane_id(), Some(new_pane_id));
+    assert!(app.has_pending_render());
+    // The split is bridged to the API event queue via the pane_split hook.
+    let events = app.take_pending_api_events();
+    assert!(
+        events.iter().any(|event| event.name == "pane.split"),
+        "expected pane.split event, got {:?}",
+        events.iter().map(|event| &event.name).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn api_pane_split_targets_pane_in_other_session() {
+    let (mut app, _) = build_recording_app_multi_session();
+    assert_eq!(app.view.active_session, 0);
+    let before = app.sessions[1].session.pane_count();
+
+    let response = api_response(
+        &mut app,
+        r#"{"id":5,"method":"pane.split","params":{"pane_id":1,"session_id":"alt-2","axis":"horizontal"}}"#,
+    );
+
+    assert!(
+        response["result"]["pane_id"].is_u64(),
+        "expected split result: {response}"
+    );
+    assert_eq!(app.sessions[1].session.pane_count(), before + 1);
+}
+
+#[test]
+fn api_pane_split_invalid_axis_returns_invalid_params() {
+    let (mut app, _) = build_recording_app_one_session();
+
+    let response = api_response(
+        &mut app,
+        r#"{"id":6,"method":"pane.split","params":{"axis":"diagonal"}}"#,
+    );
+
+    assert_eq!(response["error"]["code"], crate::api::INVALID_PARAMS);
+}
+
+#[test]
+fn api_pane_split_unknown_pane_returns_pane_not_found() {
+    let (mut app, _) = build_recording_app_one_session();
+
+    let response = api_response(
+        &mut app,
+        r#"{"id":7,"method":"pane.split","params":{"pane_id":42,"axis":"vertical"}}"#,
+    );
+
+    assert_eq!(response["error"]["code"], crate::api::PANE_NOT_FOUND);
+}
+
+#[test]
+fn api_agent_report_flows_into_pane_list_and_status_token() {
+    let (mut app, _) = build_recording_app_one_session();
+    app.status_format = "agent=[{agent}]".to_string();
+
+    let response = api_response(
+        &mut app,
+        r#"{"id":8,"method":"agent.report","params":{"pane_id":1,"kind":"claude","state":"working"}}"#,
+    );
+    assert_eq!(response["result"]["ok"], true);
+
+    let panes = api_response(&mut app, r#"{"id":9,"method":"pane.list"}"#);
+    assert_eq!(panes["result"][0]["agent"]["kind"], "claude");
+    assert_eq!(panes["result"][0]["agent"]["state"], "working");
+    assert_eq!(app.status_line(), "agent=[claude:working]");
+    assert!(app.has_pending_render());
+}
+
+#[test]
+fn api_agent_report_sanitizes_kind() {
+    let (mut app, _) = build_recording_app_one_session();
+
+    api_response(
+        &mut app,
+        r#"{"id":10,"method":"agent.report","params":{"pane_id":1,"kind":"Claude Code_v2!","state":"idle"}}"#,
+    );
+
+    let panes = api_response(&mut app, r#"{"id":11,"method":"pane.list"}"#);
+    assert_eq!(panes["result"][0]["agent"]["kind"], "claudecodev2");
+}
+
+#[test]
+fn api_agent_report_rejects_invalid_state_and_empty_kind() {
+    let (mut app, _) = build_recording_app_one_session();
+
+    let response = api_response(
+        &mut app,
+        r#"{"id":12,"method":"agent.report","params":{"pane_id":1,"kind":"claude","state":"napping"}}"#,
+    );
+    assert_eq!(response["error"]["code"], crate::api::INVALID_PARAMS);
+
+    let response = api_response(
+        &mut app,
+        r#"{"id":13,"method":"agent.report","params":{"pane_id":1,"kind":"!!!","state":"idle"}}"#,
+    );
+    assert_eq!(response["error"]["code"], crate::api::INVALID_PARAMS);
+}
+
+#[test]
+fn api_agent_report_unknown_pane_returns_pane_not_found() {
+    let (mut app, _) = build_recording_app_one_session();
+
+    let response = api_response(
+        &mut app,
+        r#"{"id":14,"method":"agent.report","params":{"pane_id":99,"kind":"claude","state":"idle"}}"#,
+    );
+
+    assert_eq!(response["error"]["code"], crate::api::PANE_NOT_FOUND);
+}
+
+#[test]
+fn api_agent_report_derives_done_on_unviewed_pane() {
+    use crate::agent::AgentDisplayState;
+
+    let (mut app, _) = build_recording_app_multi_session();
+    // Pane 1 of main-1 is not the focused pane (pane 2 in window 2 is).
+    api_response(
+        &mut app,
+        r#"{"id":15,"method":"agent.report","params":{"pane_id":1,"kind":"claude","state":"working"}}"#,
+    );
+    api_response(
+        &mut app,
+        r#"{"id":16,"method":"agent.report","params":{"pane_id":1,"kind":"claude","state":"idle"}}"#,
+    );
+
+    assert_eq!(
+        app.sessions[0].agents.display_state(1),
+        Some(AgentDisplayState::Done)
+    );
+    let panes = api_response(
+        &mut app,
+        r#"{"id":17,"method":"pane.list","params":{"session_id":"main-1"}}"#,
+    );
+    let pane1 = panes["result"]
+        .as_array()
+        .expect("panes")
+        .iter()
+        .find(|pane| pane["pane_id"] == 1)
+        .expect("pane 1")
+        .clone();
+    assert_eq!(pane1["agent"]["state"], "done");
+}
+
+#[test]
+fn api_agent_report_overrides_detection_until_expiry() {
+    use crate::agent::AgentState;
+
+    // The pane's screen shows the claude idle prompt the whole time.
+    let (mut app, _) = build_recording_app_with_output(claude_idle_screen_output());
+
+    api_response(
+        &mut app,
+        r#"{"id":18,"method":"agent.report","params":{"pane_id":1,"kind":"claude","state":"working"}}"#,
+    );
+    // While the report is fresh, manifest detection is suppressed.
+    app.tick();
+    assert_eq!(
+        app.sessions[0].agents.statuses[&1].state,
+        AgentState::Working
+    );
+    assert!(
+        app.sessions[0].agents.pending.contains(&1),
+        "suppressed pane must stay pending for later re-detection"
+    );
+
+    // Expire the report; the pane is still pending, so the next tick
+    // re-runs manifest detection and it wins again.
+    let expired = Instant::now()
+        .checked_sub(REPORTED_AGENT_TTL + Duration::from_secs(1))
+        .expect("instant in the past");
+    app.sessions[0].agents.reported.insert(1, expired);
+    app.tick();
+    assert_eq!(app.sessions[0].agents.statuses[&1].state, AgentState::Idle);
+}
+
+#[test]
+fn api_events_subscribe_returns_known_events_and_filter_matches() {
+    let (mut app, _) = build_recording_app_one_session();
+
+    let outcome = crate::api::dispatch(
+        &mut app,
+        r#"{"id":19,"method":"events.subscribe","params":{"events":["pane.split","bogus.event"]}}"#,
+    );
+    let response: serde_json::Value =
+        serde_json::from_str(&outcome.response).expect("valid response");
+    // Unknown names are accepted silently but not echoed back.
+    assert_eq!(
+        response["result"]["subscribed"],
+        serde_json::json!(["pane.split"])
+    );
+    let subscription = outcome.subscription.expect("subscription set");
+    assert!(subscription.matches("pane.split"));
+    assert!(!subscription.matches("session.created"));
+
+    // Omitted filter = all events.
+    let outcome = crate::api::dispatch(&mut app, r#"{"id":20,"method":"events.subscribe"}"#);
+    let response: serde_json::Value =
+        serde_json::from_str(&outcome.response).expect("valid response");
+    assert_eq!(
+        response["result"]["subscribed"]
+            .as_array()
+            .expect("subscribed array")
+            .len(),
+        crate::api::EVENT_NAMES.len()
+    );
+    let subscription = outcome.subscription.expect("subscription set");
+    assert!(subscription.matches("agent.changed"));
+}
+
+#[test]
+fn read_only_methods_do_not_create_subscription() {
+    let (mut app, _) = build_recording_app_one_session();
+    let outcome = crate::api::dispatch(&mut app, r#"{"id":21,"method":"session.list"}"#);
+    assert!(outcome.subscription.is_none());
+}
+
+#[test]
+fn hook_emission_is_bridged_to_api_event_queue_with_context() {
+    let (mut app, _) = build_recording_app_one_session();
+    let _ = app.take_pending_api_events();
+
+    app.execute_command(crate::ipc::protocol::CommandRequest::SplitWindow {
+        target: None,
+        axis: crate::ipc::protocol::CommandSplitAxis::Vertical,
+    })
+    .expect("split window");
+
+    let events = app.take_pending_api_events();
+    let split = events
+        .iter()
+        .find(|event| event.name == "pane.split")
+        .expect("pane.split event");
+    assert_eq!(split.params["session_id"], "main-1");
+    assert!(split.params["pane_id"].is_u64());
+    assert!(split.params["window_number"].is_u64());
+}
+
+#[test]
+fn agent_changed_event_is_emitted_on_detected_transition() {
+    let (mut app, _) = build_recording_app_with_output(claude_working_screen_output());
+    let _ = app.take_pending_api_events();
+
+    app.tick();
+
+    let events = app.take_pending_api_events();
+    let changed = events
+        .iter()
+        .find(|event| event.name == "agent.changed")
+        .expect("agent.changed event");
+    assert_eq!(changed.params["pane_id"], 1);
+    assert_eq!(changed.params["session_id"], "main-1");
+    assert_eq!(changed.params["kind"], "claude");
+    assert_eq!(changed.params["state"], "working");
+}
+
+#[test]
+fn api_event_queue_is_bounded_and_drops_oldest() {
+    let (mut app, _) = build_recording_app_one_session();
+
+    for index in 0..(API_EVENT_QUEUE_MAX + 100) {
+        app.push_api_event("agent.changed", serde_json::json!({ "index": index }));
+    }
+
+    let events = app.take_pending_api_events();
+    assert_eq!(events.len(), API_EVENT_QUEUE_MAX);
+    assert_eq!(events[0].params["index"], 100);
+    assert_eq!(
+        events[API_EVENT_QUEUE_MAX - 1].params["index"],
+        API_EVENT_QUEUE_MAX + 99
     );
 }

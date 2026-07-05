@@ -41,6 +41,11 @@ pub(super) struct AgentTracking {
     /// Last state each pane raised a host notification for (debounce); an
     /// entry is removed when the pane leaves notifiable states, re-arming it.
     pub notified: HashMap<usize, crate::agent::AgentDisplayState>,
+    /// When each pane last received an external `agent.report`. While the
+    /// report is fresh (< [`REPORTED_AGENT_TTL`]) manifest detection is
+    /// suppressed for that pane, so the reported status stays authoritative;
+    /// afterwards detection resumes and overwrites it.
+    pub reported: HashMap<usize, Instant>,
 }
 
 impl AgentTracking {
@@ -53,7 +58,16 @@ impl AgentTracking {
         self.pending.retain(|pane_id| pane_exists(*pane_id));
         self.seen.retain(|pane_id| pane_exists(*pane_id));
         self.notified.retain(|pane_id, _| pane_exists(*pane_id));
+        self.reported.retain(|pane_id, _| pane_exists(*pane_id));
         self.statuses.len() != before
+    }
+
+    /// Whether an external `agent.report` for this pane is still within its
+    /// validity window, i.e. manifest detection must stay suppressed.
+    pub fn report_fresh(&self, pane_id: usize, now: Instant) -> bool {
+        self.reported
+            .get(&pane_id)
+            .is_some_and(|reported_at| now.duration_since(*reported_at) < REPORTED_AGENT_TTL)
     }
 
     /// Display state for one pane's agent, deriving "done" from the seen
@@ -317,6 +331,12 @@ pub(super) const DEFAULT_STATUS_FG: Color = Color::Rgb {
 };
 /// Minimum interval between agent-detection runs for one pane.
 pub(super) const AGENT_DETECT_INTERVAL: Duration = Duration::from_millis(200);
+/// Validity window of an external `agent.report`: manifest detection is
+/// suppressed for the reported pane until this much time has passed since
+/// the last report, after which detection resumes.
+pub(super) const REPORTED_AGENT_TTL: Duration = Duration::from_secs(30);
+/// Maximum queued API events awaiting fan-out; the oldest is dropped beyond.
+pub(super) const API_EVENT_QUEUE_MAX: usize = 1024;
 pub(super) const TREE_PREVIEW_MAX_LINES: usize = 400;
 pub(super) const TREE_PREVIEW_EMPTY: &str = "no pane output";
 pub(super) const LOCAL_CLIENT_FOCUS_IDENTITY: &str = "local";
@@ -342,6 +362,18 @@ impl HookEvent {
             Self::ConfigReloaded => "config_reloaded",
         }
     }
+
+    /// Name of the JSON-RPC API event bridged from this hook emission.
+    pub fn api_event_name(self) -> &'static str {
+        match self {
+            Self::SessionCreated => "session.created",
+            Self::SessionKilled => "session.killed",
+            Self::WindowCreated => "window.created",
+            Self::PaneSplit => "pane.split",
+            Self::PaneClosed => "pane.closed",
+            Self::ConfigReloaded => "config.reloaded",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -351,6 +383,20 @@ pub(super) struct HookContext {
     pub window_id: Option<WindowId>,
     pub window_number: Option<usize>,
     pub pane_id: Option<usize>,
+}
+
+impl HookContext {
+    /// JSON params of the API event bridged from this hook emission
+    /// (same context fields the hook receives via `SPECTRA_*` env vars).
+    pub fn api_event_params(&self) -> serde_json::Value {
+        serde_json::json!({
+            "session_id": self.session_id,
+            "session_name": self.session_name,
+            "window_id": self.window_id,
+            "window_number": self.window_number,
+            "pane_id": self.pane_id,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]

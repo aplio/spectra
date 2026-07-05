@@ -330,7 +330,8 @@ Hook events (`[hooks]`) run via `/bin/sh -lc` with env context:
 
 ## Scripting API
 
-A running server also serves a read-only JSON-RPC API over a second Unix socket:
+A running server also serves a JSON-RPC API over a second Unix socket
+(newline-delimited JSON, one request/response object per line):
 - `$XDG_RUNTIME_DIR/spectra/spectra-api.sock`
 - fallback: `$XDG_DATA_HOME/spectra/run/spectra-api.sock`
 
@@ -339,9 +340,29 @@ JSON to stdout (errors go to stderr with exit code 1; it never auto-spawns a ser
 
 ```bash
 spectra api pane.read '{"pane_id":1,"lines":50}'
+spectra api pane.send_keys '{"pane_id":1,"text":"ls\n"}'
 ```
 
-Available methods for now: `session.list`, `pane.list`, `pane.read`.
+Read methods:
+- `session.list` — sessions with id/name/ordinal/active/window count
+- `pane.list` — panes (optional `session_id` filter) with window, focus, title, and detected `agent` (`{kind, state}`)
+- `pane.read` — pane text: `{pane_id, session_id?, lines?}`; default visible screen, `lines: N` = last N lines including scrollback
+
+Write methods:
+- `pane.send_keys` — `{pane_id, session_id?, text}`: write `text` bytes verbatim to the pane's PTY (raw, no key encoding; same semantics as CLI `send-keys`)
+- `pane.split` — `{pane_id?, session_id?, axis: "horizontal"|"vertical"}`: focus the target pane (default: current focused), split it, return `{pane_id}` of the new pane
+- `agent.report` — `{pane_id, session_id?, kind, state: "idle"|"working"|"blocked"|"unknown"}`: externally reported agent state (e.g. from a Claude Code hook). Overrides screen-based detection for that pane for 30s after the last report, then manifest detection resumes; done derivation and notifications behave exactly like detected states
+
+Events:
+- `events.subscribe` — `{events?: ["pane.split", ...]}` (omitted = all) marks the connection as subscribed; the server then pushes `{"event": "<name>", "params": {...}}` lines interleaved after responses. Unknown names are accepted silently but only known ones are echoed in `subscribed`
+- Event set: `session.created`, `session.killed`, `window.created`, `pane.split`, `pane.closed`, `config.reloaded` (same context fields as the `[hooks]` env vars), plus `agent.changed` `{pane_id, session_id, kind, state}` on agent display-state transitions (detected and reported)
+
+`spectra api --follow events.subscribe` prints the subscription result, then keeps
+printing pushed event lines until the server closes the connection or ctrl-c:
+
+```bash
+spectra api --follow events.subscribe '{"events":["agent.changed"]}'
+```
 
 ## Development checks
 

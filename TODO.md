@@ -5,7 +5,7 @@
 
 > 進捗メモ (2026-07-05 20:35): **判断不要のタスクは全て実装完了**(13イテレーション・15コミット・テスト447→621・clippy 0維持)。
 > 残りは `⏸ 要判断` の項目のみ — 判断後に再開する。判断待ちリスト:
-> 1. 書き込み系APIメソッド(`pane.send_keys`/`pane.split`/`events.subscribe`)とplugin manifest形式 (P2) — これが決まるとP3のhook(`pane.report_agent`+integration install)とplugin配布も進められる
+> 1. plugin manifest形式 (P2) — API表面はherdr式で確定し実装済み(2026-07-05: `pane.send_keys`/`pane.split`/`agent.report`/`events.subscribe`)。残る判断はmanifest形式のみ。P3のhookスクリプト+integration installはAPI実装済みにつき着手可能
 > 2. sidebar 2段構成(専用agent panel)のUX (P4) — 現状はwindow list行のマーカーで代替済み
 > 3. remote attachをherdr同等(バイナリ自動配布+checksum)まで作り込むか (P5)
 > 4. イベントループepoll化の方針(mio/polling/tokio) (P6)
@@ -71,10 +71,8 @@ herdr方式の学び: OSCトラッカーを**VTパーサと分離した独立の
 
 ## P2: Plugin基盤 = JSON-RPC socket API（agent integrationの前提）
 
-> ⏸ 一部要判断: APIメソッド表面とplugin manifest形式は互換性を縛る設計判断なので、
-> 着手前に方針確認したい(herdr式の「CLI=APIラッパー・manifest+argvコマンド」方式で良いか)。
-> `pane.read`/`pane.list` 等の読み取り系メソッドは判断不要と思われるため先行実装可。
--> それでok. まぁcoreと切り離せていれば良い
+> APIメソッド表面はherdr式(「CLI=APIラッパー」・coreと分離したthin adapter)で確定・実装済み(2026-07-05)。
+> ⏸ 残る要判断はplugin manifest形式のみ。
 
 herdrの拡張モデルが秀逸: **TUI用のバイナリprotocolとは別に、改行区切りJSON-RPCのsocket APIを立てる** (`src/api/server.rs`)。
 plugin = 「`herdr-plugin.toml` マニフェスト + 任意言語のargvコマンド」で、SDK不要。CLI自体がAPIのラッパー。
@@ -83,10 +81,12 @@ plugin = 「`herdr-plugin.toml` マニフェスト + 任意言語のargvコマ�
       改行区切りJSON-RPC(`{id, method, params}` → `{id, result|error}`)。server busy-poll loopに
       nonblocking accept/read/flushを統合、複数同時接続可・1行1MiB上限・parse errorは-32700で接続維持。
       dispatchは純関数 `api::dispatch(&App, &str) -> String`(&Appのみ=読み取り専用保証)。unit+E2Eテストあり
-- [x] 一部DONE **最初のメソッドセット** — 読み取り系 `session.list` / `pane.list`(session_idフィルタ・title解決) /
-      `pane.read`(デフォルト可視画面・`lines:N`でscrollback込み末尾N行) は実装済み。
-      書き込み系 `pane.send_keys` / `pane.split` と `events.subscribe` は未実装(⏸ 要判断につき方針確認後)
-- [x] 一部DONE CLIサブコマンドをこのAPIのラッパーとして生やす — 汎用 `spectra api <method> [json]` を実装(agent/スクリプト向けの脱出ハッチ)。`spectra pane read` 等のpretty wrapperはAPI表面の⏸判断後
+- [x] DONE **最初のメソッドセット** — 読み取り系 `session.list` / `pane.list`(session_idフィルタ・title解決・agentフィールド) /
+      `pane.read`(デフォルト可視画面・`lines:N`でscrollback込み末尾N行) に加え、herdr式で確定した書き込み系
+      `pane.send_keys`(PTYへraw text) / `pane.split`(新pane id返却・CLI split-windowと同一経路) / `agent.report`(外部報告agent状態、30s TTLで検知を上書き) と
+      `events.subscribe`(hook 6種のブリッジ+`agent.changed`を接続毎フィルタでpush、キューは1024上限)を実装済み。
+      dispatchは`&mut App`化したがapi.rsはthin adapterのままcoreと分離(2026-07-05)
+- [x] 一部DONE CLIサブコマンドをこのAPIのラッパーとして生やす — 汎用 `spectra api <method> [json]` を実装(agent/スクリプト向けの脱出ハッチ)。`--follow`でevents.subscribeのeventラインを追尾表示。`spectra pane read` 等のpretty wrapperは必要になったら
 - [ ] plugin manifest (`spectra-plugin.toml`): 名前/コマンド/購読イベント。イベント発火でargv起動 or 常駐プロセスにNDJSON配送
 - [ ] 既存 `[hooks]` はこのイベント購読の特殊ケースとして統合を検討
 
@@ -110,7 +110,7 @@ spectraタスク:
 - [x] DONE `AgentState` enum + pane毎の検知結果保持 — `unknown/idle/working/blocked` + `AgentStatus{kind,state,since}` を `ManagedSession` 毎に保持。tickで出力変化paneのみ・pane毎200msスロットルで再検知、`pane.list` の `agent` フィールドと status `{agent}` トークン(デフォルトformatには未追加)で露出
 - [x] DONE マニフェスト駆動ルールエンジン — TOML(`priority`+`contains/regex/any/all/not`× region `bottom_non_empty_lines(N)`/`osc_title`)を `src/agent/manifest.rs` で実装。Claude 1種の組み込みmanifest(`src/agent/manifests/claude.toml`, include_str!)のみ・ホットリロードと `agent explain` は未
 - [x] DONE プロセス名フォールバック検知 — Linux-only best effort。`PaneBackend::child_pid` → `/proc/<child>/stat` tpgid → `/proc/<tpgid>/cmdline` argv[0] basename を `process_names` と照合。失敗は全てNone(パニックなし)
-- [ ] P2のAPI経由 `pane.report_agent` メソッド + Claude Code hookスクリプト(integration install コマンド)
+- [x] 一部DONE P2のAPI経由 `pane.report_agent` メソッド — `agent.report` として実装済み(2026-07-05): kindサニタイズ(小文字英数+dash・32字上限)、報告後30秒は画面検知を抑止して報告値を優先、期限後はmanifest検知が再開して上書き。seen/done導出・通知は検知経路と同一。Claude Code hookスクリプト+integration install コマンドは次タスク
 - [x] DONE sidebar表示 + done(=idle&&未閲覧)導出 — herdr式に done は保存せず導出: working/blocked→idle 遷移を非フォーカスpaneで検知したら unseen、描画時にフォーカスpaneを seen 化(閲覧中のpaneは決してdoneにならない)。`AgentDisplayState`(unknown/idle/done/working/blocked)として `{agent}` トークンと `pane.list` の `state` にも露出
 - [x] DONE (任意)ホスト端末へのdesktop notification — agent状態変化でOSC 9 (`ESC ]9;msg BEL`)を全attachedクライアントへブロードキャスト。`[agent] notify = "off"|"blocked"|"all"`(default "blocked"、"all"はdone通知も追加)、
       閲覧中paneは通知せず・pane×state毎に1回debounce(状態が離れて戻ると再arm)。対応端末はghostty/iTerm2/wezterm(v1、herdr式の端末別出し分けは未)

@@ -1,10 +1,12 @@
-//! One-shot client for the read-only JSON-RPC API socket
+//! One-shot client for the JSON-RPC API socket
 //! (`spectra api <METHOD> [PARAMS_JSON]`).
 //!
 //! This deliberately bypasses the interactive client protocol: it connects
 //! straight to `spectra-api.sock`, sends one newline-delimited JSON-RPC
 //! request, and prints the raw result. It is the generic scripting/agent
 //! escape hatch; pretty per-method wrappers are intentionally not provided.
+//! With `--follow` (for `events.subscribe`) it keeps reading and printing
+//! server-pushed event lines after the response until EOF/ctrl-c.
 
 #![cfg(unix)]
 
@@ -20,7 +22,12 @@ use crate::ipc::socket_path;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub fn run(cli: Cli) -> io::Result<()> {
-    let Some(CliCommand::Api { method, params }) = &cli.subcommand else {
+    let Some(CliCommand::Api {
+        method,
+        params,
+        follow,
+    }) = &cli.subcommand
+    else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "missing api subcommand",
@@ -74,12 +81,47 @@ pub fn run(cli: Cli) -> io::Result<()> {
     match response.get("result") {
         Some(result) => {
             println!("{result}");
-            Ok(())
         }
-        None => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("api response has neither result nor error: {response}"),
-        )),
+        None => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("api response has neither result nor error: {response}"),
+            ));
+        }
+    }
+
+    if *follow {
+        follow_event_lines(&mut reader)?;
+    }
+    Ok(())
+}
+
+/// Keep reading server-pushed lines (event pushes after `events.subscribe`)
+/// and print them until the server closes the connection or the process is
+/// interrupted. Read timeouts just re-poll; a partially read line is kept
+/// in the buffer until its newline arrives.
+fn follow_event_lines(reader: &mut BufReader<UnixStream>) -> io::Result<()> {
+    let mut line = String::new();
+    loop {
+        match reader.read_line(&mut line) {
+            Ok(0) => return Ok(()),
+            Ok(_) => {
+                print!("{line}");
+                io::stdout().flush()?;
+                line.clear();
+            }
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::Interrupted
+                ) =>
+            {
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
     }
 }
 

@@ -56,7 +56,7 @@ pub fn run(cli: Cli) -> io::Result<()> {
         did_work |= accept_clients(&listener, &mut clients, &mut app, &mut next_client_id)?;
         did_work |= process_client_input(&mut clients, &mut app)?;
         did_work |= accept_api_connections(&api_listener, &mut api_connections)?;
-        did_work |= process_api_input(&mut api_connections, &app);
+        did_work |= process_api_input(&mut api_connections, &mut app);
         did_work |= poll_update_check(&mut update_check_rx, &mut app);
 
         let had_pending_render_before_tick = app.has_pending_render();
@@ -66,6 +66,7 @@ pub fn run(cli: Cli) -> io::Result<()> {
         }
 
         did_work |= queue_pending_passthrough_messages(&mut clients, &mut app)?;
+        did_work |= fan_out_api_events(&mut api_connections, &mut app);
 
         // A synchronized-output hold (DECSET 2026) defers frame delivery
         // until the guest releases it or the hold times out; needs_render
@@ -156,7 +157,7 @@ fn accept_api_connections(
     Ok(accepted)
 }
 
-fn process_api_input(connections: &mut [ApiConnection], app: &App) -> bool {
+fn process_api_input(connections: &mut [ApiConnection], app: &mut App) -> bool {
     let mut had_input = false;
     for connection in connections {
         if connection.disconnected {
@@ -167,11 +168,41 @@ fn process_api_input(connections: &mut [ApiConnection], app: &App) -> bool {
             if request.trim().is_empty() {
                 continue;
             }
-            let response = crate::api::dispatch(app, &request);
-            connection.queue_response(&response);
+            let outcome = crate::api::dispatch(app, &request);
+            connection.queue_response(&outcome.response);
+            if let Some(subscription) = outcome.subscription {
+                connection.subscription = Some(subscription);
+            }
         }
     }
     had_input
+}
+
+/// Drain the app's queued API events and queue each on every subscribed
+/// connection whose filter matches. Events are dropped when no connection
+/// is subscribed, so the queue never grows without consumers.
+fn fan_out_api_events(connections: &mut [ApiConnection], app: &mut App) -> bool {
+    let events = app.take_pending_api_events();
+    if events.is_empty() {
+        return false;
+    }
+    let mut queued = false;
+    for event in &events {
+        let line = event.event_line();
+        for connection in connections.iter_mut() {
+            if connection.disconnected {
+                continue;
+            }
+            let Some(subscription) = &connection.subscription else {
+                continue;
+            };
+            if subscription.matches(&event.name) {
+                connection.queue_response(&line);
+                queued = true;
+            }
+        }
+    }
+    queued
 }
 
 fn flush_api_connections(connections: &mut Vec<ApiConnection>) -> bool {
@@ -193,6 +224,9 @@ struct ApiConnection {
     stream: UnixStream,
     read_buffer: Vec<u8>,
     write_buffer: Vec<u8>,
+    /// Set by `events.subscribe`; when present, matching API events are
+    /// pushed to this connection as `{"event": ..., "params": ...}` lines.
+    subscription: Option<crate::api::EventSubscription>,
     disconnected: bool,
 }
 
@@ -202,6 +236,7 @@ impl ApiConnection {
             stream,
             read_buffer: Vec::new(),
             write_buffer: Vec::new(),
+            subscription: None,
             disconnected: false,
         }
     }

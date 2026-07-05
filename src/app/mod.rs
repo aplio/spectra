@@ -119,6 +119,9 @@ pub struct App {
     should_quit: bool,
     needs_render: bool,
     needs_full_clear: bool,
+    /// API events awaiting fan-out to subscribed API connections
+    /// (bounded by [`API_EVENT_QUEUE_MAX`]; drained by the server loop).
+    pending_api_events: Vec<crate::api::ApiEvent>,
     available_update: Option<String>,
     renderer: crate::ui::render::FrameRenderer,
 }
@@ -239,6 +242,7 @@ impl App {
             should_quit: false,
             needs_render: true,
             needs_full_clear: true,
+            pending_api_events: Vec::new(),
             available_update: None,
             renderer: crate::ui::render::FrameRenderer::new(),
         };
@@ -346,6 +350,7 @@ impl App {
             should_quit: false,
             needs_render: true,
             needs_full_clear: true,
+            pending_api_events: Vec::new(),
             available_update: None,
             renderer: crate::ui::render::FrameRenderer::new(),
         };
@@ -822,10 +827,189 @@ impl App {
         None
     }
 
+    /// `pane.send_keys` for the JSON-RPC API: write raw text bytes verbatim
+    /// to one pane's PTY (no key encoding; same semantics as CLI send-keys).
+    pub fn api_send_keys(
+        &mut self,
+        pane_id: usize,
+        session_id: Option<&str>,
+        text: &str,
+    ) -> Result<(), String> {
+        for managed in &mut self.sessions {
+            if session_id.is_some_and(|filter| filter != managed.session_id) {
+                continue;
+            }
+            if !managed.session.pane_exists(pane_id) {
+                continue;
+            }
+            return managed
+                .session
+                .send_to_pane(pane_id, text.as_bytes())
+                .map_err(|err| format!("send-keys failed: {err}"));
+        }
+        Err("pane not found".to_string())
+    }
+
+    /// `pane.split` for the JSON-RPC API: focus the target pane (default:
+    /// the currently focused pane of the active session), split it, and
+    /// return the new pane id. Reuses the same path as the CLI
+    /// `split-window` command (sizing via current effective dims, same
+    /// action effects and `pane_split` hook).
+    pub fn api_split_pane(
+        &mut self,
+        pane_id: Option<usize>,
+        session_id: Option<&str>,
+        axis: crate::ui::window_manager::SplitAxis,
+    ) -> Result<usize, String> {
+        let session_index = match pane_id {
+            Some(pane_id) => self
+                .sessions
+                .iter()
+                .position(|managed| {
+                    session_id.is_none_or(|filter| filter == managed.session_id)
+                        && managed.session.pane_exists(pane_id)
+                })
+                .ok_or_else(|| "pane not found".to_string())?,
+            None => match session_id {
+                Some(filter) => self
+                    .sessions
+                    .iter()
+                    .position(|managed| managed.session_id == filter)
+                    .ok_or_else(|| format!("session `{filter}` not found"))?,
+                None => self.view.active_session,
+            },
+        };
+        if session_index != self.view.active_session {
+            self.select_session(session_index);
+        }
+        if let Some(pane_id) = pane_id {
+            self.current_session_mut()
+                .focus_pane_id(pane_id)
+                .map_err(|err| format!("split-window failed: {err}"))?;
+        }
+
+        let (cols, rows) = self.current_effective_pane_dims();
+        self.current_session_mut()
+            .split_focused(axis, cols, rows)
+            .map_err(|err| format!("split-window failed: {err}"))?;
+        self.record_focus_for_active_session();
+        self.sync_tree_names();
+        self.needs_render = true;
+        self.needs_full_clear = true;
+        self.persist_active_session_info();
+        self.emit_hook(HookEvent::PaneSplit, self.current_hook_context());
+        // The split focuses the new pane, so the focused pane id is the
+        // freshly created one.
+        self.current_session()
+            .focused_pane_id()
+            .ok_or_else(|| "split-window failed: no focused pane after split".to_string())
+    }
+
+    /// `agent.report` for the JSON-RPC API: store an externally reported
+    /// agent state for one pane. The report writes into the same status
+    /// store as manifest detection (so seen/done derivation, notifications
+    /// and every display path behave identically) and suppresses detection
+    /// for that pane for [`REPORTED_AGENT_TTL`], after which manifest
+    /// detection resumes and overwrites it.
+    pub fn api_report_agent(
+        &mut self,
+        pane_id: usize,
+        session_id: Option<&str>,
+        kind: String,
+        state: crate::agent::AgentState,
+    ) -> Result<(), String> {
+        let session_index = self
+            .sessions
+            .iter()
+            .position(|managed| {
+                session_id.is_none_or(|filter| filter == managed.session_id)
+                    && managed.session.pane_exists(pane_id)
+            })
+            .ok_or_else(|| "pane not found".to_string())?;
+
+        let now = Instant::now();
+        let viewing = session_index == self.view.active_session
+            && self.sessions[session_index].session.focused_pane_id() == Some(pane_id);
+        let notify_mode = self.agent_notify;
+        let mut notifications = Vec::new();
+        let managed = &mut self.sessions[session_index];
+        let changed = Self::apply_agent_status(
+            managed,
+            pane_id,
+            crate::agent::AgentStatus {
+                kind,
+                state,
+                since: now,
+            },
+            viewing,
+            notify_mode,
+            &mut notifications,
+        );
+        managed.agents.reported.insert(pane_id, now);
+
+        for message in notifications {
+            self.broadcast_notification_to_clients(&message);
+        }
+        if changed {
+            self.needs_render = true;
+            self.push_agent_changed_events(vec![(session_index, pane_id)]);
+        }
+        Ok(())
+    }
+
+    /// Queue one API event for fan-out to subscribed API connections.
+    /// The queue is bounded by [`API_EVENT_QUEUE_MAX`]: the oldest event is
+    /// dropped (with a log line) when full.
+    pub(crate) fn push_api_event(&mut self, name: &str, params: serde_json::Value) {
+        if self.pending_api_events.len() >= API_EVENT_QUEUE_MAX {
+            self.pending_api_events.remove(0);
+            self.write_log("api event queue full; dropped oldest event");
+        }
+        self.pending_api_events.push(crate::api::ApiEvent {
+            name: name.to_string(),
+            params,
+        });
+    }
+
+    /// Drain the queued API events; called by the server loop each pass to
+    /// fan them out to subscribed API connections.
+    pub fn take_pending_api_events(&mut self) -> Vec<crate::api::ApiEvent> {
+        std::mem::take(&mut self.pending_api_events)
+    }
+
+    /// Queue `agent.changed` events for panes whose agent display state
+    /// changed (`(session_index, pane_id)` pairs). Panes without a stored
+    /// agent status (e.g. detection lost) are skipped.
+    fn push_agent_changed_events(&mut self, changed_panes: Vec<(usize, usize)>) {
+        let mut events = Vec::new();
+        for (session_index, pane_id) in changed_panes {
+            let Some(managed) = self.sessions.get(session_index) else {
+                continue;
+            };
+            let Some(status) = managed.agents.statuses.get(&pane_id) else {
+                continue;
+            };
+            let Some(state) = managed.agents.display_state(pane_id) else {
+                continue;
+            };
+            events.push(serde_json::json!({
+                "pane_id": pane_id,
+                "session_id": managed.session_id,
+                "kind": status.kind,
+                "state": state.as_str(),
+            }));
+        }
+        for params in events {
+            self.push_api_event("agent.changed", params);
+        }
+    }
+
     /// Re-run AI-agent detection for panes whose output changed, throttled to
     /// at most once per [`AGENT_DETECT_INTERVAL`] per pane. Throttled panes
-    /// stay pending and are picked up by a later tick. Returns true when any
-    /// pane's detected agent status changed.
+    /// stay pending and are picked up by a later tick. Panes with a fresh
+    /// external `agent.report` are skipped (and stay pending) until the
+    /// report expires. Returns true when any pane's stored agent status
+    /// changed.
     fn run_agent_detection(
         &mut self,
         dirty_by_session: Vec<(usize, Vec<usize>)>,
@@ -838,6 +1022,7 @@ impl App {
         }
 
         let mut changed = false;
+        let mut changed_panes = Vec::new();
         let mut notifications = Vec::new();
         let notify_mode = self.agent_notify;
         let active_session = self.view.active_session;
@@ -854,37 +1039,41 @@ impl App {
             if managed.agents.pending.is_empty() {
                 continue;
             }
-            let due: Vec<usize> = managed
-                .agents
-                .pending
-                .iter()
-                .copied()
-                .filter(|pane_id| {
-                    managed
-                        .agents
-                        .last_run
-                        .get(pane_id)
-                        .is_none_or(|last| now.duration_since(*last) >= AGENT_DETECT_INTERVAL)
-                })
-                .collect();
+            let due: Vec<usize> =
+                managed
+                    .agents
+                    .pending
+                    .iter()
+                    .copied()
+                    .filter(|pane_id| {
+                        !managed.agents.report_fresh(*pane_id, now)
+                            && managed.agents.last_run.get(pane_id).is_none_or(|last| {
+                                now.duration_since(*last) >= AGENT_DETECT_INTERVAL
+                            })
+                    })
+                    .collect();
             let focused_pane = managed.session.focused_pane_id();
             for pane_id in due {
                 managed.agents.pending.remove(&pane_id);
                 managed.agents.last_run.insert(pane_id, now);
                 let viewing = session_index == active_session && focused_pane == Some(pane_id);
-                changed |= Self::detect_agent_for_pane(
+                if Self::detect_agent_for_pane(
                     managed,
                     pane_id,
                     now,
                     viewing,
                     notify_mode,
                     &mut notifications,
-                );
+                ) {
+                    changed = true;
+                    changed_panes.push((session_index, pane_id));
+                }
             }
         }
         for message in notifications {
             self.broadcast_notification_to_clients(&message);
         }
+        self.push_agent_changed_events(changed_panes);
         changed
     }
 
@@ -917,61 +1106,65 @@ impl App {
         };
 
         match crate::agent::detect(crate::agent::builtin_manifests(), &snapshot) {
-            Some((kind, state)) => match managed.agents.statuses.get_mut(&pane_id) {
-                Some(status) if status.kind == kind && status.state == state => false,
-                Some(status) => {
-                    let previous = status.state;
-                    *status = crate::agent::AgentStatus {
-                        kind: kind.clone(),
-                        state,
-                        since: now,
-                    };
-                    managed
-                        .agents
-                        .note_status_change(pane_id, Some(previous), state, viewing);
-                    if let Some(display) = managed.agents.notifiable_transition(
-                        pane_id,
-                        Some(previous),
-                        state,
-                        viewing,
-                        notify_mode,
-                    ) {
-                        notifications
-                            .push(Self::agent_notification_message(&kind, display, pane_id));
-                    }
-                    true
-                }
-                None => {
-                    managed.agents.statuses.insert(
-                        pane_id,
-                        crate::agent::AgentStatus {
-                            kind: kind.clone(),
-                            state,
-                            since: now,
-                        },
-                    );
-                    managed
-                        .agents
-                        .note_status_change(pane_id, None, state, viewing);
-                    if let Some(display) = managed.agents.notifiable_transition(
-                        pane_id,
-                        None,
-                        state,
-                        viewing,
-                        notify_mode,
-                    ) {
-                        notifications
-                            .push(Self::agent_notification_message(&kind, display, pane_id));
-                    }
-                    true
-                }
-            },
+            Some((kind, state)) => Self::apply_agent_status(
+                managed,
+                pane_id,
+                crate::agent::AgentStatus {
+                    kind,
+                    state,
+                    since: now,
+                },
+                viewing,
+                notify_mode,
+                notifications,
+            ),
             None => {
                 managed.agents.seen.remove(&pane_id);
                 managed.agents.notified.remove(&pane_id);
                 managed.agents.statuses.remove(&pane_id).is_some()
             }
         }
+    }
+
+    /// Store one pane's agent status (from manifest detection or an external
+    /// `agent.report`), updating seen/done and notification bookkeeping via
+    /// the same transitions in both cases. Returns true when the stored
+    /// status changed.
+    fn apply_agent_status(
+        managed: &mut ManagedSession,
+        pane_id: usize,
+        next: crate::agent::AgentStatus,
+        viewing: bool,
+        notify_mode: config::AgentNotifyMode,
+        notifications: &mut Vec<String>,
+    ) -> bool {
+        let kind = next.kind.clone();
+        let state = next.state;
+        let previous = match managed.agents.statuses.get_mut(&pane_id) {
+            Some(status) if status.kind == next.kind && status.state == next.state => {
+                return false;
+            }
+            Some(status) => {
+                let previous = status.state;
+                *status = next;
+                Some(previous)
+            }
+            None => {
+                managed.agents.statuses.insert(pane_id, next);
+                None
+            }
+        };
+        managed
+            .agents
+            .note_status_change(pane_id, previous, state, viewing);
+        if let Some(display) =
+            managed
+                .agents
+                .notifiable_transition(pane_id, previous, state, viewing, notify_mode)
+        {
+            notifications.push(Self::agent_notification_message(&kind, display, pane_id));
+        }
+        true
     }
 
     /// Human-readable notification message for an agent state change, e.g.
@@ -986,15 +1179,29 @@ impl App {
 
     /// Mark the focused pane of the active window of the active session as
     /// seen. Called while rendering, so a pane the user is looking at never
-    /// shows "done". Returns true when the flag was newly set.
+    /// shows "done". Returns true when the flag was newly set. A newly seen
+    /// idle pane transitions done → idle, so that also queues an
+    /// `agent.changed` API event.
     fn mark_focused_agent_seen(&mut self) -> bool {
-        let Some(managed) = self.sessions.get_mut(self.view.active_session) else {
+        let session_index = self.view.active_session;
+        let Some(managed) = self.sessions.get_mut(session_index) else {
             return false;
         };
         let Some(pane_id) = managed.session.focused_pane_id() else {
             return false;
         };
-        managed.agents.statuses.contains_key(&pane_id) && managed.agents.seen.insert(pane_id)
+        let newly_seen =
+            managed.agents.statuses.contains_key(&pane_id) && managed.agents.seen.insert(pane_id);
+        let display_changed = newly_seen
+            && managed
+                .agents
+                .statuses
+                .get(&pane_id)
+                .is_some_and(|status| status.state == crate::agent::AgentState::Idle);
+        if display_changed {
+            self.push_agent_changed_events(vec![(session_index, pane_id)]);
+        }
+        newly_seen
     }
 
     /// `{agent}` status token for the focused pane of the active session,
