@@ -352,7 +352,7 @@ pub(super) struct MouseDragState {
     pub last_row: u16,
 }
 
-/// Mouse text selection state for drag-to-select-and-copy.
+/// Mouse text selection state for drag-to-select.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TextSelectionState {
     pub pane_id: usize,
@@ -369,6 +369,28 @@ pub(super) struct TextSelectionState {
     pub pane_y: usize,
     pub pane_width: usize,
     pub pane_height: usize,
+    /// True while the left button is held; a completed selection stays
+    /// visible with `dragging: false` until a key press or the next click.
+    pub dragging: bool,
+}
+
+/// Rapid-click chain for smart multi-click selection (word/line expansion).
+/// Mirrors gargo's expand chain: successive clicks near the same cell within
+/// the multi-click window grow the selection to the next larger unit.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ClickChainState {
+    pub pane_id: usize,
+    /// Pane-local column of the first click in the chain. Expansion always
+    /// derives candidates from this origin, so mouse jitter doesn't drift it.
+    pub origin_col: usize,
+    /// Absolute buffer row of the first click in the chain.
+    pub origin_abs_row: usize,
+    /// Column range (inclusive) selected by the most recent expand step;
+    /// `None` until the second click promotes the chain to a word selection.
+    pub last_range: Option<(usize, usize)>,
+    pub last_click_time: Instant,
+    /// Pane-local column of the most recent click, for the proximity check.
+    pub last_col: usize,
 }
 
 pub(super) const RUNTIME_STATE_VERSION: u8 = 1;
@@ -659,6 +681,7 @@ pub(super) struct ClientViewState {
     pub locked_input: bool,
     pub mouse_drag: Option<MouseDragState>,
     pub text_selection: Option<TextSelectionState>,
+    pub click_chain: Option<ClickChainState>,
     pub pending_clipboard_ansi: Vec<String>,
     pub pending_passthrough_ansi: Vec<String>,
     pub cols: u16,

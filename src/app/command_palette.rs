@@ -499,6 +499,17 @@ impl App {
         );
         Self::push_command_palette_entry(
             &mut entries,
+            "selection.copy",
+            CommandAction::CopySelection,
+            "Copy mouse selection",
+            "copy yank mouse selection clipboard",
+            &[
+                "action: copy the active mouse text selection",
+                "note: drag or double-click creates a selection first",
+            ],
+        );
+        Self::push_command_palette_entry(
+            &mut entries,
             "layout.save",
             CommandAction::SaveLayout,
             "Save layout snapshot",

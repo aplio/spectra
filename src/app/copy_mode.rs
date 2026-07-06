@@ -9,7 +9,7 @@ use super::types::*;
 use crate::session::terminal_state::StyledCell;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CursorModeWordClass {
+pub(super) enum CursorModeWordClass {
     Word,
     Whitespace,
     Other,
@@ -227,6 +227,7 @@ impl App {
         Self::cursor_mode_ensure_visible(&mut state, view_rows);
 
         self.view.text_selection = None;
+        self.view.click_chain = None;
         self.view.mouse_drag = None;
         self.view.input_mode = InputMode::CursorMode { state };
     }
@@ -307,7 +308,7 @@ impl App {
         ch.is_ascii_alphanumeric() || ch == '_'
     }
 
-    fn cursor_mode_word_class(ch: char) -> CursorModeWordClass {
+    pub(super) fn cursor_mode_word_class(ch: char) -> CursorModeWordClass {
         if Self::cursor_mode_is_word_char(ch) {
             CursorModeWordClass::Word
         } else if ch.is_whitespace() {

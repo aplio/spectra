@@ -311,6 +311,7 @@ Global data files:
 - prefix `"` split horizontal
 - prefix arrows move focus (up/down at a window edge behave like `Alt+Up`/`Alt+Down`: step across every session's windows with wrap)
 - prefix `[` enter cursor mode (frozen in-pane snapshot + scrollback selection)
+- prefix `y` copy the active mouse text selection to the clipboard (`copy-selection`)
 - prefix `c` create new window
 - prefix `n` create new session
 - prefix `p` open command palette (fzf-style command filter + Enter to execute)
@@ -350,6 +351,8 @@ Global data files:
 - spectra emits OSC 2 for the focused pane auto-name so host terminal/tab title follows that value; when no OSC-derived title/cwd is available, spectra leaves the previous host title unchanged
 - when pane process exits (for example `exit`) or a write hits a closed pane IO channel, spectra closes that pane, or quits if it is the last pane
 - when `[mouse].enabled = true`: left-click focuses panes, and left-drag on dividers resizes panes
+- left-drag over pane text creates a selection that stays highlighted after release; copy it with prefix `y` (`copy-selection`). A key press or the next click drops it
+- rapid multi-click grows the selection gargo-style: double-click selects the word under the cursor, another click expands to the surrounding non-whitespace run, then the whole line
 
 Status format tokens:
 - `{session_index}` `{session_count}` `{session_id}` `{session_name}`

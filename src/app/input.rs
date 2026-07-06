@@ -1,5 +1,11 @@
 use super::*;
 
+/// Clicks this close in time continue a multi-click selection chain.
+const MULTI_CLICK_WINDOW: Duration = Duration::from_millis(400);
+/// Clicks may drift this many cells from the previous click and still
+/// continue the chain (double-clicks rarely land on the exact same cell).
+const MULTI_CLICK_RADIUS_CELLS: usize = 1;
+
 impl App {
     pub(super) fn handle_key(&mut self, key: KeyEvent) -> io::Result<AppSignal> {
         if self.current_session_mut().reset_focused_pane_view_scroll() {
@@ -37,6 +43,12 @@ impl App {
             }
             InputAction::SendBytes(bytes) => {
                 if self.view.keys.prefix_active() != prefix_active_before {
+                    self.needs_render = true;
+                }
+                // Typing invalidates a lingering mouse selection: the pane
+                // content is about to change under the highlight.
+                if self.view.text_selection.take().is_some() {
+                    self.view.click_chain = None;
                     self.needs_render = true;
                 }
                 // Keys destined for the pane are re-encoded in kitty form
@@ -110,15 +122,26 @@ impl App {
         // cursor requested mouse reporting (DECSET 9/1000/1002/1003). This
         // works regardless of spectra's own [mouse] config. Shift bypasses
         // forwarding (the conventional escape hatch for host-side handling),
-        // and an in-flight spectra drag/selection keeps priority.
+        // and an in-flight spectra drag/selection keeps priority. A completed
+        // selection (button released) does not block forwarding; it is
+        // dropped once the guest consumes a fresh press.
         if matches!(self.view.input_mode, InputMode::Normal)
             && !mouse
                 .modifiers
                 .contains(crossterm::event::KeyModifiers::SHIFT)
             && self.view.mouse_drag.is_none()
-            && self.view.text_selection.is_none()
+            && !self
+                .view
+                .text_selection
+                .is_some_and(|selection| selection.dragging)
             && self.forward_mouse_to_guest(&mouse)
         {
+            if matches!(mouse.kind, MouseEventKind::Down(_))
+                && self.view.text_selection.take().is_some()
+            {
+                self.view.click_chain = None;
+                self.needs_render = true;
+            }
             // A left-drag consumed by the guest is almost always a user
             // trying to select text; surface the shift bypass. Re-arming the
             // message on every drag event keeps it visible while dragging.
@@ -171,6 +194,7 @@ impl App {
         self.needs_render = true;
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                let prev_chain = self.view.click_chain.take();
                 self.view.mouse_drag = None;
                 self.view.text_selection = None;
                 let side_window_tree = self.side_window_tree_overlay();
@@ -228,22 +252,83 @@ impl App {
                         .saturating_sub(pane.rect.y)
                         .min(pane.rect.height.saturating_sub(1));
                     let absolute_row = pane.view_row_origin.saturating_add(local_row);
+                    let pane_id = pane.pane_id;
+                    let (pane_x, pane_y) = (pane.rect.x, pane.rect.y);
+                    let (pane_width, pane_height) = (pane.rect.width, pane.rect.height);
+
+                    let now = Instant::now();
+                    // A rapid click near the chain origin expands the selection
+                    // to the next larger unit (word -> WORD -> line), gargo-style.
+                    let continued_chain = prev_chain.filter(|chain| {
+                        chain.pane_id == pane_id
+                            && chain.origin_abs_row == absolute_row
+                            && now.duration_since(chain.last_click_time) <= MULTI_CLICK_WINDOW
+                            && local_col.abs_diff(chain.last_col) <= MULTI_CLICK_RADIUS_CELLS
+                    });
+
+                    if let Some(chain) = continued_chain {
+                        let cells = self
+                            .current_session()
+                            .pane_absolute_row_cells(pane_id, chain.origin_abs_row)
+                            .unwrap_or_default();
+                        let range = Self::expand_click_selection(
+                            &cells,
+                            chain.origin_col,
+                            chain.last_range,
+                        )
+                        // Nothing larger to grow into: keep the current
+                        // selection instead of collapsing it.
+                        .or(chain.last_range);
+                        if let Some((start_col, end_col)) = range {
+                            self.view.text_selection = Some(TextSelectionState {
+                                pane_id,
+                                start_col,
+                                start_abs_row: chain.origin_abs_row,
+                                end_col,
+                                end_abs_row: chain.origin_abs_row,
+                                pane_x,
+                                pane_y,
+                                pane_width,
+                                pane_height,
+                                dragging: true,
+                            });
+                        }
+                        self.view.click_chain = Some(ClickChainState {
+                            last_range: range,
+                            last_click_time: now,
+                            last_col: local_col,
+                            ..chain
+                        });
+                        return;
+                    }
+
                     self.view.text_selection = Some(TextSelectionState {
-                        pane_id: pane.pane_id,
+                        pane_id,
                         start_col: local_col,
                         start_abs_row: absolute_row,
                         end_col: local_col,
                         end_abs_row: absolute_row,
-                        pane_x: pane.rect.x,
-                        pane_y: pane.rect.y,
-                        pane_width: pane.rect.width,
-                        pane_height: pane.rect.height,
+                        pane_x,
+                        pane_y,
+                        pane_width,
+                        pane_height,
+                        dragging: true,
+                    });
+                    self.view.click_chain = Some(ClickChainState {
+                        pane_id,
+                        origin_col: local_col,
+                        origin_abs_row: absolute_row,
+                        last_range: None,
+                        last_click_time: now,
+                        last_col: local_col,
                     });
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 // Text selection drag takes priority over divider drag
-                if let Some(mut sel) = self.view.text_selection {
+                if let Some(mut sel) = self.view.text_selection
+                    && sel.dragging
+                {
                     let side_window_tree = self.side_window_tree_overlay();
                     let frame =
                         self.pane_frame_for_current_view_with_sidebar(side_window_tree.as_ref());
@@ -262,8 +347,25 @@ impl App {
                     let row = usize::from(mouse.row)
                         .saturating_sub(sel.pane_y)
                         .min(sel.pane_height.saturating_sub(1));
+                    let abs_row = pane.view_row_origin.saturating_add(row);
+                    // Ignore drag jitter inside the multi-click origin cell or
+                    // the expanded (word/line) range so a slightly wobbly
+                    // double-click keeps its selection. Dragging beyond it
+                    // leaves the chain: the pointer takes over, extending from
+                    // the expanded start, and the next click starts fresh.
+                    if let Some(chain) = self.view.click_chain {
+                        let in_origin_cell =
+                            col == chain.origin_col && abs_row == chain.origin_abs_row;
+                        let in_expanded_range = chain.last_range.is_some_and(|(start, end)| {
+                            abs_row == chain.origin_abs_row && col >= start && col <= end
+                        });
+                        if in_origin_cell || in_expanded_range {
+                            return;
+                        }
+                        self.view.click_chain = None;
+                    }
                     sel.end_col = col;
-                    sel.end_abs_row = pane.view_row_origin.saturating_add(row);
+                    sel.end_abs_row = abs_row;
                     self.view.text_selection = Some(sel);
                     return;
                 }
@@ -325,10 +427,21 @@ impl App {
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 self.view.mouse_drag = None;
-                if let Some(sel) = self.view.text_selection.take()
-                    && (sel.start_col != sel.end_col || sel.start_abs_row != sel.end_abs_row)
-                {
-                    self.copy_text_selection(&sel);
+                // Releasing the button completes the gesture but keeps the
+                // selection visible (copy it with the copy-selection binding).
+                // A plain click that never grew a range selects nothing; a
+                // multi-click selection stays even when it is a single cell.
+                if let Some(mut sel) = self.view.text_selection.take() {
+                    sel.dragging = false;
+                    let has_range =
+                        sel.start_col != sel.end_col || sel.start_abs_row != sel.end_abs_row;
+                    let from_click_chain = self
+                        .view
+                        .click_chain
+                        .is_some_and(|chain| chain.last_range.is_some());
+                    if has_range || from_click_chain {
+                        self.view.text_selection = Some(sel);
+                    }
                 }
             }
             _ => {}
@@ -440,6 +553,99 @@ impl App {
                 .or_else(|| frame.panes.iter().find(|pane| pane.rect.y == divider.y + 1))
                 .map(|pane| pane.pane_id),
         }
+    }
+
+    /// Word class of the cell at `col`, for multi-click word selection.
+    /// Wide-char continuation cells (`'\0'`) inherit their owner's class so
+    /// runs never split in the middle of a wide character.
+    fn click_cell_class(
+        cells: &[crate::session::terminal_state::StyledCell],
+        col: usize,
+    ) -> super::copy_mode::CursorModeWordClass {
+        let mut index = col;
+        while index > 0 && cells.get(index).is_some_and(|cell| cell.ch == '\0') {
+            index -= 1;
+        }
+        match cells.get(index) {
+            Some(cell) => Self::cursor_mode_word_class(cell.ch),
+            None => super::copy_mode::CursorModeWordClass::Whitespace,
+        }
+    }
+
+    /// Column run (inclusive) around `origin` of cells sharing `matches`.
+    fn click_class_run(
+        cells: &[crate::session::terminal_state::StyledCell],
+        origin: usize,
+        matches: impl Fn(super::copy_mode::CursorModeWordClass) -> bool,
+    ) -> (usize, usize) {
+        let mut start = origin;
+        while start > 0 && matches(Self::click_cell_class(cells, start - 1)) {
+            start -= 1;
+        }
+        let mut end = origin;
+        while end + 1 < cells.len() && matches(Self::click_cell_class(cells, end + 1)) {
+            end += 1;
+        }
+        (start, end)
+    }
+
+    /// Pick the next selection step for a multi-click chain, gargo-style:
+    /// candidates are every unit we can derive at `origin` (word-class run,
+    /// non-whitespace run, whole line), filtered to those containing `origin`
+    /// and strictly containing `current`, smallest first. Successive clicks
+    /// climb word -> WORD -> line. Returns `None` when nothing larger exists.
+    pub(super) fn expand_click_selection(
+        cells: &[crate::session::terminal_state::StyledCell],
+        origin: usize,
+        current: Option<(usize, usize)>,
+    ) -> Option<(usize, usize)> {
+        use super::copy_mode::CursorModeWordClass;
+
+        if cells.is_empty() {
+            return None;
+        }
+        let origin = origin.min(cells.len() - 1);
+        let origin_class = Self::click_cell_class(cells, origin);
+
+        let mut candidates: Vec<(usize, usize)> = Vec::new();
+        candidates.push(Self::click_class_run(cells, origin, |class| {
+            class == origin_class
+        }));
+        if origin_class != CursorModeWordClass::Whitespace {
+            candidates.push(Self::click_class_run(cells, origin, |class| {
+                class != CursorModeWordClass::Whitespace
+            }));
+        }
+        // Whole line, trimmed of trailing blanks but always containing origin.
+        let line_end = cells
+            .iter()
+            .rposition(|cell| cell.ch != ' ')
+            .unwrap_or(0)
+            .max(origin);
+        candidates.push((0, line_end));
+
+        let current_size = current.map(|(start, end)| end - start + 1).unwrap_or(0);
+        candidates
+            .into_iter()
+            .filter(|(start, end)| *start <= origin && *end >= origin)
+            .filter(|(start, end)| end - start + 1 > current_size)
+            .filter(|(start, end)| match current {
+                Some((cur_start, cur_end)) => *start <= cur_start && *end >= cur_end,
+                None => true,
+            })
+            .min_by_key(|(start, end)| end - start)
+    }
+
+    /// Copy the active mouse selection (kept visible after mouse-up) to the
+    /// clipboard and drop the highlight. Bound to the copy-selection action.
+    pub(super) fn copy_active_text_selection(&mut self) {
+        let Some(sel) = self.view.text_selection.take() else {
+            self.set_message("no selection to copy", Duration::from_secs(2));
+            return;
+        };
+        self.view.click_chain = None;
+        self.copy_text_selection(&sel);
+        self.needs_render = true;
     }
 
     fn copy_text_selection(&mut self, sel: &TextSelectionState) {
