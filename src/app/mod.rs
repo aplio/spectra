@@ -222,7 +222,7 @@ impl App {
                 rows,
                 active_session: 0,
                 pane_histories_by_session,
-                side_window_tree_open: false,
+                side_window_tree_open: runtime_ui.sidebar_default_open,
             },
             next_session_ordinal: 2,
             session_template: options,
@@ -297,6 +297,7 @@ impl App {
             hooks: app_config.hooks.clone(),
             editor_command: normalize_editor_command(app_config.editor.clone()),
             agent_notify: app_config.agent.notify,
+            sidebar_default_open: app_config.sidebar.default_open,
         };
 
         Ok(AppBootstrap {
@@ -413,7 +414,7 @@ impl App {
                 rows,
                 active_session,
                 pane_histories_by_session,
-                side_window_tree_open: false,
+                side_window_tree_open: runtime_ui.sidebar_default_open,
             },
             next_session_ordinal,
             session_template,

@@ -1209,6 +1209,7 @@ fn restore_from_runtime_state_recovers_multi_session_layout_and_focus() {
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
             agent_notify: app.agent_notify,
+            sidebar_default_open: app.side_window_tree_is_open(),
         },
         app.view.cols,
         app.view.rows,
@@ -1293,6 +1294,7 @@ fn restore_from_runtime_state_returns_none_on_corrupt_json() {
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
             agent_notify: app.agent_notify,
+            sidebar_default_open: app.side_window_tree_is_open(),
         },
         app.view.cols,
         app.view.rows,
@@ -1300,6 +1302,41 @@ fn restore_from_runtime_state_returns_none_on_corrupt_json() {
     .expect("restore should not fail on corrupt state");
 
     assert!(restored.is_none());
+}
+
+#[test]
+fn restore_from_runtime_state_honors_sidebar_default_open() {
+    let mut app = build_app_for_resize_test();
+    assert!(
+        !app.side_window_tree_is_open(),
+        "builder starts with the sidebar closed"
+    );
+    app.persist_active_session_info();
+
+    let restored = App::restore_from_runtime_state(
+        &app.store,
+        app.started_unix,
+        app.session_template.clone(),
+        RuntimeUiConfig {
+            keys: app.view.keys.clone(),
+            mouse_enabled: app.mouse_enabled,
+            status_format: app.status_format.clone(),
+            status_style: app.status_style,
+            hooks: app.hooks.clone(),
+            editor_command: app.editor_command.clone(),
+            agent_notify: app.agent_notify,
+            sidebar_default_open: true,
+        },
+        app.view.cols,
+        app.view.rows,
+    )
+    .expect("restore app")
+    .expect("runtime state should restore");
+
+    assert!(
+        restored.side_window_tree_is_open(),
+        "restored view should open the sidebar when the config default is on"
+    );
 }
 
 #[test]
@@ -1324,6 +1361,7 @@ fn restore_from_runtime_state_returns_none_on_invalid_snapshot() {
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
             agent_notify: app.agent_notify,
+            sidebar_default_open: app.side_window_tree_is_open(),
         },
         app.view.cols,
         app.view.rows,
@@ -1701,6 +1739,7 @@ fn restore_from_runtime_state_restores_client_focus_profiles() {
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
             agent_notify: app.agent_notify,
+            sidebar_default_open: app.side_window_tree_is_open(),
         },
         app.view.cols,
         app.view.rows,
@@ -1739,6 +1778,7 @@ fn attach_target_overrides_restored_profile_for_client() {
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
             agent_notify: app.agent_notify,
+            sidebar_default_open: app.side_window_tree_is_open(),
         },
         app.view.cols,
         app.view.rows,
