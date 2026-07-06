@@ -2,9 +2,11 @@
 
 //! Full `--remote` bridge-listener e2e without real ssh: the
 //! `SPECTRA_REMOTE_SSH_CMD` seam swaps the `ssh -T -- <host>` transport
-//! prefix for a local `env ... sh -c` wrapper, so the composed
-//! `sh -lc '<remote bridge command>'` runs on this machine against a
-//! "remote" spectra server living in a tempdir environment.
+//! prefix for a local `env ... sh -c` wrapper, so the probe/seed scripts and
+//! the composed `sh -lc '<remote bridge command>'` run on this machine
+//! against a "remote" spectra server living in a tempdir environment. The
+//! `SPECTRA_REMOTE_BINARY` seam points the seeding source at the real
+//! spectra binary (the running executable is the test harness).
 
 use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -134,28 +136,18 @@ fn assert_no_whitespace(path: &Path) {
 #[test]
 fn remote_attach_bridges_hello_to_remote_server_through_fake_ssh() {
     let bin = resolve_spectra_binary().expect("resolve spectra binary");
-    let bin_dir = bin.parent().expect("binary parent dir").to_path_buf();
 
-    // "Remote host" environment in tempdirs.
+    // "Remote host" environment in tempdirs. No spectra is installed there:
+    // the bridge must seed the local binary itself.
     let remote = tempfile::tempdir().expect("remote tempdir");
     let remote_runtime = remote.path().join("runtime");
     let remote_data = remote.path().join("data");
     let remote_config = remote.path().join("config");
     let fake_home = remote.path().join("home");
-    let local_bin = fake_home.join(".local").join("bin");
-    for dir in [&remote_runtime, &remote_data, &remote_config, &local_bin] {
+    for dir in [&remote_runtime, &remote_data, &remote_config, &fake_home] {
         std::fs::create_dir_all(dir).expect("create remote env dir");
         assert_no_whitespace(dir);
     }
-
-    // Install spectra in the fake home: `$HOME/.local/bin` fallback plus a
-    // login-shell PATH entry so `command -v spectra` also resolves it.
-    std::os::unix::fs::symlink(&bin, local_bin.join("spectra")).expect("symlink spectra");
-    std::fs::write(
-        fake_home.join(".profile"),
-        format!("PATH=\"{}:$PATH\"\nexport PATH\n", bin_dir.display()),
-    )
-    .expect("write fake profile");
 
     // Pre-start the "remote" server with a deterministic shell.
     let server = Command::new(&bin)
@@ -184,9 +176,10 @@ fn remote_attach_bridges_hello_to_remote_server_through_fake_ssh() {
         remote_data.display(),
         remote_config.display(),
     );
-    // SAFETY: This is the only test in this binary, and the variable is set
-    // before any bridge threads are spawned.
+    // SAFETY: This is the only test in this binary, and the variables are
+    // set before any bridge threads are spawned.
     unsafe { std::env::set_var("SPECTRA_REMOTE_SSH_CMD", &fake_ssh) };
+    unsafe { std::env::set_var("SPECTRA_REMOTE_BINARY", &bin) };
 
     let bridge = remote::start_bridge("ssh://dummyhost").expect("start bridge listener");
     assert_eq!(
@@ -194,6 +187,29 @@ fn remote_attach_bridges_hello_to_remote_server_through_fake_ssh() {
         "dummyhost",
         "ssh:// scheme should be stripped"
     );
+
+    // start_bridge must have seeded the local binary into the fake home.
+    let seeded = fake_home.join(remote::REMOTE_SEEDED_BINARY_SUFFIX);
+    assert!(
+        seeded.exists(),
+        "seeded binary should exist at {}",
+        seeded.display()
+    );
+    let seeded_meta = std::fs::metadata(&seeded).expect("seeded binary metadata");
+    assert_eq!(
+        seeded_meta.len(),
+        std::fs::metadata(&bin)
+            .expect("local binary metadata")
+            .len(),
+        "seeded binary should be a byte-for-byte copy"
+    );
+    assert_eq!(
+        seeded_meta.permissions().mode() & 0o777,
+        0o755,
+        "seeded binary must be executable"
+    );
+    let seeded_mtime = seeded_meta.modified().expect("seeded binary mtime");
+
     let bridge_socket = bridge.socket_path().to_path_buf();
     let bridge_dir = bridge_socket
         .parent()
@@ -234,4 +250,15 @@ fn remote_attach_bridges_hello_to_remote_server_through_fake_ssh() {
         "bridge socket should be removed on drop"
     );
     assert!(!bridge_dir.exists(), "bridge dir should be removed on drop");
+
+    // A fresh bridge start finds a matching sha256 and skips re-seeding.
+    drop(remote::start_bridge("dummyhost").expect("restart bridge listener"));
+    assert_eq!(
+        std::fs::metadata(&seeded)
+            .expect("seeded binary metadata after reuse")
+            .modified()
+            .expect("seeded binary mtime after reuse"),
+        seeded_mtime,
+        "matching binary must not be re-seeded"
+    );
 }

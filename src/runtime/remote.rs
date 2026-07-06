@@ -2,10 +2,15 @@
 
 //! Simplified remote attach over an ssh stdio bridge.
 //!
-//! Local side (`spectra --remote <host>`): a private per-invocation Unix
-//! listener socket is created under the runtime dir, the normal interactive
-//! client attaches to it, and every accepted connection is pumped through
-//! `ssh -T` stdin/stdout to the remote host.
+//! Local side (`spectra --remote <host>`): the local binary is first seeded
+//! to the remote host (probe `uname` + sha256 of the previously seeded copy
+//! over ssh; stream the binary over ssh stdin when missing or different),
+//! then a private per-invocation Unix listener socket is created under the
+//! runtime dir, the normal interactive client attaches to it, and every
+//! accepted connection is pumped through `ssh -T` stdin/stdout to the remote
+//! host, executing the seeded binary. Only when the remote platform differs
+//! from the local one (so the local binary cannot run there) does the bridge
+//! fall back to a spectra already installed on the remote host.
 //!
 //! Remote side (`spectra remote-client-bridge`, hidden subcommand): ensures a
 //! server is running (same auto-spawn as a local attach), connects to the
@@ -29,15 +34,26 @@ use crate::cli::Cli;
 use crate::ipc::socket_path;
 use crate::runtime::client;
 
-/// Command executed on the remote host through `sh -lc` (login shell so PATH
-/// customizations like `~/.local/bin` resolve). Falls back to the default
-/// install location when `spectra` is not on PATH.
+/// Path relative to `$HOME` on the remote host where `--remote` seeds a copy
+/// of the local binary before executing it.
+pub const REMOTE_SEEDED_BINARY_SUFFIX: &str = ".local/share/spectra/bin/spectra";
+
+/// Fallback bridge command through `sh -lc` (login shell so PATH
+/// customizations like `~/.local/bin` resolve), used only when the remote
+/// platform differs from the local one and the local binary cannot be
+/// seeded. Falls back to the default install location when `spectra` is not
+/// on PATH.
 pub const REMOTE_BRIDGE_COMMAND: &str = "if command -v spectra >/dev/null 2>&1; then exec spectra remote-client-bridge; else exec \"$HOME/.local/bin/spectra\" remote-client-bridge; fi";
 
 /// Test seam: when set, its whitespace-split value replaces the default
 /// `ssh -T -- <host>` transport prefix. The composed `sh -lc '...'` remote
 /// command is still appended as the final argument.
 pub const REMOTE_SSH_CMD_ENV: &str = "SPECTRA_REMOTE_SSH_CMD";
+
+/// When set, seed this binary to the remote host instead of the running
+/// executable (e.g. a build cross-compiled for the remote platform; also the
+/// test seam, where the running executable is the test harness).
+pub const REMOTE_BINARY_ENV: &str = "SPECTRA_REMOTE_BINARY";
 
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const RELAY_CHUNK_BYTES: usize = 16 * 1024;
@@ -60,7 +76,7 @@ pub fn run(cli: Cli) -> io::Result<()> {
         Err(err) if !bridge.saw_remote_bytes() => Err(io::Error::new(
             err.kind(),
             format!(
-                "{err}; no data received from remote host — check that ssh can reach '{}' and that spectra is installed there (on PATH or at ~/.local/bin)",
+                "{err}; no data received from remote host — check that ssh can reach '{}'",
                 bridge.host()
             ),
         )),
@@ -134,10 +150,13 @@ impl Drop for RemoteBridge {
 }
 
 /// Create the private bridge listener for `host` and start accepting
-/// connections, spawning one ssh transport per connection.
+/// connections, spawning one ssh transport per connection. Seeds the local
+/// binary to the remote host first so the bridge runs exactly this build.
 pub fn start_bridge(host: &str) -> io::Result<RemoteBridge> {
     let host = normalize_host(host)?;
-    let transport = transport_command(&host);
+    let prefix = transport_prefix(&host);
+    let exec = ensure_remote_binary(&host, &prefix)?;
+    let transport = compose_transport(&prefix, &exec.bridge_command());
 
     let runtime_dir = socket_path::socket_path()
         .parent()
@@ -218,9 +237,7 @@ fn relay_connection(
     transport: &[String],
     saw_remote_bytes: &Arc<AtomicBool>,
 ) -> io::Result<()> {
-    let (program, args) = transport
-        .split_first()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty transport command"))?;
+    let (program, args) = split_transport(transport)?;
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::piped())
@@ -298,17 +315,16 @@ fn normalize_host(raw: &str) -> io::Result<String> {
     Ok(host.to_string())
 }
 
-fn transport_command(host: &str) -> Vec<String> {
+fn transport_prefix(host: &str) -> Vec<String> {
     let override_cmd = std::env::var(REMOTE_SSH_CMD_ENV).ok();
-    transport_command_with_override(host, override_cmd.as_deref())
+    transport_prefix_with_override(host, override_cmd.as_deref())
 }
 
-/// The transport argv: prefix (default `ssh -T -- <host>`, overridable via
-/// [`REMOTE_SSH_CMD_ENV`]) plus the composed remote command as one final
-/// argument. ssh joins remote command words with spaces, so the `sh -lc`
-/// payload must stay quoted inside a single argument.
-fn transport_command_with_override(host: &str, override_cmd: Option<&str>) -> Vec<String> {
-    let mut argv: Vec<String> = match override_cmd {
+/// The transport argv prefix: default `ssh -T -- <host>`, overridable via
+/// [`REMOTE_SSH_CMD_ENV`]. Remote commands are appended as one final
+/// argument.
+fn transport_prefix_with_override(host: &str, override_cmd: Option<&str>) -> Vec<String> {
+    match override_cmd {
         Some(cmd) if !cmd.trim().is_empty() => cmd.split_whitespace().map(str::to_string).collect(),
         _ => vec![
             "ssh".to_string(),
@@ -316,14 +332,236 @@ fn transport_command_with_override(host: &str, override_cmd: Option<&str>) -> Ve
             "--".to_string(),
             host.to_string(),
         ],
-    };
-    argv.push(format!("sh -lc '{REMOTE_BRIDGE_COMMAND}'"));
+    }
+}
+
+/// Compose the full per-connection transport argv. ssh joins remote command
+/// words with spaces, so the `sh -lc` payload must stay quoted inside a
+/// single argument (`remote_command` must not contain single quotes).
+fn compose_transport(prefix: &[String], remote_command: &str) -> Vec<String> {
+    let mut argv = prefix.to_vec();
+    argv.push(format!("sh -lc '{remote_command}'"));
     argv
+}
+
+/// How the bridge is executed on the remote host.
+enum RemoteExec {
+    /// The seeded copy of the local binary at [`REMOTE_SEEDED_BINARY_SUFFIX`].
+    Seeded,
+    /// A spectra already installed on the remote host (platform mismatch:
+    /// the local binary cannot run there).
+    PathDiscovery,
+}
+
+impl RemoteExec {
+    fn bridge_command(&self) -> String {
+        match self {
+            Self::Seeded => {
+                format!("exec \"$HOME/{REMOTE_SEEDED_BINARY_SUFFIX}\" remote-client-bridge")
+            }
+            Self::PathDiscovery => REMOTE_BRIDGE_COMMAND.to_string(),
+        }
+    }
+}
+
+/// Shell script that reports the remote platform and the state of the
+/// previously seeded binary, one item per line: `uname -s`, `uname -m`, then
+/// the binary's sha256 hex (or `missing` / `hash-unavailable`). Runs via
+/// `sh -c '...'` inside the remote user's shell, so it must not contain
+/// single quotes.
+fn probe_script() -> String {
+    format!(
+        r#"uname -s
+uname -m
+dest=$HOME/{REMOTE_SEEDED_BINARY_SUFFIX}
+if [ -x "$dest" ]; then
+  if command -v sha256sum >/dev/null 2>&1; then h=$(sha256sum <"$dest"); echo "${{h%% *}}"
+  elif command -v shasum >/dev/null 2>&1; then h=$(shasum -a 256 <"$dest"); echo "${{h%% *}}"
+  else echo hash-unavailable
+  fi
+else echo missing
+fi"#
+    )
+}
+
+/// Shell script that installs the binary streamed on stdin at the seeded
+/// path (atomic tmp + mv). Runs via `sh -c '...'`, so no single quotes.
+fn seed_script() -> String {
+    format!(
+        r#"dest=$HOME/{REMOTE_SEEDED_BINARY_SUFFIX}
+dir=${{dest%/*}}
+mkdir -p "$dir"
+tmp=$dest.tmp.$$
+cat >"$tmp"
+chmod 755 "$tmp"
+mv "$tmp" "$dest""#
+    )
+}
+
+/// Make sure the remote host has a runnable spectra: seed the local binary
+/// when it is missing or differs (by sha256), or fall back to a remotely
+/// installed spectra when the platforms differ.
+fn ensure_remote_binary(host: &str, prefix: &[String]) -> io::Result<RemoteExec> {
+    let probe = run_probe(host, prefix)?;
+    let (local_os, local_arch) = local_platform();
+    if probe.os != local_os || probe.arch != local_arch {
+        eprintln!(
+            "spectra: remote platform {}/{} differs from local {}/{}; cannot seed the local binary — using spectra installed on '{host}'",
+            probe.os, probe.arch, local_os, local_arch
+        );
+        return Ok(RemoteExec::PathDiscovery);
+    }
+
+    let local_exe = local_binary_path()?;
+    if let SeededBinary::Hash(remote_hash) = &probe.seeded
+        && *remote_hash == sha256_hex(&local_exe)?
+    {
+        return Ok(RemoteExec::Seeded);
+    }
+
+    eprintln!("spectra: seeding local binary to {host}:~/{REMOTE_SEEDED_BINARY_SUFFIX}");
+    seed_remote_binary(prefix, &local_exe)?;
+    Ok(RemoteExec::Seeded)
+}
+
+struct RemoteProbe {
+    os: String,
+    arch: String,
+    seeded: SeededBinary,
+}
+
+enum SeededBinary {
+    Hash(String),
+    /// Missing, or present but the remote host has no sha256 tool to compare
+    /// it with — either way the binary gets (re)seeded.
+    Unknown,
+}
+
+fn run_probe(host: &str, prefix: &[String]) -> io::Result<RemoteProbe> {
+    let (program, args) = split_transport(prefix)?;
+    let output = Command::new(program)
+        .args(args)
+        .arg(format!("sh -c '{}'", probe_script()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "remote probe on '{host}' exited with {} — check that ssh can reach it",
+            output.status
+        )));
+    }
+    parse_probe_output(&String::from_utf8_lossy(&output.stdout)).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unexpected probe output from '{host}'"),
+        )
+    })
+}
+
+fn parse_probe_output(stdout: &str) -> Option<RemoteProbe> {
+    let mut lines = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let os = lines.next()?.to_string();
+    let arch = normalize_arch(lines.next()?);
+    let seeded = match lines.next()? {
+        "missing" | "hash-unavailable" => SeededBinary::Unknown,
+        hash if hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            SeededBinary::Hash(hash.to_string())
+        }
+        _ => return None,
+    };
+    Some(RemoteProbe { os, arch, seeded })
+}
+
+/// `uname -s` / `uname -m` values for the local build, normalized the same
+/// way as the probe output so they compare directly.
+fn local_platform() -> (&'static str, &'static str) {
+    let os = if cfg!(target_os = "linux") {
+        "Linux"
+    } else if cfg!(target_os = "macos") {
+        "Darwin"
+    } else {
+        "unknown"
+    };
+    let arch = if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else {
+        "unknown"
+    };
+    (os, arch)
+}
+
+fn normalize_arch(arch: &str) -> String {
+    match arch {
+        "arm64" => "aarch64".to_string(),
+        "amd64" => "x86_64".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn local_binary_path() -> io::Result<PathBuf> {
+    if let Some(path) = std::env::var_os(REMOTE_BINARY_ENV) {
+        return Ok(PathBuf::from(path));
+    }
+    std::env::current_exe()
+}
+
+fn sha256_hex(path: &Path) -> io::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    io::copy(&mut file, &mut hasher)?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Stream the local binary over the transport's stdin into the seeded path.
+fn seed_remote_binary(prefix: &[String], local_exe: &Path) -> io::Result<()> {
+    let (program, args) = split_transport(prefix)?;
+    let mut child = Command::new(program)
+        .args(args)
+        .arg(format!("sh -c '{}'", seed_script()))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("seed transport stdin unavailable"))?;
+    let mut source = fs::File::open(local_exe)?;
+    let copy_result = io::copy(&mut source, &mut stdin).map(|_| ());
+    // Dropping stdin sends EOF so the remote `cat` finishes.
+    drop(stdin);
+    let status = child.wait()?;
+    copy_result?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "seeding the remote binary exited with {status}"
+        )))
+    }
+}
+
+fn split_transport(transport: &[String]) -> io::Result<(&String, &[String])> {
+    transport
+        .split_first()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty transport command"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{REMOTE_BRIDGE_COMMAND, normalize_host, transport_command_with_override};
+    use super::{
+        REMOTE_BRIDGE_COMMAND, REMOTE_SEEDED_BINARY_SUFFIX, RemoteExec, SeededBinary,
+        compose_transport, normalize_host, parse_probe_output, probe_script, seed_script,
+        transport_prefix_with_override,
+    };
 
     #[test]
     fn normalize_host_accepts_plain_and_user_at_host() {
@@ -349,30 +587,70 @@ mod tests {
 
     #[test]
     fn transport_defaults_to_ssh_with_quoted_remote_command() {
-        let argv = transport_command_with_override("me@box", None);
-        assert_eq!(argv[..4], ["ssh", "-T", "--", "me@box"]);
+        let prefix = transport_prefix_with_override("me@box", None);
+        assert_eq!(prefix, ["ssh", "-T", "--", "me@box"]);
+        let argv = compose_transport(&prefix, &RemoteExec::Seeded.bridge_command());
         assert_eq!(argv.len(), 5);
-        assert_eq!(argv[4], format!("sh -lc '{REMOTE_BRIDGE_COMMAND}'"));
+        assert_eq!(
+            argv[4],
+            format!("sh -lc 'exec \"$HOME/{REMOTE_SEEDED_BINARY_SUFFIX}\" remote-client-bridge'")
+        );
     }
 
     #[test]
     fn transport_override_replaces_prefix_and_keeps_remote_command() {
-        let argv = transport_command_with_override("me@box", Some("env A=b sh -c"));
-        assert_eq!(argv[..4], ["env", "A=b", "sh", "-c"]);
+        let prefix = transport_prefix_with_override("me@box", Some("env A=b sh -c"));
+        assert_eq!(prefix, ["env", "A=b", "sh", "-c"]);
+        let argv = compose_transport(&prefix, &RemoteExec::PathDiscovery.bridge_command());
         assert_eq!(argv.len(), 5);
         assert_eq!(argv[4], format!("sh -lc '{REMOTE_BRIDGE_COMMAND}'"));
     }
 
     #[test]
     fn transport_blank_override_falls_back_to_ssh() {
-        let argv = transport_command_with_override("box", Some("   "));
-        assert_eq!(argv[..4], ["ssh", "-T", "--", "box"]);
+        let prefix = transport_prefix_with_override("box", Some("   "));
+        assert_eq!(prefix, ["ssh", "-T", "--", "box"]);
     }
 
     #[test]
-    fn remote_bridge_command_survives_single_quoting() {
-        // The remote command is wrapped in single quotes for ssh; it must not
-        // contain one itself.
+    fn remote_commands_survive_single_quoting() {
+        // Remote commands are wrapped in single quotes (for ssh and for the
+        // remote user's shell via `sh -c '...'`); they must not contain one
+        // themselves.
         assert!(!REMOTE_BRIDGE_COMMAND.contains('\''));
+        assert!(!RemoteExec::Seeded.bridge_command().contains('\''));
+        assert!(!probe_script().contains('\''));
+        assert!(!seed_script().contains('\''));
+    }
+
+    #[test]
+    fn probe_output_parses_platform_and_hash() {
+        let probe = parse_probe_output(
+            "Linux\nx86_64\n0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+        )
+        .expect("valid probe output");
+        assert_eq!(probe.os, "Linux");
+        assert_eq!(probe.arch, "x86_64");
+        assert!(matches!(probe.seeded, SeededBinary::Hash(hash) if hash.len() == 64));
+    }
+
+    #[test]
+    fn probe_output_normalizes_arch_and_handles_missing_binary() {
+        let probe = parse_probe_output("Darwin\narm64\nmissing\n").expect("valid probe output");
+        assert_eq!(probe.os, "Darwin");
+        assert_eq!(probe.arch, "aarch64");
+        assert!(matches!(probe.seeded, SeededBinary::Unknown));
+
+        let probe =
+            parse_probe_output("Linux\namd64\nhash-unavailable\n").expect("valid probe output");
+        assert_eq!(probe.arch, "x86_64");
+        assert!(matches!(probe.seeded, SeededBinary::Unknown));
+    }
+
+    #[test]
+    fn probe_output_rejects_garbage() {
+        assert!(parse_probe_output("").is_none());
+        assert!(parse_probe_output("Linux\nx86_64\nnot-a-hash\n").is_none());
+        assert!(parse_probe_output("Linux\n").is_none());
     }
 }
