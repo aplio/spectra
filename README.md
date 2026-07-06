@@ -313,7 +313,7 @@ Global data files:
 - prefix `c` create new window
 - prefix `n` create new session
 - prefix `p` open command palette (fzf-style command filter + Enter to execute)
-- prefix `?` open the keyboard-shortcut cheat sheet (lists every active binding; `/` filters, `j`/`k` or arrows move, `Esc`/`q` closes)
+- prefix `?` open the keyboard-shortcut cheat sheet (lists every active binding; `/` filters, `j`/`k` or arrows move, `Esc`/`q` closes); also available from the command palette as `Show keyboard shortcuts`
 - prefix `r` reload config (`source-file` default path)
 - prefix `z` toggle zoom for active pane in current window
 - prefix `S` toggle synchronize-panes for current window

@@ -534,6 +534,17 @@ impl App {
         );
         Self::push_command_palette_entry(
             &mut entries,
+            "help.keybindings",
+            CommandAction::ShowKeybindings,
+            "Show keyboard shortcuts",
+            "show keyboard shortcuts keybindings cheat sheet help list keys",
+            &[
+                "action: open the keyboard-shortcut cheat sheet",
+                "keys: / filter, j/k or arrows move, Esc/q close",
+            ],
+        );
+        Self::push_command_palette_entry(
+            &mut entries,
             "config.reload",
             CommandAction::ReloadConfig,
             "Reload config",

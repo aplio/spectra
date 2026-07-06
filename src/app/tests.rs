@@ -2181,6 +2181,27 @@ fn command_palette_includes_peek_all_windows() {
 }
 
 #[test]
+fn command_palette_includes_show_keybindings() {
+    let entries = App::command_palette_entries();
+    assert!(entries.iter().any(|entry| {
+        entry.id == "help.keybindings" && entry.action == CommandAction::ShowKeybindings
+    }));
+}
+
+#[test]
+fn command_palette_show_keybindings_opens_overlay() {
+    let mut app = build_app_for_resize_test();
+    open_command_palette(&mut app);
+    type_command_palette_query(&mut app, "keyboard shortcuts");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .expect("execute selected command");
+    assert!(
+        matches!(app.view.input_mode, InputMode::Keybindings { .. }),
+        "selecting the entry should open the cheat sheet directly from the palette"
+    );
+}
+
+#[test]
 fn command_palette_includes_enter_cursor_mode() {
     let entries = App::command_palette_entries();
     assert!(entries.iter().any(|entry| {
