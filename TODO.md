@@ -79,6 +79,13 @@ herdrはlibghostty-vt(vendored, Zig FFI)に委譲し、足りない分を `src/p
 - [x] DONE **OSC 8 hyperlink をgridで解釈** — `StyledCell` に `link: Option<Arc<str>>` を追加し、OSC 8 の
       URIをアクティブリンクとして追跡して印字セルにスタンプ(URI上限2083B)。
       レンダラはセルリンクを自前URL検知より優先してOSC 8でラップ出力
+- [x] FIX **XTMODKEYS (`CSI > 4;2 m`) をSGRとして誤解釈しない** — Claude Code下線バグの真因(3度目の正直)。
+      SGRのcsi_dispatchがintermediates(プライベートマーカー)を見ずに `m` を全てapply_sgrしていたため、Claude Code v2.1が
+      起動時に送るXTMODKEYS `CSI > 4;2 m`(modifyOtherKeys=2)がSGR `4;2` = 下線+dimとして解釈され、しかもClaude Codeは
+      SGR 0(全リセット)を送らず個別リセット(22/23/39/49)のみのため画面全体に下線+dimが固着していた。
+      修正: `m` はintermediatesが空の時のみSGR(XTMODKEYS/XTQMODKEYSは無視)。実Claude Code v2.1.201のPTYキャプチャを
+      サニタイズしたfixture(`tests/fixtures/claude_code_startup.ansi`)を追加し、E2E(`tests/claude_code_render_e2e.rs`)で
+      「ゲストが一切下線を使わない起動ストリームを食わせてもホスト出力に下線SGRが1つも出ない」ことを回帰ゲート化
 - [x] FIX **OSC 8 のhost passthrough転送を廃止** — 従来はper-cell描画に加え生のOSC 8列もhostへpassthroughしていた(二重出力)。
       guestのopen/closeが別々の出力バーストに分かれるとhostがopen-link状態のまま固定され、フレーム全体(spectra自身の
       ステータスライン含む)に下線/リンクが漏れる(Claude Code等の頻繁再描画TUIで顕著)。per-cellレンダラがフレーム整合で

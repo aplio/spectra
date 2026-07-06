@@ -535,6 +535,26 @@ fn sgr_21_is_double_underline_not_bold_off() {
 }
 
 #[test]
+fn xtmodkeys_private_m_is_not_interpreted_as_sgr() {
+    // Regression: Claude Code emits XTMODKEYS `CSI > 4;2 m` (set
+    // modifyOtherKeys=2) at startup. Read as SGR, `4;2` enables underline +
+    // dim, and since the guest never sends a full SGR 0 reset, the whole
+    // screen renders underlined and dimmed. The private-marker forms of `m`
+    // must leave attribute state untouched.
+    let mut state = TerminalState::new(8, 1);
+    state.feed(b"\x1b[>4;2mA\x1b[?4mB");
+
+    let row = state.row_cells(0);
+    for cell in row.iter().take(2) {
+        assert_eq!(
+            cell.style,
+            CellStyle::default(),
+            "XTMODKEYS/XTQMODKEYS must not change SGR attributes: {cell:?}"
+        );
+    }
+}
+
+#[test]
 fn claude_code_style_underline_does_not_stick_to_next_line() {
     // Regression: styled underline plus underline color, then colon-form
     // underline off (Claude Code style). The following plain prompt line
