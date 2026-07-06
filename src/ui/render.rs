@@ -58,10 +58,12 @@ impl AgentIndicator {
     }
 }
 
-/// One row of the sidebar: either a session header or a window under it.
+/// One entry of the sidebar: either a session header or a window under it.
+/// An entry occupies one visual row per line; the selection highlight covers
+/// all its lines, while the `>` marker and agent indicator sit on the first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SideTreeEntry {
-    pub label: String,
+    pub lines: Vec<String>,
     /// Aggregated agent marker when any pane in the window has an agent.
     pub indicator: Option<AgentIndicator>,
     /// True for a session-name header row; such rows are never selectable and
@@ -83,6 +85,41 @@ impl SideWindowTree {
     /// positions from this rect rather than assuming an origin.
     pub fn rect(&self) -> SidebarRect {
         SidebarRect::left_edge(self.width)
+    }
+
+    /// `(entry_index, line_index)` per visual row in display order.
+    /// Rendering and click hit-testing must both use this flattening so
+    /// multi-line entries cannot drift between the two.
+    pub fn visual_rows(&self) -> Vec<(usize, usize)> {
+        self.entries
+            .iter()
+            .enumerate()
+            .flat_map(|(entry, item)| (0..item.lines.len().max(1)).map(move |line| (entry, line)))
+            .collect()
+    }
+
+    /// First visual row to display so the selected entry fits within
+    /// `visible` rows; when the entry is taller than the viewport its first
+    /// line wins.
+    pub fn scroll_start(&self, visual_rows: &[(usize, usize)], visible: usize) -> usize {
+        let total = visual_rows.len();
+        if total == 0 || visible == 0 || total <= visible {
+            return 0;
+        }
+        let selected = self.selected.min(self.entries.len().saturating_sub(1));
+        let first = visual_rows
+            .iter()
+            .position(|(entry, _)| *entry == selected)
+            .unwrap_or(0);
+        let last = visual_rows
+            .iter()
+            .rposition(|(entry, _)| *entry == selected)
+            .unwrap_or(first);
+        let max_start = total - visible;
+        last.saturating_add(1)
+            .saturating_sub(visible)
+            .min(first)
+            .min(max_start)
     }
 }
 
@@ -508,16 +545,20 @@ fn compose_side_window_tree(
     }
 
     let selected = side.selected.min(side.entries.len().saturating_sub(1));
-    let start = scroll_start(selected, side.entries.len(), content_h);
+    let visual_rows = side.visual_rows();
+    let start = side.scroll_start(&visual_rows, content_h);
     for row in 0..content_h {
-        let entry_idx = start + row;
-        let entry = side.entries.get(entry_idx);
         let y = 1 + row;
+        let Some(&(entry_idx, line_idx)) = visual_rows.get(start + row) else {
+            draw_text(frame, content_x, y, &fixed_width("", content_w));
+            continue;
+        };
+        let entry = &side.entries[entry_idx];
+        let label = entry.lines.get(line_idx).map(String::as_str).unwrap_or("");
 
         // Session headers group the windows beneath them: no marker, drawn
         // bold so they stand apart from the (indented) window rows.
-        if entry.map(|entry| entry.is_header).unwrap_or(false) {
-            let label = entry.map(|entry| entry.label.as_str()).unwrap_or_default();
+        if entry.is_header {
             draw_text_with_style(
                 frame,
                 content_x,
@@ -532,9 +573,15 @@ fn compose_side_window_tree(
         }
 
         let is_selected = entry_idx == selected && !side.entries.is_empty();
-        let marker = if is_selected { '>' } else { ' ' };
-        let label = entry.map(|entry| entry.label.as_str()).unwrap_or_default();
-        let indicator = entry.and_then(|entry| entry.indicator);
+        // The `>` marker and agent indicator sit on the entry's first line;
+        // continuation lines keep the marker column blank so they stay
+        // aligned, and the reverse highlight spans every line.
+        let marker = if is_selected && line_idx == 0 {
+            '>'
+        } else {
+            ' '
+        };
+        let indicator = if line_idx == 0 { entry.indicator } else { None };
         // With an agent indicator, the last two content columns are reserved
         // for ` ●` so the marker never overflows into the divider.
         let line = match indicator {
@@ -1655,12 +1702,12 @@ mod tests {
             title: "windows".to_string(),
             entries: vec![
                 SideTreeEntry {
-                    label: "w1".to_string(),
+                    lines: vec!["w1".to_string()],
                     indicator: None,
                     is_header: false,
                 },
                 SideTreeEntry {
-                    label: "w2".to_string(),
+                    lines: vec!["w2".to_string()],
                     indicator: None,
                     is_header: false,
                 },
@@ -1684,6 +1731,90 @@ mod tests {
         assert!(selected_row[0].style.reverse);
         assert!(selected_row[1].style.reverse);
         assert_eq!(composed.row_slice(0)[7].ch, '│');
+    }
+
+    #[test]
+    fn compose_frame_draws_multi_line_sidebar_entry_with_full_highlight() {
+        let frame = RenderFrame {
+            panes: Vec::new(),
+            dividers: Vec::new(),
+            focused_cursor: None,
+            cursor_style: SetCursorStyle::DefaultUserShape,
+        };
+        let side = SideWindowTree {
+            title: "windows".to_string(),
+            entries: vec![
+                SideTreeEntry {
+                    lines: vec!["w1".to_string(), " extra".to_string()],
+                    indicator: None,
+                    is_header: false,
+                },
+                SideTreeEntry {
+                    lines: vec!["w2".to_string()],
+                    indicator: None,
+                    is_header: false,
+                },
+            ],
+            selected: 0,
+            width: 8,
+        };
+
+        let composed = compose_frame(
+            &frame,
+            "status",
+            CellStyle::default(),
+            16,
+            6,
+            None,
+            Some(&side),
+        );
+
+        // First line carries the `>` marker; the continuation line keeps the
+        // marker column blank but shares the reverse highlight.
+        let first = composed.row_slice(1);
+        assert_eq!(first[0].ch, '>');
+        assert!(first[0].style.reverse);
+        let second = composed.row_slice(2);
+        assert_eq!(second[0].ch, ' ');
+        assert_eq!(second[3].ch, 'e');
+        assert!(second[0].style.reverse);
+        assert!(second[3].style.reverse);
+        // The next entry starts on the following row, unhighlighted.
+        let third = composed.row_slice(3);
+        assert_eq!(third[2].ch, 'w');
+        assert!(!third[2].style.reverse);
+    }
+
+    #[test]
+    fn side_window_tree_scroll_keeps_multi_line_selection_fully_visible() {
+        let window = |lines: Vec<&str>| SideTreeEntry {
+            lines: lines.into_iter().map(str::to_string).collect(),
+            indicator: None,
+            is_header: false,
+        };
+        let side = SideWindowTree {
+            title: "windows".to_string(),
+            entries: vec![
+                SideTreeEntry {
+                    lines: vec!["s".to_string()],
+                    indicator: None,
+                    is_header: true,
+                },
+                window(vec!["w1", "a"]),
+                window(vec!["w2", "b"]),
+                window(vec!["w3", "c"]),
+            ],
+            selected: 3,
+            width: 8,
+        };
+
+        let visual = side.visual_rows();
+        assert_eq!(visual.len(), 7);
+        // With 3 visible rows, both lines of the selected last entry stay in
+        // view (start row 4 shows w2's tail plus w3 in full).
+        assert_eq!(side.scroll_start(&visual, 3), 4);
+        // Everything fits: no scrolling.
+        assert_eq!(side.scroll_start(&visual, 7), 0);
     }
 
     #[test]
@@ -1713,12 +1844,12 @@ mod tests {
             title: "windows".to_string(),
             entries: vec![
                 SideTreeEntry {
-                    label: "w1:very-long-window-name".to_string(),
+                    lines: vec!["w1:very-long-window-name".to_string()],
                     indicator: AgentIndicator::for_state(crate::agent::AgentDisplayState::Blocked),
                     is_header: false,
                 },
                 SideTreeEntry {
-                    label: "w2".to_string(),
+                    lines: vec!["w2".to_string()],
                     indicator: None,
                     is_header: false,
                 },

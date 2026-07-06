@@ -395,6 +395,8 @@ pub(super) struct ClickChainState {
 
 pub(super) const RUNTIME_STATE_VERSION: u8 = 1;
 pub(super) const DEFAULT_STATUS_FORMAT: &str = "session {session_index}/{session_count}:{session_name} | window {window_index}/{window_count} | pane {pane_index}/{pane_count} | prefix {prefix}{lock}{zoom}{sync}{mouse}{message}";
+pub(super) const DEFAULT_SIDEBAR_SESSION_FORMAT: &str = "{session_name}";
+pub(super) const DEFAULT_SIDEBAR_WINDOW_FORMAT: &str = "{window_label}";
 pub(super) const DEFAULT_STATUS_BG: Color = Color::Rgb {
     r: 0x2E,
     g: 0x34,
@@ -475,6 +477,38 @@ impl HookContext {
     }
 }
 
+/// Resolved `[sidebar]` row formats: `{token}` strings where `\n` splits an
+/// entry into multiple sidebar lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SidebarFormats {
+    pub session: String,
+    pub window: String,
+}
+
+impl Default for SidebarFormats {
+    fn default() -> Self {
+        Self {
+            session: DEFAULT_SIDEBAR_SESSION_FORMAT.to_string(),
+            window: DEFAULT_SIDEBAR_WINDOW_FORMAT.to_string(),
+        }
+    }
+}
+
+impl SidebarFormats {
+    pub fn from_config(sidebar: &config::SidebarConfig) -> Self {
+        Self {
+            session: sidebar
+                .session_format
+                .clone()
+                .unwrap_or_else(|| DEFAULT_SIDEBAR_SESSION_FORMAT.to_string()),
+            window: sidebar
+                .window_format
+                .clone()
+                .unwrap_or_else(|| DEFAULT_SIDEBAR_WINDOW_FORMAT.to_string()),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct RuntimeUiConfig {
     pub keys: KeyMapper,
@@ -486,6 +520,7 @@ pub(super) struct RuntimeUiConfig {
     pub agent_notify: config::AgentNotifyMode,
     /// Whether the window-tree sidebar starts open on session start.
     pub sidebar_default_open: bool,
+    pub sidebar_formats: SidebarFormats,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

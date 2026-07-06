@@ -118,17 +118,6 @@ impl App {
             .unwrap_or(0)
     }
 
-    fn side_window_tree_scroll_start(selected: usize, total: usize, visible: usize) -> usize {
-        if total == 0 || visible == 0 || total <= visible {
-            return 0;
-        }
-        let max_start = total - visible;
-        selected
-            .saturating_add(1)
-            .saturating_sub(visible)
-            .min(max_start)
-    }
-
     fn side_window_tree_width_for_cols(cols: u16) -> Option<u16> {
         let cols = usize::from(cols);
         if cols < 30 {
@@ -182,31 +171,18 @@ impl App {
             .iter()
             .map(|row| match &row.window {
                 None => crate::ui::render::SideTreeEntry {
-                    label: self.sessions[row.session_index]
-                        .session
-                        .session_name()
-                        .to_string(),
+                    lines: self.sidebar_session_lines(row.session_index),
                     indicator: None,
                     is_header: true,
                 },
-                Some(window) => {
-                    let custom_name = self
-                        .effective_window_name(row.session_index, window.window_id)
-                        .filter(|name| !name.is_empty());
-                    let label = if let Some(name) = custom_name {
-                        format!("w{}:{name}", window.window_number)
-                    } else {
-                        format!("w{}", window.window_number)
-                    };
-                    crate::ui::render::SideTreeEntry {
-                        label,
-                        indicator: Self::window_agent_indicator(
-                            &self.sessions[row.session_index],
-                            &window.pane_ids,
-                        ),
-                        is_header: false,
-                    }
-                }
+                Some(window) => crate::ui::render::SideTreeEntry {
+                    lines: self.sidebar_window_lines(row.session_index, window),
+                    indicator: Self::window_agent_indicator(
+                        &self.sessions[row.session_index],
+                        &window.pane_ids,
+                    ),
+                    is_header: false,
+                },
             })
             .collect::<Vec<_>>();
 
@@ -216,6 +192,65 @@ impl App {
             selected,
             width,
         })
+    }
+
+    /// Expand a `[sidebar]` format string: literal `{token}` replacement like
+    /// the status line, then split on `\n` into one sidebar line per segment.
+    fn expand_sidebar_format(format: &str, tokens: &[(&str, String)]) -> Vec<String> {
+        let mut expanded = format.to_string();
+        for (token, value) in tokens {
+            expanded = expanded.replace(token, value);
+        }
+        expanded.split('\n').map(str::to_string).collect()
+    }
+
+    fn sidebar_session_lines(&self, session_index: usize) -> Vec<String> {
+        let managed = &self.sessions[session_index];
+        Self::expand_sidebar_format(
+            &self.sidebar_formats.session,
+            &[
+                ("{session_index}", (session_index + 1).to_string()),
+                ("{session_name}", managed.session.session_name().to_string()),
+                ("{session_id}", managed.session_id.clone()),
+                ("{window_count}", managed.session.window_count().to_string()),
+            ],
+        )
+    }
+
+    fn sidebar_window_lines(
+        &self,
+        session_index: usize,
+        window: &SideTreeWindowRow,
+    ) -> Vec<String> {
+        let managed = &self.sessions[session_index];
+        let name = self
+            .effective_window_name(session_index, window.window_id)
+            .filter(|name| !name.is_empty());
+        // `{window_label}` is the pre-format default: `w2` or `w2:name`.
+        let label = match name {
+            Some(name) => format!("w{}:{name}", window.window_number),
+            None => format!("w{}", window.window_number),
+        };
+        let agent = window
+            .pane_ids
+            .iter()
+            .filter_map(|pane_id| managed.agents.display_state(*pane_id))
+            .max()
+            .map(|state| state.as_str().to_string())
+            .unwrap_or_default();
+        Self::expand_sidebar_format(
+            &self.sidebar_formats.window,
+            &[
+                ("{window_label}", label),
+                ("{window_index}", window.window_number.to_string()),
+                ("{window_name}", name.unwrap_or_default().to_string()),
+                ("{window_id}", window.window_id.to_string()),
+                ("{pane_count}", window.pane_ids.len().to_string()),
+                ("{agent}", agent),
+                ("{session_index}", (session_index + 1).to_string()),
+                ("{session_name}", managed.session.session_name().to_string()),
+            ],
+        )
     }
 
     /// Aggregate a window's per-pane agent display states into one sidebar
@@ -263,9 +298,12 @@ impl App {
             return None;
         }
 
-        let selected = self.side_window_tree_selected_row(&rows);
-        let start = Self::side_window_tree_scroll_start(selected, rows.len(), content_height);
-        let entry_index = start + row.saturating_sub(1);
+        // Layout rows and sidebar entries are index-aligned; resolving the
+        // visual row through the entry list keeps clicks on any line of a
+        // multi-line entry mapped to that entry.
+        let visual_rows = side.visual_rows();
+        let start = side.scroll_start(&visual_rows, content_height);
+        let (entry_index, _) = *visual_rows.get(start + row.saturating_sub(1))?;
 
         rows.get(entry_index).and_then(|entry| {
             entry

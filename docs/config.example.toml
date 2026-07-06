@@ -21,6 +21,14 @@ allow_passthrough = true
 [sidebar]
 # Show the window-tree sidebar by default on session start. (default: true)
 default_open = true
+# Row formats with {token} placeholders, like [status].format.
+# "\n" splits an entry into multiple sidebar lines.
+# Session header tokens: {session_index} {session_name} {session_id} {window_count}
+# Window row tokens: {window_label} {window_index} {window_name} {window_id}
+#   {pane_count} {agent} {session_index} {session_name}
+# {window_label} is the classic default: `w2`, or `w2:name` when named.
+session_format = "{session_name}"
+window_format = "{window_label}"
 
 [status]
 format = "session {session_index}/{session_count}:{session_name} | window {window_index}/{window_count} | pane {pane_index}/{pane_count} | prefix {prefix}{lock}{zoom}{sync}{mouse}{message}"

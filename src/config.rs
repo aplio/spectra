@@ -105,11 +105,21 @@ pub struct SidebarConfig {
     /// Whether the sidebar is shown by default on session start.
     #[serde(default = "default_true")]
     pub default_open: bool,
+    /// Format of session header rows, with `{token}` placeholders like
+    /// `[status].format`. A `\n` splits the row into multiple lines.
+    pub session_format: Option<String>,
+    /// Format of window rows, with `{token}` placeholders like
+    /// `[status].format`. A `\n` splits the row into multiple lines.
+    pub window_format: Option<String>,
 }
 
 impl Default for SidebarConfig {
     fn default() -> Self {
-        Self { default_open: true }
+        Self {
+            default_open: true,
+            session_format: None,
+            window_format: None,
+        }
     }
 }
 
@@ -176,6 +186,8 @@ mod tests {
         assert!(config.status.foreground.is_none());
         assert_eq!(config.agent.notify, super::AgentNotifyMode::Blocked);
         assert!(config.sidebar.default_open);
+        assert!(config.sidebar.session_format.is_none());
+        assert!(config.sidebar.window_format.is_none());
         assert!(config.hooks.session_created.is_none());
         assert!(config.prefix_bindings.is_empty());
         assert!(config.global_bindings.is_empty());
@@ -212,6 +224,8 @@ notify = "all"
 
 [sidebar]
 default_open = false
+session_format = "{session_index}:{session_name}"
+window_format = "w{window_index} {window_name}\n  {agent}"
 
 [hooks]
 session_created = "echo created"
@@ -242,6 +256,14 @@ C-w = "window-list"
         assert_eq!(config.status.foreground.as_deref(), Some("#D8DEE9"));
         assert_eq!(config.agent.notify, super::AgentNotifyMode::All);
         assert!(!config.sidebar.default_open);
+        assert_eq!(
+            config.sidebar.session_format.as_deref(),
+            Some("{session_index}:{session_name}")
+        );
+        assert_eq!(
+            config.sidebar.window_format.as_deref(),
+            Some("w{window_index} {window_name}\n  {agent}")
+        );
         assert_eq!(
             config.hooks.session_created.as_deref(),
             Some("echo created")

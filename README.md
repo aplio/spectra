@@ -230,6 +230,8 @@ allow_passthrough = true
 
 [sidebar]
 default_open = true
+session_format = "{session_name}"
+window_format = "{window_label}"
 
 [status]
 format = "session {session_index}/{session_count}:{session_name} | window {window_index}/{window_count} | pane {pane_index}/{pane_count} | prefix {prefix}{lock}{zoom}{sync}{mouse}{message}"
@@ -282,6 +284,7 @@ Custom action name for bindings/command palette:
 - if `editor` is unset or blank, spectra uses `$EDITOR`; if both are missing, it defaults to `vi`
 - `[terminal].allow_passthrough` defaults to `true` and enables tmux-style DCS pass-through (`ESC Ptmux;...ESC \\`) to the outer terminal. OSC 8 hyperlinks are *not* forwarded raw: they are modelled per-cell and re-emitted by the renderer aligned with the frame, so a guest whose hyperlink open and close arrive in separate output bursts can never leave the outer terminal stuck in an open-link (underlined) state
 - `[sidebar].default_open` defaults to `true` and controls whether the window-tree sidebar is shown on session start; toggle it at runtime with the `side-window-tree` action
+- `[sidebar].session_format` / `[sidebar].window_format` control the sidebar row content with `{token}` placeholders, like `[status].format`; a `\n` in the format splits the entry into multiple sidebar lines (the selection highlight covers all of them, and clicking any line focuses the window). See "Sidebar format tokens" below
 - `[agent].notify` sends an OSC 9 desktop notification (for example `spectra: claude blocked (pane 3)`) to every attached client's host terminal when a pane's AI agent changes state: `"off"` never notifies, `"blocked"` (default) notifies when an agent enters `blocked`, `"all"` also notifies when it becomes `done` (unseen idle). The currently focused pane never notifies, and each pane notifies at most once per state until the state changes away and back. Requires a host terminal that understands OSC 9 notifications (ghostty, iTerm2, WezTerm)
 
 ## Data storage
@@ -365,6 +368,16 @@ Status format tokens:
 Status style defaults:
 - `[status].background = "#2E3440"`
 - `[status].foreground = "#D8DEE9"`
+
+Sidebar format tokens (`[sidebar].session_format`, default `{session_name}`):
+- `{session_index}` `{session_name}` `{session_id}` `{window_count}`
+
+Sidebar format tokens (`[sidebar].window_format`, default `{window_label}`):
+- `{window_label}` — the classic row label: `w2`, or `w2:name` when the window has a (manual or auto) name
+- `{window_index}` `{window_name}` `{window_id}` `{pane_count}`
+- `{agent}` — worst agent display state across the window's panes (`blocked` > `working` > `done` > `idle`), empty when no agent; the colored agent dot is drawn on the first line regardless of the format
+- `{session_index}` `{session_name}`
+- a `\n` splits the entry into multiple sidebar lines, for example `window_format = "w{window_index} {window_name}\n  {pane_count} panes"`
 
 Hook events (`[hooks]`) run via `/bin/sh -lc` with env context:
 - `SPECTRA_HOOK_EVENT`

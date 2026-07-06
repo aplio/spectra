@@ -23,8 +23,8 @@ use crate::storage::DataStore;
 
 use super::{
     API_EVENT_QUEUE_MAX, AgentTracking, App, AppSignal, AttachTarget, InputMode, ManagedSession,
-    REPORTED_AGENT_TTL, RenameTarget, RuntimeUiConfig, TreeRowKind, is_closed_pane_error,
-    session_id_for,
+    REPORTED_AGENT_TTL, RenameTarget, RuntimeUiConfig, SidebarFormats, TreeRowKind,
+    is_closed_pane_error, session_id_for,
 };
 
 type RecordedWrites = Arc<Mutex<Vec<(usize, Vec<u8>)>>>;
@@ -312,6 +312,7 @@ fn build_app_for_resize_test() -> App {
         key_template: KeyMapper::new(),
         status_format: super::DEFAULT_STATUS_FORMAT.to_string(),
         status_style: super::default_status_style(),
+        sidebar_formats: SidebarFormats::default(),
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
@@ -435,6 +436,7 @@ fn build_app_with_history() -> App {
         key_template: KeyMapper::new(),
         status_format: super::DEFAULT_STATUS_FORMAT.to_string(),
         status_style: super::default_status_style(),
+        sidebar_formats: SidebarFormats::default(),
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
@@ -551,6 +553,7 @@ fn build_app_with_write_behavior(behavior: WriteBehavior) -> App {
         key_template: KeyMapper::new(),
         status_format: super::DEFAULT_STATUS_FORMAT.to_string(),
         status_style: super::default_status_style(),
+        sidebar_formats: SidebarFormats::default(),
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
@@ -624,6 +627,7 @@ fn build_app_with_close_on_write_behavior(behavior: CloseOnWriteBehavior) -> App
         key_template: KeyMapper::new(),
         status_format: super::DEFAULT_STATUS_FORMAT.to_string(),
         status_style: super::default_status_style(),
+        sidebar_formats: SidebarFormats::default(),
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
@@ -736,6 +740,7 @@ fn build_recording_app_one_session() -> (App, RecordedWrites) {
         key_template: KeyMapper::new(),
         status_format: super::DEFAULT_STATUS_FORMAT.to_string(),
         status_style: super::default_status_style(),
+        sidebar_formats: SidebarFormats::default(),
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
@@ -830,6 +835,7 @@ fn build_recording_app_with_history() -> (App, RecordedWrites) {
         key_template: KeyMapper::new(),
         status_format: super::DEFAULT_STATUS_FORMAT.to_string(),
         status_style: super::default_status_style(),
+        sidebar_formats: SidebarFormats::default(),
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
@@ -902,6 +908,7 @@ fn build_recording_app_with_output(output: Vec<Vec<u8>>) -> (App, RecordedWrites
         key_template: KeyMapper::new(),
         status_format: super::DEFAULT_STATUS_FORMAT.to_string(),
         status_style: super::default_status_style(),
+        sidebar_formats: SidebarFormats::default(),
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
@@ -996,6 +1003,7 @@ fn build_recording_app_multi_session() -> (App, RecordedWrites) {
         key_template: KeyMapper::new(),
         status_format: super::DEFAULT_STATUS_FORMAT.to_string(),
         status_style: super::default_status_style(),
+        sidebar_formats: SidebarFormats::default(),
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
@@ -1106,6 +1114,7 @@ fn build_editor_command_app() -> (App, RecordedSpawnConfigs, BackendClosedFlags)
         key_template: KeyMapper::new(),
         status_format: super::DEFAULT_STATUS_FORMAT.to_string(),
         status_style: super::default_status_style(),
+        sidebar_formats: SidebarFormats::default(),
         hooks: crate::config::HooksConfig::default(),
         editor_command: Some("vim".to_string()),
         agent_notify: crate::config::AgentNotifyMode::default(),
@@ -1214,6 +1223,7 @@ fn restore_from_runtime_state_recovers_multi_session_layout_and_focus() {
             keys: app.view.keys.clone(),
             mouse_enabled: app.mouse_enabled,
             status_format: app.status_format.clone(),
+            sidebar_formats: app.sidebar_formats.clone(),
             status_style: app.status_style,
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
@@ -1299,6 +1309,7 @@ fn restore_from_runtime_state_returns_none_on_corrupt_json() {
             keys: app.view.keys.clone(),
             mouse_enabled: app.mouse_enabled,
             status_format: app.status_format.clone(),
+            sidebar_formats: app.sidebar_formats.clone(),
             status_style: app.status_style,
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
@@ -1330,6 +1341,7 @@ fn restore_from_runtime_state_honors_sidebar_default_open() {
             keys: app.view.keys.clone(),
             mouse_enabled: app.mouse_enabled,
             status_format: app.status_format.clone(),
+            sidebar_formats: app.sidebar_formats.clone(),
             status_style: app.status_style,
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
@@ -1366,6 +1378,7 @@ fn restore_from_runtime_state_returns_none_on_invalid_snapshot() {
             keys: app.view.keys.clone(),
             mouse_enabled: app.mouse_enabled,
             status_format: app.status_format.clone(),
+            sidebar_formats: app.sidebar_formats.clone(),
             status_style: app.status_style,
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
@@ -1744,6 +1757,7 @@ fn restore_from_runtime_state_restores_client_focus_profiles() {
             keys: app.view.keys.clone(),
             mouse_enabled: app.mouse_enabled,
             status_format: app.status_format.clone(),
+            sidebar_formats: app.sidebar_formats.clone(),
             status_style: app.status_style,
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
@@ -1783,6 +1797,7 @@ fn attach_target_overrides_restored_profile_for_client() {
             keys: app.view.keys.clone(),
             mouse_enabled: app.mouse_enabled,
             status_format: app.status_format.clone(),
+            sidebar_formats: app.sidebar_formats.clone(),
             status_style: app.status_style,
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
@@ -2812,12 +2827,12 @@ fn side_window_tree_overlay_marks_selected_window_with_gt_prefix() {
         side.entries,
         vec![
             crate::ui::render::SideTreeEntry {
-                label: session_name,
+                lines: vec![session_name],
                 indicator: None,
                 is_header: true,
             },
             crate::ui::render::SideTreeEntry {
-                label: "w1".to_string(),
+                lines: vec!["w1".to_string()],
                 indicator: None,
                 is_header: false,
             }
@@ -2851,7 +2866,7 @@ fn side_window_tree_spans_all_sessions_with_headers() {
     let rows: Vec<(&str, bool)> = side
         .entries
         .iter()
-        .map(|entry| (entry.label.as_str(), entry.is_header))
+        .map(|entry| (entry.lines[0].as_str(), entry.is_header))
         .collect();
     assert_eq!(
         rows,
@@ -2866,6 +2881,75 @@ fn side_window_tree_spans_all_sessions_with_headers() {
     );
     // alpha's focused window (w2) is the third row.
     assert_eq!(side.selected, 2);
+}
+
+#[test]
+fn sidebar_formats_expand_tokens_and_split_multi_line_rows() {
+    let mut app = build_app_for_resize_test();
+    app.sidebar_formats = SidebarFormats {
+        session: "s{session_index} {session_name} ({window_count}w)".to_string(),
+        window: "w{window_index} {window_name}\n  {pane_count}p".to_string(),
+    };
+    let window_id = app
+        .current_session()
+        .focused_window_id()
+        .expect("focused window id");
+    app.sessions[0]
+        .window_names
+        .insert(window_id, "build".to_string());
+    app.view.side_window_tree_open = true;
+
+    let session_name = app.current_session().session_name().to_string();
+    let side = app.side_window_tree_overlay().expect("sidebar overlay");
+    assert_eq!(
+        side.entries[0].lines,
+        vec![format!("s1 {session_name} (1w)")]
+    );
+    assert_eq!(
+        side.entries[1].lines,
+        vec!["w1 build".to_string(), "  1p".to_string()]
+    );
+}
+
+#[test]
+fn sidebar_window_label_token_matches_legacy_default() {
+    let mut app = build_app_for_resize_test();
+    app.view.side_window_tree_open = true;
+
+    // Unnamed window: bare `w1`.
+    let side = app.side_window_tree_overlay().expect("sidebar overlay");
+    assert_eq!(side.entries[1].lines, vec!["w1".to_string()]);
+
+    // Named window: `w1:name`.
+    let window_id = app
+        .current_session()
+        .focused_window_id()
+        .expect("focused window id");
+    app.sessions[0]
+        .window_names
+        .insert(window_id, "build".to_string());
+    let side = app.side_window_tree_overlay().expect("sidebar overlay");
+    assert_eq!(side.entries[1].lines, vec!["w1:build".to_string()]);
+}
+
+#[test]
+fn side_window_tree_click_on_any_line_of_multi_line_entry_hits_window() {
+    let mut app = build_app_for_resize_test();
+    app.mouse_enabled = true;
+    app.sidebar_formats.window = "w{window_index}\n  {pane_count} panes".to_string();
+    app.current_session_mut()
+        .new_window(80, 24)
+        .expect("create second window");
+    app.current_session_mut()
+        .focus_window_number(1)
+        .expect("focus first window");
+    app.view.side_window_tree_open = true;
+
+    // y=1 header, w1 spans y=2..3, w2 spans y=4..5; the second line of a
+    // window entry must resolve to that window.
+    app.handle_mouse_event(mouse_event(MouseEventKind::Down(MouseButton::Left), 1, 5))
+        .expect("click second line of w2");
+    assert_eq!(app.current_session().focused_window_number(), Some(2));
 }
 
 #[test]

@@ -527,6 +527,7 @@ impl App {
             .clone()
             .unwrap_or_else(|| DEFAULT_STATUS_FORMAT.to_string());
         self.status_style = status_style_from_config(&loaded.status);
+        self.sidebar_formats = SidebarFormats::from_config(&loaded.sidebar);
         self.hooks = loaded.hooks.clone();
         self.editor_command = normalize_editor_command(loaded.editor.clone());
         self.agent_notify = loaded.agent.notify;

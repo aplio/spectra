@@ -129,6 +129,7 @@ pub struct App {
     key_template: KeyMapper,
     status_format: String,
     status_style: CellStyle,
+    sidebar_formats: SidebarFormats,
     hooks: config::HooksConfig,
     editor_command: Option<String>,
     agent_notify: config::AgentNotifyMode,
@@ -231,6 +232,7 @@ impl App {
             key_template: runtime_ui.keys,
             status_format: runtime_ui.status_format,
             status_style: runtime_ui.status_style,
+            sidebar_formats: runtime_ui.sidebar_formats,
             hooks: runtime_ui.hooks,
             editor_command: runtime_ui.editor_command,
             agent_notify: runtime_ui.agent_notify,
@@ -300,6 +302,7 @@ impl App {
             editor_command: normalize_editor_command(app_config.editor.clone()),
             agent_notify: app_config.agent.notify,
             sidebar_default_open: app_config.sidebar.default_open,
+            sidebar_formats: SidebarFormats::from_config(&app_config.sidebar),
         };
 
         Ok(AppBootstrap {
@@ -424,6 +427,7 @@ impl App {
             key_template: runtime_ui.keys,
             status_format: runtime_ui.status_format,
             status_style: runtime_ui.status_style,
+            sidebar_formats: runtime_ui.sidebar_formats,
             hooks: runtime_ui.hooks,
             editor_command: runtime_ui.editor_command,
             agent_notify: runtime_ui.agent_notify,
