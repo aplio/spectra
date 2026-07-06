@@ -1240,7 +1240,10 @@ fn osc8_sequences_are_not_forwarded_to_passthrough_queue() {
     );
     assert_eq!(state.row_text(0), "link            ");
     // The link is still tracked per-cell for the renderer to emit.
-    assert_eq!(state.row_cells(0)[0].link.as_deref(), Some("https://example.com"));
+    assert_eq!(
+        state.row_cells(0)[0].link.as_deref(),
+        Some("https://example.com")
+    );
 }
 
 #[test]

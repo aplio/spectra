@@ -129,8 +129,7 @@ pub fn recv_with_fds(stream: &UnixStream, buf: &mut [u8]) -> io::Result<(usize, 
     msg.msg_controllen = CMSG_BUFFER_LEN as _;
 
     let received = loop {
-        let received =
-            unsafe { libc::recvmsg(stream.as_raw_fd(), &mut msg, RECV_CLOEXEC_FLAG) };
+        let received = unsafe { libc::recvmsg(stream.as_raw_fd(), &mut msg, RECV_CLOEXEC_FLAG) };
         if received < 0 {
             let err = io::Error::last_os_error();
             if err.kind() == io::ErrorKind::Interrupted {

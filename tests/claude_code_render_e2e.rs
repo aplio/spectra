@@ -91,7 +91,11 @@ fn output_enables_underline(bytes: &[u8]) -> bool {
         }
         let body = &bytes[start..end];
         i = end + 1;
-        if bytes[end] != b'm' || body.first().is_some_and(|b| matches!(b, b'<' | b'=' | b'>' | b'?')) {
+        if bytes[end] != b'm'
+            || body
+                .first()
+                .is_some_and(|b| matches!(b, b'<' | b'=' | b'>' | b'?'))
+        {
             continue;
         }
         let params = std::str::from_utf8(body).expect("CSI params are ASCII");

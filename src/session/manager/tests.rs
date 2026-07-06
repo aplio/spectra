@@ -247,13 +247,9 @@ fn osc8_is_not_forwarded_to_host_passthrough() {
     let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
     let bytes = b"\x1b]8;;https://example.com\x07link\x1b]8;;\x07".to_vec();
 
-    let mut session = SessionManager::with_factory(
-        options,
-        Arc::new(StaticOutputFactory { bytes }),
-        80,
-        24,
-    )
-    .expect("create passthrough-enabled session");
+    let mut session =
+        SessionManager::with_factory(options, Arc::new(StaticOutputFactory { bytes }), 80, 24)
+            .expect("create passthrough-enabled session");
     assert!(session.allow_passthrough());
     assert!(session.poll_output(), "expected pane output");
     assert!(
