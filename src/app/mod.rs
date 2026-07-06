@@ -9,6 +9,7 @@ mod copy_mode;
 pub mod handoff;
 mod hooks;
 mod input;
+mod keybindings;
 mod persistence;
 mod plugins;
 mod render_snapshot;

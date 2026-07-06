@@ -386,6 +386,48 @@ impl App {
         })
     }
 
+    fn keybindings_overlay(&self, state: &KeybindingsState) -> crate::ui::render::SystemOverlay {
+        let candidates = Self::keybinding_candidates(state);
+        let selected = state.selected.min(candidates.len().saturating_sub(1));
+        let key_width = candidates
+            .iter()
+            .filter_map(|&index| state.rows.get(index))
+            .map(|row| row.keys.chars().count())
+            .max()
+            .unwrap_or(0)
+            .min(18);
+        let candidate_labels = candidates
+            .iter()
+            .filter_map(|&index| state.rows.get(index))
+            .map(|row| format!("{:<key_width$}  {}", row.keys, row.description))
+            .collect::<Vec<_>>();
+        let preview_lines = candidates
+            .get(selected)
+            .and_then(|&index| state.rows.get(index))
+            .map(|row| {
+                vec![
+                    format!("key : {}", row.keys),
+                    format!("does: {}", row.description),
+                    String::new(),
+                    format!("prefix key: {}", self.view.keys.prefix_key_display()),
+                    "j/k or arrows move, / filter, Esc/q close".to_string(),
+                ]
+            })
+            .unwrap_or_else(|| vec!["no shortcuts matched".to_string()]);
+
+        crate::ui::render::SystemOverlay {
+            title: "keys".to_string(),
+            query: state.query_input.text.clone(),
+            query_cursor_pos: state.query_input.cursor,
+            query_active: state.query_active,
+            candidates: candidate_labels,
+            selected,
+            selected_cursor_pos: None,
+            preview_lines,
+            preview_from_tail: false,
+        }
+    }
+
     pub(super) fn system_overlay(&self) -> Option<crate::ui::render::SystemOverlay> {
         match &self.view.input_mode {
             InputMode::RenameTreeItem {
@@ -425,6 +467,7 @@ impl App {
                     preview_from_tail: false,
                 })
             }
+            InputMode::Keybindings { state } => Some(self.keybindings_overlay(state)),
             InputMode::ConfirmDelete { label, .. } => Some(crate::ui::render::SystemOverlay {
                 title: "confirm delete".to_string(),
                 query: String::new(),
@@ -489,6 +532,16 @@ impl App {
             }
             InputMode::PeekAllWindows { .. } => {
                 return "peek all panes: any key exits and restores focus".to_string();
+            }
+            InputMode::Keybindings { state } => {
+                let mode = if state.query_active {
+                    "filter"
+                } else {
+                    "browse"
+                };
+                return format!(
+                    "keybindings ({mode}): j/k or Up/Down move, / filter, Ctrl+n/p nav, Enter/Esc leave filter, Esc/q close"
+                );
             }
             InputMode::Normal => {}
         }

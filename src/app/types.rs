@@ -177,6 +177,9 @@ pub(super) enum InputMode {
     PeekAllWindows {
         state: PeekAllWindowsState,
     },
+    Keybindings {
+        state: KeybindingsState,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -234,6 +237,26 @@ pub(super) struct CommandPaletteState {
 pub(super) struct CommandPaletteContext {
     pub locked_input: bool,
     pub cursor_mode_active: bool,
+}
+
+/// One row of the keyboard-shortcut cheat sheet: a key display and what it does.
+#[derive(Debug, Clone)]
+pub(super) struct KeybindingRow {
+    pub keys: String,
+    pub description: String,
+}
+
+/// State for the `prefix + ?` keyboard-shortcut cheat sheet overlay.
+///
+/// `rows` is the full binding list captured when the overlay opens. Navigation
+/// is the default; pressing `/` activates the filter, mirroring the tree popup.
+/// `selected` indexes the currently visible (filtered) candidate list.
+#[derive(Debug, Clone, Default)]
+pub(super) struct KeybindingsState {
+    pub rows: Vec<KeybindingRow>,
+    pub query_input: TextInput,
+    pub query_active: bool,
+    pub selected: usize,
 }
 
 #[derive(Debug, Clone)]

@@ -277,6 +277,7 @@ Custom action name for bindings/command palette:
 - `focus-next-pane` / `focus-prev-pane` (also accepts `focus-previous-pane`)
 - `enter-cursor-mode` / `leave-cursor-mode` (`copy-mode` remains an alias of `enter-cursor-mode`)
 - `side-window-tree` / `toggle-side-window-tree`
+- `show-keybindings` / `keybindings` / `list-keys` / `help` (opens the keyboard-shortcut cheat sheet)
 - `next-window` / `prev-window` remain available for custom bindings and command palette usage
 - if `editor` is unset or blank, spectra uses `$EDITOR`; if both are missing, it defaults to `vi`
 - `[terminal].allow_passthrough` defaults to `true` and enables tmux-style DCS pass-through (`ESC Ptmux;...ESC \\`) to the outer terminal. OSC 8 hyperlinks are *not* forwarded raw: they are modelled per-cell and re-emitted by the renderer aligned with the frame, so a guest whose hyperlink open and close arrive in separate output bursts can never leave the outer terminal stuck in an open-link (underlined) state
@@ -312,6 +313,7 @@ Global data files:
 - prefix `c` create new window
 - prefix `n` create new session
 - prefix `p` open command palette (fzf-style command filter + Enter to execute)
+- prefix `?` open the keyboard-shortcut cheat sheet (lists every active binding; `/` filters, `j`/`k` or arrows move, `Esc`/`q` closes)
 - prefix `r` reload config (`source-file` default path)
 - prefix `z` toggle zoom for active pane in current window
 - prefix `S` toggle synchronize-panes for current window
@@ -327,7 +329,7 @@ Global data files:
 - side window tree state is per window, and the current selected window row is rendered with `>` + reverse highlight
 - tree popup keys: `/` enters query edit focus; in query focus use `Left`/`Right`, `Ctrl+f/b/a/e`, `Ctrl+Left/Right`, `Ctrl+w/k/u` to edit query
 - tree popup keys: `Down` (or `Ctrl+n`/`Ctrl+j`) from query focus enters candidate focus at the first match; `Ctrl+p` also switches to candidate focus and moves selection up
-- tree popup keys: in candidate focus, `Up`/`Down` move selection, `Left`/`Right` (or `Shift+Tab`/`Tab`) collapse-expand, `Up` on first candidate returns to query focus
+- tree popup keys: in candidate focus, `Up`/`Down` (or `j`/`k`) move selection, `Left`/`Right` (or `h`/`l`, `Shift+Tab`/`Tab`) collapse-expand, `Up` on first candidate returns to query focus; `h/j/k/l` only navigate outside query focus and type into the filter while it is active
 - tree popup keys: `Enter` select, `r` rename selected session/window/pane, `Esc` leaves query focus first and then closes popup
 - prefix `$` rename current session
 - prefix `Ctrl+s` save current layout

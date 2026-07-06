@@ -46,8 +46,67 @@ pub enum CommandAction {
     OpenConfigInEditor,
     EnterLockMode,
     LeaveLockMode,
+    /// Open the keyboard-shortcut cheat sheet overlay.
+    ShowKeybindings,
     /// Run an arbitrary shell command bound via a `run:` binding value.
     RunShell(String),
+}
+
+fn direction_word(direction: Direction) -> &'static str {
+    match direction {
+        Direction::Left => "left",
+        Direction::Down => "down",
+        Direction::Up => "up",
+        Direction::Right => "right",
+    }
+}
+
+impl CommandAction {
+    /// Human-readable description shown in the keybinding cheat sheet.
+    pub fn help_label(&self) -> String {
+        match self {
+            Self::Split(SplitAxis::Vertical) => "Split pane vertically".to_string(),
+            Self::Split(SplitAxis::Horizontal) => "Split pane horizontally".to_string(),
+            Self::Focus(direction) => format!("Focus {} pane", direction_word(*direction)),
+            Self::FocusNextPane => "Focus next pane".to_string(),
+            Self::FocusPrevPane => "Focus previous pane".to_string(),
+            Self::ClosePane => "Close pane".to_string(),
+            Self::Quit => "Quit".to_string(),
+            Self::DetachClient => "Detach client".to_string(),
+            Self::SystemTree => "Open tree (sessions/windows/panes)".to_string(),
+            Self::SideWindowTree => "Toggle side window tree".to_string(),
+            Self::PeekAllWindows => "Peek all panes in session".to_string(),
+            Self::NextWindow => "Next window".to_string(),
+            Self::PrevWindow => "Previous window".to_string(),
+            Self::SelectWindow(number) => format!("Select window {number}"),
+            Self::Resize(direction) => format!("Resize pane {}", direction_word(*direction)),
+            Self::SwapPrevWindow => "Swap with previous window".to_string(),
+            Self::SwapNextWindow => "Swap with next window".to_string(),
+            Self::SaveLayout => "Save layout".to_string(),
+            Self::WriteLog => "Write log entry".to_string(),
+            Self::WriteScrollback => "Write scrollback to file".to_string(),
+            Self::OpenPaneBufferInEditor => "Open pane buffer in editor".to_string(),
+            Self::RenameSession => "Rename session".to_string(),
+            Self::NextSession => "Next session".to_string(),
+            Self::PrevSession => "Previous session".to_string(),
+            Self::NewSession => "New session".to_string(),
+            Self::NewWindow => "New window".to_string(),
+            Self::EnterCursorMode => "Enter cursor mode".to_string(),
+            Self::LeaveCursorMode => "Leave cursor mode".to_string(),
+            Self::CommandPalette => "Open command palette".to_string(),
+            Self::ToggleZoom => "Toggle zoom".to_string(),
+            Self::ToggleSynchronizePanes => "Toggle synchronize panes".to_string(),
+            Self::ReloadConfig => "Reload config".to_string(),
+            Self::CreateDefaultConfig => "Create default config".to_string(),
+            Self::KillSession => "Kill session".to_string(),
+            Self::CloseWindow => "Close window".to_string(),
+            Self::OpenConfigInEditor => "Open config in editor".to_string(),
+            Self::EnterLockMode => "Enter lock mode".to_string(),
+            Self::LeaveLockMode => "Leave lock mode".to_string(),
+            Self::ShowKeybindings => "Show keyboard shortcuts".to_string(),
+            Self::RunShell(command) => format!("Run shell: {command}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,6 +221,33 @@ impl KeyMapper {
         canonical_key_event(&key)
             .and_then(|key_name| self.bindings.global_bindings.get(&key_name).cloned())
     }
+
+    /// Display name of the configured prefix key (e.g. `C-j`).
+    pub fn prefix_key_display(&self) -> &str {
+        &self.bindings.prefix_key
+    }
+
+    /// All active bindings as `(key display, description)` pairs for the
+    /// keyboard-shortcut cheat sheet. Prefix bindings are prefixed with the
+    /// prefix key; global bindings are shown as-is. Sorted by description so
+    /// related actions group together.
+    pub fn keybinding_help_rows(&self) -> Vec<(String, String)> {
+        let prefix = &self.bindings.prefix_key;
+        let mut rows: Vec<(String, String)> = self
+            .bindings
+            .prefix_bindings
+            .iter()
+            .map(|(key, action)| (format!("{prefix} {key}"), action.help_label()))
+            .chain(
+                self.bindings
+                    .global_bindings
+                    .iter()
+                    .map(|(key, action)| (key.clone(), action.help_label())),
+            )
+            .collect();
+        rows.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        rows
+    }
 }
 
 impl CommandAction {
@@ -221,6 +307,7 @@ fn default_prefix_bindings() -> HashMap<String, CommandAction> {
     map.insert("(".to_string(), CommandAction::PrevSession);
     map.insert(")".to_string(), CommandAction::NextSession);
     map.insert("s".to_string(), CommandAction::SystemTree);
+    map.insert("?".to_string(), CommandAction::ShowKeybindings);
 
     for digit in 0..=9 {
         let label = digit.to_string();
@@ -337,6 +424,9 @@ fn parse_action(spec: &str) -> Option<CommandAction> {
         "open-config-in-editor" | "edit-config" => Some(CommandAction::OpenConfigInEditor),
         "enter-lock-mode" | "lock" => Some(CommandAction::EnterLockMode),
         "leave-lock-mode" | "unlock" => Some(CommandAction::LeaveLockMode),
+        "show-keybindings" | "keybindings" | "list-keys" | "show-help" | "help" => {
+            Some(CommandAction::ShowKeybindings)
+        }
 
         _ => parse_select_window(&normalized),
     }
@@ -728,6 +818,43 @@ mod tests {
         mapper.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
         let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
         assert_eq!(action, InputAction::Command(CommandAction::NewWindow));
+    }
+
+    #[test]
+    fn prefix_question_shows_keybindings() {
+        let mut mapper = KeyMapper::new();
+        mapper.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT));
+        assert_eq!(action, InputAction::Command(CommandAction::ShowKeybindings));
+    }
+
+    #[test]
+    fn show_keybindings_action_names_parse() {
+        for name in ["show-keybindings", "keybindings", "list-keys", "help", "show-help"] {
+            assert_eq!(
+                parse_action(name),
+                Some(CommandAction::ShowKeybindings),
+                "`{name}` should parse to ShowKeybindings"
+            );
+        }
+    }
+
+    #[test]
+    fn keybinding_help_rows_include_prefixed_key_and_label() {
+        let mapper = KeyMapper::new();
+        let rows = mapper.keybinding_help_rows();
+        let prefix = mapper.prefix_key_display();
+        assert!(
+            rows.iter().any(|(keys, description)| {
+                keys == &format!("{prefix} ?") && description == "Show keyboard shortcuts"
+            }),
+            "cheat sheet should list the prefixed `?` binding with its label"
+        );
+        // Rows are sorted by description so related actions group together.
+        let descriptions: Vec<&String> = rows.iter().map(|(_, d)| d).collect();
+        let mut sorted = descriptions.clone();
+        sorted.sort();
+        assert_eq!(descriptions, sorted, "rows must be sorted by description");
     }
 
     #[test]

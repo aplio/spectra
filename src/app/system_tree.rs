@@ -207,6 +207,52 @@ impl App {
                                     InputMode::SystemTree { state }
                                 }
                             }
+                            KeyCode::Char('j')
+                                if !state.query_active
+                                    && !key
+                                        .modifiers
+                                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                            {
+                                if !candidates.is_empty() {
+                                    Self::tree_move_down(&mut state, &candidates);
+                                }
+                                InputMode::SystemTree { state }
+                            }
+                            KeyCode::Char('k')
+                                if !state.query_active
+                                    && !key
+                                        .modifiers
+                                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                            {
+                                if !candidates.is_empty() {
+                                    Self::tree_move_up(&mut state, &candidates);
+                                }
+                                InputMode::SystemTree { state }
+                            }
+                            KeyCode::Char('h')
+                                if !state.query_active
+                                    && !key
+                                        .modifiers
+                                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                            {
+                                if !candidates.is_empty() {
+                                    Self::tree_move_left(&mut state, &rows);
+                                    state = self.normalize_system_tree_state(state);
+                                }
+                                InputMode::SystemTree { state }
+                            }
+                            KeyCode::Char('l')
+                                if !state.query_active
+                                    && !key
+                                        .modifiers
+                                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                            {
+                                if !candidates.is_empty() {
+                                    Self::tree_move_right(&mut state, &rows);
+                                    state = self.normalize_system_tree_state(state);
+                                }
+                                InputMode::SystemTree { state }
+                            }
                             KeyCode::Char(ch)
                                 if !state.query_active
                                     && ch.eq_ignore_ascii_case(&'r')
