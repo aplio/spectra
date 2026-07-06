@@ -228,6 +228,9 @@ enabled = false
 [terminal]
 allow_passthrough = true
 
+[sidebar]
+default_open = true
+
 [status]
 format = "session {session_index}/{session_count}:{session_name} | window {window_index}/{window_count} | pane {pane_index}/{pane_count} | prefix {prefix}{lock}{zoom}{sync}{mouse}{message}"
 background = "#2E3440"
@@ -277,6 +280,7 @@ Custom action name for bindings/command palette:
 - `next-window` / `prev-window` remain available for custom bindings and command palette usage
 - if `editor` is unset or blank, spectra uses `$EDITOR`; if both are missing, it defaults to `vi`
 - `[terminal].allow_passthrough` defaults to `true` and enables tmux-style DCS pass-through (`ESC Ptmux;...ESC \\`) to the outer terminal. OSC 8 hyperlinks are *not* forwarded raw: they are modelled per-cell and re-emitted by the renderer aligned with the frame, so a guest whose hyperlink open and close arrive in separate output bursts can never leave the outer terminal stuck in an open-link (underlined) state
+- `[sidebar].default_open` defaults to `true` and controls whether the window-tree sidebar is shown on session start; toggle it at runtime with the `side-window-tree` action
 - `[agent].notify` sends an OSC 9 desktop notification (for example `spectra: claude blocked (pane 3)`) to every attached client's host terminal when a pane's AI agent changes state: `"off"` never notifies, `"blocked"` (default) notifies when an agent enters `blocked`, `"all"` also notifies when it becomes `done` (unseen idle). The currently focused pane never notifies, and each pane notifies at most once per state until the state changes away and back. Requires a host terminal that understands OSC 9 notifications (ghostty, iTerm2, WezTerm)
 
 ## Data storage

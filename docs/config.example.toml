@@ -18,6 +18,10 @@ enabled = false
 # tmux-compatible pass-through (DCS tmux;...ST) to the outer terminal.
 allow_passthrough = true
 
+[sidebar]
+# Show the window-tree sidebar by default on session start. (default: true)
+default_open = true
+
 [status]
 format = "session {session_index}/{session_count}:{session_name} | window {window_index}/{window_count} | pane {pane_index}/{pane_count} | prefix {prefix}{lock}{zoom}{sync}{mouse}{message}"
 background = "#2E3440"

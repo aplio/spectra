@@ -25,6 +25,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub agent: AgentConfig,
     #[serde(default)]
+    pub sidebar: SidebarConfig,
+    #[serde(default)]
     pub hooks: HooksConfig,
     #[serde(default)]
     pub prefix_bindings: HashMap<String, String>,
@@ -97,6 +99,20 @@ pub enum AgentNotifyMode {
     All,
 }
 
+/// Behavior of the window-tree sidebar (the "side window tree" overlay).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SidebarConfig {
+    /// Whether the sidebar is shown by default on session start.
+    #[serde(default = "default_true")]
+    pub default_open: bool,
+}
+
+impl Default for SidebarConfig {
+    fn default() -> Self {
+        Self { default_open: true }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct HooksConfig {
     pub session_created: Option<String>,
@@ -159,6 +175,7 @@ mod tests {
         assert!(config.status.background.is_none());
         assert!(config.status.foreground.is_none());
         assert_eq!(config.agent.notify, super::AgentNotifyMode::Blocked);
+        assert!(config.sidebar.default_open);
         assert!(config.hooks.session_created.is_none());
         assert!(config.prefix_bindings.is_empty());
         assert!(config.global_bindings.is_empty());
@@ -193,6 +210,9 @@ foreground = "#D8DEE9"
 [agent]
 notify = "all"
 
+[sidebar]
+default_open = false
+
 [hooks]
 session_created = "echo created"
 config_reloaded = "echo reloaded"
@@ -221,6 +241,7 @@ C-w = "window-list"
         assert_eq!(config.status.background.as_deref(), Some("#2E3440"));
         assert_eq!(config.status.foreground.as_deref(), Some("#D8DEE9"));
         assert_eq!(config.agent.notify, super::AgentNotifyMode::All);
+        assert!(!config.sidebar.default_open);
         assert_eq!(
             config.hooks.session_created.as_deref(),
             Some("echo created")
