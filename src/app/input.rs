@@ -529,6 +529,7 @@ impl App {
                 self.handle_command_palette_mode_key(state, key, &mut signal)
             }
             InputMode::PeekAllWindows { state } => self.handle_peek_all_windows_mode_key(state),
+            InputMode::Keybindings { state } => self.handle_keybindings_mode_key(state, key),
             InputMode::Normal => InputMode::Normal,
         };
         Ok(signal)
@@ -599,6 +600,20 @@ impl App {
                 Ok(AppSignal::None)
             }
             InputMode::PeekAllWindows { .. } => Ok(AppSignal::None),
+            InputMode::Keybindings { state } => {
+                if state.query_active {
+                    let text = text.trim_end_matches(['\r', '\n']).trim_end_matches('\0');
+                    if state.query_input.insert_text(text) {
+                        let count = Self::keybinding_candidates(state).len();
+                        if count == 0 {
+                            state.selected = 0;
+                        } else if state.selected >= count {
+                            state.selected = count - 1;
+                        }
+                    }
+                }
+                Ok(AppSignal::None)
+            }
             InputMode::Normal => {
                 if self.current_session().active_window_synchronize_panes() {
                     // Panes in a synchronized window can disagree on

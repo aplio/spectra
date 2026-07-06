@@ -204,6 +204,7 @@ impl App {
                 }
             }
             CommandAction::CommandPalette => self.open_command_palette(),
+            CommandAction::ShowKeybindings => self.open_keybindings(),
             CommandAction::NextWindow => {
                 if self.current_session_mut().focus_next_window().is_ok() {
                     self.apply_action_effects(ActionEffects::focus());

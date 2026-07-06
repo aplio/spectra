@@ -2181,6 +2181,27 @@ fn command_palette_includes_peek_all_windows() {
 }
 
 #[test]
+fn command_palette_includes_show_keybindings() {
+    let entries = App::command_palette_entries();
+    assert!(entries.iter().any(|entry| {
+        entry.id == "help.keybindings" && entry.action == CommandAction::ShowKeybindings
+    }));
+}
+
+#[test]
+fn command_palette_show_keybindings_opens_overlay() {
+    let mut app = build_app_for_resize_test();
+    open_command_palette(&mut app);
+    type_command_palette_query(&mut app, "keyboard shortcuts");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .expect("execute selected command");
+    assert!(
+        matches!(app.view.input_mode, InputMode::Keybindings { .. }),
+        "selecting the entry should open the cheat sheet directly from the palette"
+    );
+}
+
+#[test]
 fn command_palette_includes_enter_cursor_mode() {
     let entries = App::command_palette_entries();
     assert!(entries.iter().any(|entry| {
@@ -7569,4 +7590,147 @@ fn mouse_selection_over_wide_chars_copies_clean_text_for_remote_client() {
         crate::clipboard::osc52_sequence("日本語abc"),
         "wide-char continuation cells must not leak into the copied text"
     );
+}
+
+#[test]
+fn tree_hjkl_navigates_like_arrows() {
+    let mut app = build_app_for_resize_test();
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
+        .expect("enter prefix");
+    app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE))
+        .expect("open tree mode");
+
+    let InputMode::SystemTree { state } = &app.view.input_mode else {
+        panic!("expected system tree");
+    };
+    // Opening the tree parks the cursor on the first window row (index 1).
+    assert_eq!(state.cursor_row, 1);
+
+    // `k` moves up to the session row, mirroring the Up arrow.
+    app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE))
+        .expect("k moves up");
+    let InputMode::SystemTree { state } = &app.view.input_mode else {
+        panic!("expected system tree");
+    };
+    assert_eq!(state.cursor_row, 0);
+    let rows = app.system_tree_rows(state);
+    assert!(matches!(rows[0].kind, TreeRowKind::Session { .. }));
+
+    // `j` moves back down to the window row, mirroring the Down arrow.
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))
+        .expect("j moves down");
+    let InputMode::SystemTree { state } = &app.view.input_mode else {
+        panic!("expected system tree");
+    };
+    assert_eq!(state.cursor_row, 1);
+
+    // `h` collapses/ascends to the parent session, mirroring the Left arrow.
+    app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE))
+        .expect("h moves to parent");
+    let InputMode::SystemTree { state } = &app.view.input_mode else {
+        panic!("expected system tree");
+    };
+    assert_eq!(state.cursor_row, 0);
+
+    // `l` expands/descends into the first child, mirroring the Right arrow.
+    app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE))
+        .expect("l descends");
+    let InputMode::SystemTree { state } = &app.view.input_mode else {
+        panic!("expected system tree");
+    };
+    assert_eq!(state.cursor_row, 1);
+}
+
+#[test]
+fn tree_hjkl_types_into_filter_when_query_active() {
+    let mut app = build_app_for_resize_test();
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
+        .expect("enter prefix");
+    app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE))
+        .expect("open tree mode");
+    // Activate the filter, then `hjkl` must be treated as filter text rather
+    // than navigation.
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+        .expect("activate filter");
+    for ch in ['h', 'j', 'k', 'l'] {
+        app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE))
+            .expect("type filter char");
+    }
+
+    let InputMode::SystemTree { state } = &app.view.input_mode else {
+        panic!("expected system tree");
+    };
+    assert!(state.query_active);
+    assert_eq!(state.query_input.text, "hjkl");
+}
+
+#[test]
+fn prefix_question_opens_keybindings_overlay() {
+    let mut app = build_app_for_resize_test();
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
+        .expect("enter prefix");
+    app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE))
+        .expect("open keybindings overlay");
+
+    let InputMode::Keybindings { state } = &app.view.input_mode else {
+        panic!("expected keybindings overlay");
+    };
+    assert!(!state.rows.is_empty(), "cheat sheet should list bindings");
+    assert!(
+        state
+            .rows
+            .iter()
+            .any(|row| row.description == "Show keyboard shortcuts"),
+        "the `?` binding should appear in its own cheat sheet"
+    );
+    assert!(!state.query_active, "overlay starts in browse mode");
+}
+
+#[test]
+fn keybindings_overlay_filters_navigates_and_closes() {
+    let mut app = build_app_for_resize_test();
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
+        .expect("enter prefix");
+    app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE))
+        .expect("open keybindings overlay");
+
+    // `/` activates the filter; typing narrows the candidate list.
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+        .expect("activate filter");
+    for ch in "zoom".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE))
+            .expect("type filter");
+    }
+    let InputMode::Keybindings { state } = &app.view.input_mode else {
+        panic!("expected keybindings overlay");
+    };
+    assert!(state.query_active);
+    let matches = App::keybinding_candidates(state);
+    assert!(
+        matches
+            .iter()
+            .all(|&i| {
+                let row = &state.rows[i];
+                let hay = format!("{} {}", row.keys, row.description).to_lowercase();
+                hay.contains('z')
+            }),
+        "filter should only keep rows fuzzy-matching the query"
+    );
+
+    // Enter leaves the filter without closing the overlay.
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .expect("leave filter");
+    let InputMode::Keybindings { state } = &app.view.input_mode else {
+        panic!("expected keybindings overlay still open");
+    };
+    assert!(!state.query_active);
+
+    // `q` in browse mode closes the overlay.
+    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE))
+        .expect("close overlay");
+    assert!(matches!(app.view.input_mode, InputMode::Normal));
 }
