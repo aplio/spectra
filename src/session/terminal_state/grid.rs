@@ -1193,7 +1193,13 @@ impl Perform for TerminalGrid {
                     _ => crossterm::cursor::SetCursorStyle::DefaultUserShape,
                 };
             }
-            'm' => {
+            // SGR — attributes only when no private marker is present.
+            // xterm reuses the `m` final byte with markers for keyboard
+            // protocol controls: XTMODKEYS `CSI > Pp;Pv m` (sent by Claude
+            // Code as `CSI > 4;2 m`, which would otherwise read as SGR 4;2 =
+            // underline + dim and stick for the whole frame) and XTQMODKEYS
+            // `CSI ? Pp m`. Those must not touch the attribute state.
+            'm' if intermediates.is_empty() => {
                 self.apply_sgr(params);
             }
             _ => {}
