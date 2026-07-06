@@ -89,6 +89,13 @@ impl PtyPaneBackend {
 
 fn build_command(config: &PaneSpawnConfig) -> CommandBuilder {
     let mut command = CommandBuilder::new(&config.shell);
+    // Panes talk to spectra's own emulator (xterm-compatible with 24-bit
+    // color), so TERM must describe it rather than be inherited: when the
+    // server is auto-spawned without a TTY (e.g. via `--remote` over
+    // `ssh -T`), TERM is unset and pagers like less warn "terminal is not
+    // fully functional".
+    command.env("TERM", "xterm-256color");
+    command.env("COLORTERM", "truecolor");
     // SPECTRA is the nested-session detection marker; the SPECTRA_* triple
     // lets programs inside the pane (e.g. the Claude Code hook script) send
     // semantic state to the JSON-RPC API socket via `agent.report`.
@@ -433,6 +440,32 @@ mod tests {
         assert_eq!(
             command.get_env("SPECTRA").and_then(|value| value.to_str()),
             Some("1")
+        );
+    }
+
+    #[test]
+    fn pane_command_pins_term_to_emulator_capabilities() {
+        let config = PaneSpawnConfig {
+            shell: "/bin/bash".to_string(),
+            cwd: None,
+            command: vec![],
+            suppress_prompt_eol_marker: false,
+            cols: 80,
+            rows: 24,
+            pane_id: 7,
+            session_id: "main-1".to_string(),
+        };
+
+        let command = build_command(&config);
+        assert_eq!(
+            command.get_env("TERM").and_then(|value| value.to_str()),
+            Some("xterm-256color")
+        );
+        assert_eq!(
+            command
+                .get_env("COLORTERM")
+                .and_then(|value| value.to_str()),
+            Some("truecolor")
         );
     }
 
