@@ -36,6 +36,8 @@ pub enum CommandAction {
     NewWindow,
     EnterCursorMode,
     LeaveCursorMode,
+    /// Copy the active mouse text selection to the clipboard.
+    CopySelection,
     CommandPalette,
     ToggleZoom,
     ToggleSynchronizePanes,
@@ -93,6 +95,7 @@ impl CommandAction {
             Self::NewWindow => "New window".to_string(),
             Self::EnterCursorMode => "Enter cursor mode".to_string(),
             Self::LeaveCursorMode => "Leave cursor mode".to_string(),
+            Self::CopySelection => "Copy mouse selection".to_string(),
             Self::CommandPalette => "Open command palette".to_string(),
             Self::ToggleZoom => "Toggle zoom".to_string(),
             Self::ToggleSynchronizePanes => "Toggle synchronize panes".to_string(),
@@ -282,6 +285,7 @@ fn default_prefix_bindings() -> HashMap<String, CommandAction> {
     map.insert("n".to_string(), CommandAction::NewSession);
     map.insert("c".to_string(), CommandAction::NewWindow);
     map.insert("[".to_string(), CommandAction::EnterCursorMode);
+    map.insert("y".to_string(), CommandAction::CopySelection);
     map.insert("p".to_string(), CommandAction::CommandPalette);
     map.insert("z".to_string(), CommandAction::ToggleZoom);
     map.insert("S".to_string(), CommandAction::ToggleSynchronizePanes);
@@ -410,6 +414,7 @@ fn parse_action(spec: &str) -> Option<CommandAction> {
         "new-window" => Some(CommandAction::NewWindow),
         "copy-mode" | "enter-cursor-mode" | "cursor-mode" => Some(CommandAction::EnterCursorMode),
         "leave-cursor-mode" | "exit-cursor-mode" => Some(CommandAction::LeaveCursorMode),
+        "copy-selection" | "copy-mouse-selection" => Some(CommandAction::CopySelection),
         "command-palette" | "open-command-palette" => Some(CommandAction::CommandPalette),
         "toggle-zoom" | "zoom-toggle" => Some(CommandAction::ToggleZoom),
         "synchronize-panes" | "toggle-synchronize-panes" => {

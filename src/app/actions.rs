@@ -289,6 +289,8 @@ impl App {
                 }
             }
 
+            CommandAction::CopySelection => self.copy_active_text_selection(),
+
             CommandAction::SaveLayout => self.save_active_layout(),
             CommandAction::WriteLog => self.write_log("manual log event"),
             CommandAction::WriteScrollback => self.write_active_scrollback(),

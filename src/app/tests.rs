@@ -298,6 +298,7 @@ fn build_app_for_resize_test() -> App {
             locked_input: false,
             mouse_drag: None,
             text_selection: None,
+            click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
             cols: 80,
@@ -420,6 +421,7 @@ fn build_app_with_history() -> App {
             locked_input: false,
             mouse_drag: None,
             text_selection: None,
+            click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
             cols: 80,
@@ -535,6 +537,7 @@ fn build_app_with_write_behavior(behavior: WriteBehavior) -> App {
             locked_input: false,
             mouse_drag: None,
             text_selection: None,
+            click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
             cols: 80,
@@ -607,6 +610,7 @@ fn build_app_with_close_on_write_behavior(behavior: CloseOnWriteBehavior) -> App
             locked_input: false,
             mouse_drag: None,
             text_selection: None,
+            click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
             cols: 80,
@@ -718,6 +722,7 @@ fn build_recording_app_one_session() -> (App, RecordedWrites) {
             locked_input: false,
             mouse_drag: None,
             text_selection: None,
+            click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
             cols: 80,
@@ -811,6 +816,7 @@ fn build_recording_app_with_history() -> (App, RecordedWrites) {
             locked_input: false,
             mouse_drag: None,
             text_selection: None,
+            click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
             cols: 80,
@@ -882,6 +888,7 @@ fn build_recording_app_with_output(output: Vec<Vec<u8>>) -> (App, RecordedWrites
             locked_input: false,
             mouse_drag: None,
             text_selection: None,
+            click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
             cols: 80,
@@ -975,6 +982,7 @@ fn build_recording_app_multi_session() -> (App, RecordedWrites) {
             locked_input: false,
             mouse_drag: None,
             text_selection: None,
+            click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
             cols: 80,
@@ -1084,6 +1092,7 @@ fn build_editor_command_app() -> (App, RecordedSpawnConfigs, BackendClosedFlags)
             locked_input: false,
             mouse_drag: None,
             text_selection: None,
+            click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
             cols: 80,
@@ -5659,6 +5668,147 @@ fn mouse_selection_anchor_remains_fixed_while_scrolling_and_dragging() {
 }
 
 #[test]
+fn mouse_drag_release_keeps_selection_without_copying() {
+    let (mut app, _writes) = build_recording_app_with_output(vec![b"hello world".to_vec()]);
+    assert!(
+        app.current_session_mut().poll_output(),
+        "expected pane output"
+    );
+    app.mouse_enabled = true;
+
+    app.handle_mouse_event(mouse_event(MouseEventKind::Down(MouseButton::Left), 0, 0))
+        .expect("mouse down");
+    app.handle_mouse_event(mouse_event(MouseEventKind::Drag(MouseButton::Left), 4, 0))
+        .expect("mouse drag");
+    app.handle_mouse_event(mouse_event(MouseEventKind::Up(MouseButton::Left), 4, 0))
+        .expect("mouse up");
+
+    let sel = app
+        .view
+        .text_selection
+        .expect("selection must persist after mouse up");
+    assert!(!sel.dragging, "released selection must not be dragging");
+    assert_eq!((sel.start_col, sel.end_col), (0, 4));
+
+    // Typing invalidates the lingering selection and still reaches the pane.
+    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))
+        .expect("key press");
+    assert!(
+        app.view.text_selection.is_none(),
+        "key press must clear the completed selection"
+    );
+}
+
+#[test]
+fn plain_click_release_leaves_no_selection() {
+    let (mut app, _writes) = build_recording_app_with_output(vec![b"hello world".to_vec()]);
+    assert!(
+        app.current_session_mut().poll_output(),
+        "expected pane output"
+    );
+    app.mouse_enabled = true;
+
+    app.handle_mouse_event(mouse_event(MouseEventKind::Down(MouseButton::Left), 2, 0))
+        .expect("mouse down");
+    app.handle_mouse_event(mouse_event(MouseEventKind::Up(MouseButton::Left), 2, 0))
+        .expect("mouse up");
+
+    assert!(
+        app.view.text_selection.is_none(),
+        "a click without drag must not leave a selection"
+    );
+}
+
+#[test]
+fn double_click_selects_word_and_third_click_expands_to_line() {
+    let (mut app, _writes) = build_recording_app_with_output(vec![b"hello world".to_vec()]);
+    assert!(
+        app.current_session_mut().poll_output(),
+        "expected pane output"
+    );
+    app.mouse_enabled = true;
+
+    let click = |app: &mut App, col: u16| {
+        app.handle_mouse_event(mouse_event(MouseEventKind::Down(MouseButton::Left), col, 0))
+            .expect("mouse down");
+        app.handle_mouse_event(mouse_event(MouseEventKind::Up(MouseButton::Left), col, 0))
+            .expect("mouse up");
+    };
+
+    click(&mut app, 7);
+    click(&mut app, 7);
+    let sel = app.view.text_selection.expect("double click selects word");
+    assert_eq!(
+        (sel.start_col, sel.end_col),
+        (6, 10),
+        "double click must select the word under the cursor"
+    );
+    assert_eq!(sel.start_abs_row, sel.end_abs_row);
+
+    click(&mut app, 7);
+    let sel = app
+        .view
+        .text_selection
+        .expect("triple click keeps selection");
+    assert_eq!(
+        (sel.start_col, sel.end_col),
+        (0, 10),
+        "third click must expand the selection to the whole line"
+    );
+}
+
+#[test]
+fn double_click_on_single_char_word_keeps_selection_after_release() {
+    let (mut app, _writes) = build_recording_app_with_output(vec![b"a bc".to_vec()]);
+    assert!(
+        app.current_session_mut().poll_output(),
+        "expected pane output"
+    );
+    app.mouse_enabled = true;
+
+    for _ in 0..2 {
+        app.handle_mouse_event(mouse_event(MouseEventKind::Down(MouseButton::Left), 0, 0))
+            .expect("mouse down");
+        app.handle_mouse_event(mouse_event(MouseEventKind::Up(MouseButton::Left), 0, 0))
+            .expect("mouse up");
+    }
+
+    let sel = app
+        .view
+        .text_selection
+        .expect("single-cell word selection must survive mouse up");
+    assert_eq!((sel.start_col, sel.end_col), (0, 0));
+}
+
+#[test]
+fn expand_click_selection_walks_word_then_bracket_run_then_line() {
+    let cells: Vec<crate::session::terminal_state::StyledCell> = "foo(bar) baz"
+        .chars()
+        .map(|ch| crate::session::terminal_state::StyledCell {
+            ch,
+            ..Default::default()
+        })
+        .collect();
+
+    // Origin on 'a' in "bar".
+    let word = App::expand_click_selection(&cells, 5, None);
+    assert_eq!(word, Some((4, 6)), "first step selects the word");
+    let non_ws = App::expand_click_selection(&cells, 5, word);
+    assert_eq!(
+        non_ws,
+        Some((0, 7)),
+        "second step grows to the non-whitespace run"
+    );
+    let line = App::expand_click_selection(&cells, 5, non_ws);
+    assert_eq!(line, Some((0, 11)), "third step grows to the line");
+    assert_eq!(
+        App::expand_click_selection(&cells, 5, line),
+        None,
+        "nothing larger than the line exists"
+    );
+}
+
+#[test]
 fn scrolled_view_keeps_ansi_colors_from_scrollback() {
     let (mut app, _writes) = build_recording_app_with_output(colored_history_output_chunks());
     assert!(
@@ -7682,8 +7832,19 @@ fn mouse_selection_over_wide_chars_copies_clean_text_for_remote_client() {
     )
     .expect("mouse up");
 
+    assert!(
+        app.take_pending_clipboard_ansi_for_client(7).is_empty(),
+        "mouse up must not copy; it only completes the selection"
+    );
+
+    app.handle_action_for_client(7, CommandAction::CopySelection);
+
     let ansi = app.take_pending_clipboard_ansi_for_client(7);
-    assert_eq!(ansi.len(), 1, "selection should queue one clipboard frame");
+    assert_eq!(
+        ansi.len(),
+        1,
+        "copy action should queue one clipboard frame"
+    );
     assert_eq!(
         ansi[0],
         crate::clipboard::osc52_sequence("日本語abc"),
