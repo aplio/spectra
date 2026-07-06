@@ -324,6 +324,12 @@ fn default_prefix_bindings() -> HashMap<String, CommandAction> {
 
 fn default_global_bindings() -> HashMap<String, CommandAction> {
     let mut map = HashMap::new();
+    // Cmd+C copies the mouse selection. Reaches spectra only from terminals
+    // that report super-modified keys (kitty keyboard protocol) and forward
+    // cmd+c when they have no selection of their own (e.g. ghostty). With no
+    // active selection the key falls through to the pane (see
+    // `App::handle_key`).
+    map.insert("D-c".to_string(), CommandAction::CopySelection);
     map.insert("M-Left".to_string(), CommandAction::Focus(Direction::Left));
     map.insert("M-Down".to_string(), CommandAction::Focus(Direction::Down));
     map.insert("M-Up".to_string(), CommandAction::Focus(Direction::Up));
@@ -455,20 +461,26 @@ fn normalize_binding_key(spec: &str) -> Option<String> {
     let mut ctrl = false;
     let mut alt = false;
     let mut shift = false;
-    let mut key = None;
+    let mut super_key = false;
 
-    for token in cleaned.split('-').filter(|part| !part.is_empty()) {
-        let lower = token.to_ascii_lowercase();
-        match lower.as_str() {
+    // The last token is always the key; everything before it must be a
+    // modifier. (Treating modifier-looking tokens as modifiers everywhere
+    // would make keys that share a modifier letter — `C-c`, `C-s`, `cmd+c`
+    // — impossible to spell.)
+    let mut tokens: Vec<&str> = cleaned.split('-').filter(|part| !part.is_empty()).collect();
+    let key = tokens.pop()?;
+    for token in tokens {
+        match token.to_ascii_lowercase().as_str() {
             "c" | "ctrl" | "control" => ctrl = true,
             "m" | "meta" | "alt" => alt = true,
             "s" | "shift" => shift = true,
-            _ => key = Some(token.to_string()),
+            // vim-style `D-c` plus the spelled-out names.
+            "d" | "cmd" | "command" | "super" | "win" => super_key = true,
+            _ => return None,
         }
     }
 
-    let key = key?;
-    let key = canonical_key_name(&key)?;
+    let key = canonical_key_name(key)?;
 
     let mut modifiers = Vec::new();
     if ctrl {
@@ -479,6 +491,9 @@ fn normalize_binding_key(spec: &str) -> Option<String> {
     }
     if shift && key.chars().count() > 1 {
         modifiers.push("S");
+    }
+    if super_key {
+        modifiers.push("D");
     }
 
     if modifiers.is_empty() {
@@ -493,7 +508,7 @@ fn canonical_key_event(key: &KeyEvent) -> Option<String> {
         KeyCode::Char(c) => {
             if key
                 .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
             {
                 c.to_ascii_lowercase().to_string()
             } else {
@@ -531,6 +546,9 @@ fn canonical_key_event(key: &KeyEvent) -> Option<String> {
     if key.modifiers.contains(KeyModifiers::SHIFT) && !is_char && !is_backtab {
         modifiers.push("S");
     }
+    if key.modifiers.contains(KeyModifiers::SUPER) {
+        modifiers.push("D");
+    }
 
     if modifiers.is_empty() {
         Some(key_name)
@@ -563,6 +581,14 @@ fn canonical_key_name(name: &str) -> Option<String> {
 
 pub(crate) fn encode_key_to_bytes(key: KeyEvent) -> Option<Vec<u8>> {
     let mods = key.modifiers;
+
+    // Super-modified text keys have no legacy encoding; sending the bare
+    // character would make cmd+key type a stray letter into the pane.
+    // (Panes with the kitty protocol active get these via
+    // `encode_key_to_bytes_kitty` instead.)
+    if mods.contains(KeyModifiers::SUPER) && matches!(key.code, KeyCode::Char(_)) {
+        return None;
+    }
 
     // Ctrl+letter → control character byte, with optional Alt (ESC) prefix
     if mods.contains(KeyModifiers::CONTROL)
@@ -978,6 +1004,61 @@ mod tests {
     }
 
     #[test]
+    fn super_c_maps_to_copy_selection_globally() {
+        let mut mapper = KeyMapper::new();
+        let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::SUPER));
+        assert_eq!(action, InputAction::Command(CommandAction::CopySelection));
+        // Terminals may report cmd+shift-adjacent case; the canonical name
+        // lowercases super-modified chars, so 'C' matches too.
+        let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SUPER));
+        assert_eq!(action, InputAction::Command(CommandAction::CopySelection));
+    }
+
+    #[test]
+    fn unbound_super_char_is_ignored_not_typed() {
+        let mut mapper = KeyMapper::new();
+        // Super-modified chars have no legacy encoding; sending the bare
+        // char would type a stray letter into the pane.
+        let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::SUPER));
+        assert_eq!(action, InputAction::Ignore);
+    }
+
+    #[test]
+    fn cmd_binding_specs_normalize_to_super_modifier() {
+        let mut globals = HashMap::new();
+        globals.insert("cmd+y".to_string(), "copy-selection".to_string());
+        globals.insert("super+u".to_string(), "toggle-zoom".to_string());
+        globals.insert("D-i".to_string(), "next-window".to_string());
+        let mut mapper = KeyMapper::with_config(None, true, &HashMap::new(), &globals);
+
+        let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::SUPER));
+        assert_eq!(action, InputAction::Command(CommandAction::CopySelection));
+        let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::SUPER));
+        assert_eq!(action, InputAction::Command(CommandAction::ToggleZoom));
+        let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::SUPER));
+        assert_eq!(action, InputAction::Command(CommandAction::NextWindow));
+    }
+
+    #[test]
+    fn cmd_c_default_binding_can_be_disabled() {
+        let mut globals = HashMap::new();
+        globals.insert("cmd+c".to_string(), "none".to_string());
+        let mut mapper = KeyMapper::with_config(None, true, &HashMap::new(), &globals);
+        let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::SUPER));
+        assert_eq!(action, InputAction::Ignore);
+    }
+
+    #[test]
+    fn lowercase_d_stays_a_key_not_a_super_modifier() {
+        let mut prefix = HashMap::new();
+        prefix.insert("C-d".to_string(), "toggle-zoom".to_string());
+        let mut mapper = KeyMapper::with_config(None, true, &prefix, &HashMap::new());
+        mapper.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert_eq!(action, InputAction::Command(CommandAction::ToggleZoom));
+    }
+
+    #[test]
     fn allows_config_overrides() {
         let mut prefix = HashMap::new();
         prefix.insert("v".to_string(), "split-vertical".to_string());
@@ -1255,6 +1336,15 @@ mod tests {
         assert_eq!(
             encode_key_to_bytes_kitty(key, KITTY_FLAG_DISAMBIGUATE),
             Some(b"\x1b[120;3u".to_vec())
+        );
+    }
+
+    #[test]
+    fn kitty_super_letter_is_csi_u_under_disambiguate() {
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::SUPER);
+        assert_eq!(
+            encode_key_to_bytes_kitty(key, KITTY_FLAG_DISAMBIGUATE),
+            Some(b"\x1b[99;9u".to_vec())
         );
     }
 

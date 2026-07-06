@@ -79,6 +79,12 @@ P = "write-scrollback"
 s = "window-tree"
 
 [global_bindings]
+# Cmd+C (super+c) copies the mouse drag selection; bound by default.
+# Needs a terminal that reports super-modified keys via the kitty keyboard
+# protocol and passes cmd+c through when it has no selection of its own
+# (e.g. Ghostty). Works over --remote too (delivered as OSC 52).
+# Modifier spellings: cmd+c / super+c / D-c. Disable with "none".
+#"cmd+c" = "copy-selection"
 # Alt+Arrow for pane focus without prefix.
 # macOS: most terminals intercept Alt+Left/Right. For Ghostty, add to config:
 #   keybind = alt+left=text:\x1b[1;3D

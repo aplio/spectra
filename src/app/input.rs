@@ -38,6 +38,22 @@ impl App {
         let prefix_active_before = self.view.keys.prefix_active();
         match self.view.keys.handle_key(key) {
             InputAction::Command(action) => {
+                // A globally-bound copy (cmd+c) only acts on an existing
+                // mouse selection; without one the key keeps its normal
+                // meaning for the pane, mirroring how terminals treat their
+                // own copy shortcut as "performable".
+                if action == CommandAction::CopySelection
+                    && !prefix_active_before
+                    && self.view.text_selection.is_none()
+                {
+                    return match self
+                        .kitty_encode_for_focused(key)
+                        .or_else(|| encode_key_to_bytes(key))
+                    {
+                        Some(bytes) => self.handle_send_bytes(bytes),
+                        None => Ok(AppSignal::None),
+                    };
+                }
                 self.needs_render = true;
                 Ok(self.handle_action(action))
             }

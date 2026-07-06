@@ -7937,6 +7937,94 @@ fn mouse_selection_over_wide_chars_copies_clean_text_for_remote_client() {
 }
 
 #[test]
+fn cmd_c_copies_mouse_selection_for_remote_client() {
+    let (mut app, _writes) = build_recording_app_with_output(vec![b"hello world".to_vec()]);
+    app.mouse_enabled = true;
+    app.register_client(7, 80, 24);
+    app.tick();
+
+    app.handle_mouse_event_for_client(
+        7,
+        mouse_event_with_modifiers(
+            MouseEventKind::Down(MouseButton::Left),
+            0,
+            0,
+            KeyModifiers::NONE,
+        ),
+    )
+    .expect("mouse down");
+    app.handle_mouse_event_for_client(
+        7,
+        mouse_event_with_modifiers(
+            MouseEventKind::Drag(MouseButton::Left),
+            4,
+            0,
+            KeyModifiers::NONE,
+        ),
+    )
+    .expect("mouse drag");
+    app.handle_mouse_event_for_client(
+        7,
+        mouse_event_with_modifiers(
+            MouseEventKind::Up(MouseButton::Left),
+            4,
+            0,
+            KeyModifiers::NONE,
+        ),
+    )
+    .expect("mouse up");
+
+    app.handle_key_event_for_client(7, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::SUPER))
+        .expect("cmd+c");
+
+    let ansi = app.take_pending_clipboard_ansi_for_client(7);
+    assert_eq!(
+        ansi,
+        vec![crate::clipboard::osc52_sequence("hello")],
+        "cmd+c must copy the mouse selection as an OSC 52 frame for the client"
+    );
+    let client_view = app
+        .inactive_client_states
+        .get(&7)
+        .expect("client 7 view state");
+    assert!(
+        client_view.text_selection.is_none(),
+        "copy should clear the selection"
+    );
+}
+
+#[test]
+fn cmd_c_without_selection_falls_through_to_pane() {
+    let (mut app, writes) = build_recording_app_with_output(vec![b"hello world".to_vec()]);
+    app.mouse_enabled = true;
+    app.register_client(7, 80, 24);
+    app.tick();
+    take_recorded_writes(&writes);
+
+    app.handle_key_event_for_client(7, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::SUPER))
+        .expect("cmd+c");
+
+    assert!(
+        app.take_pending_clipboard_ansi_for_client(7).is_empty(),
+        "no selection means nothing to copy"
+    );
+    assert!(
+        app.inactive_client_states
+            .get(&7)
+            .expect("client 7 view state")
+            .status_message
+            .is_none(),
+        "global cmd+c without a selection must not surface a copy error"
+    );
+    // Without the kitty protocol active in the pane there is no legacy
+    // encoding for super+c, so nothing may be typed into the pane either.
+    assert!(
+        take_recorded_writes(&writes).is_empty(),
+        "cmd+c must not leak a stray 'c' into the pane"
+    );
+}
+
+#[test]
 fn tree_hjkl_navigates_like_arrows() {
     let mut app = build_app_for_resize_test();
 
