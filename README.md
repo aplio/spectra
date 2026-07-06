@@ -1,532 +1,123 @@
 # spectra
 
-spectra is a tmux-like terminal session manager written in Rust.
+A tmux-like terminal multiplexer written in Rust.
 
-Current POC scope:
-- pane splits and directional focus
-- connected pane borders with box-drawing characters
-- window cycling, selection list, swap, and resize
-- socket client/server runtime with persistent sessions
-- shell PTYs per pane
-- terminal parsing with vte
-- OSC title parsing (`OSC 0`/`OSC 2`) and cwd fallback parsing (`OSC 7`) for pane/window naming
-- host terminal title sync via OSC 2 from focused pane auto-name (`OSC 0`/`OSC 2`, fallback `OSC 7`)
-- interactive bash/zsh startup installs a spectra prompt hook that emits OSC 2 (title) and OSC 7 (cwd) each prompt
-- LF newline normalization to CRLF-style prompt movement
-- interactive panes start shells in login mode for tmux-compatible init behavior
-- status line and command prompts
-- XDG-based config and data persistence
-
-Kitty keyboard protocol: spectra ships lightweight, passthrough-level support. Each pane tracks
-the guest's kitty keyboard flag stack (push/pop/set, separate stacks for main and alternate
-screens) and answers `CSI ? u` queries so guests detect support. For panes that enabled the
-protocol, keys are re-encoded in kitty CSI-u form for the "disambiguate escape codes" (bit 1) and
-"report all keys as escape codes" (bit 8) enhancements; event types, alternate keys, and
-associated text (bits 2/4/16) are tracked but not reported. When the host terminal supports it,
-the spectra client also enables keyboard enhancement (disambiguate + alternate keys) so richer
-key info reaches the server. Kitty graphics is intentionally not supported.
-
-Default color queries (OSC 10/11): guest applications can query the terminal's default
-foreground/background colors (used by editors and TUIs for dark/light theme detection). Rather
-than answering with invented defaults, spectra mirrors the real host terminal: at attach the
-client queries its own terminal once (bounded to ~150 ms, skipped when stdin is not a tty),
-reports the colors in the handshake, and the server answers guest queries instantly from that
-cache — the most recently attached client wins. When no colors are known the query stays
-unanswered, so guests fall back to their own defaults. Guests *setting* OSC 10/11 colors are
-ignored.
+A background server owns sessions, windows, and panes; clients attach to it over a
+Unix socket, so sessions survive detach and terminal restarts. Panes run real shell
+PTYs with vte-based terminal emulation, scrollback, mouse selection, a cursor
+(copy) mode, a status line, and a window-tree sidebar that spans all sessions.
 
 ## Install
-
-Quick install (latest release):
 
 ```bash
 curl -fsSL https://github.com/aplio/spectra/raw/refs/heads/master/install.sh | sh
 ```
 
-Install a specific version:
+- pin a version: `SPECTRA_VERSION=v0.2.0 sh`
+- custom directory: `SPECTRA_BIN_DIR=$HOME/.bin sh`
+- upgrade later with `spectra --update`; then `spectra server-handoff` moves a
+  running server onto the new binary without killing any pane process
+  (see [docs/upgrade.md](docs/upgrade.md))
+
+Or build from source: `cargo install --path .`
+
+## Usage
 
 ```bash
-curl -fsSL https://github.com/aplio/spectra/raw/refs/heads/master/install.sh | SPECTRA_VERSION=v0.1.3 sh
+spectra                       # attach if a server is running, otherwise create one
+spectra --attach dev          # attach to a target: session[:window[.pane]]
+spectra --cwd /path --shell /bin/zsh
+spectra --remote user@host    # attach to a server on another machine over ssh (experimental)
 ```
 
-Install to a custom directory:
+Session management from the shell (`spectra --help` for the full list):
 
 ```bash
-curl -fsSL https://github.com/aplio/spectra/raw/refs/heads/master/install.sh | SPECTRA_BIN_DIR=$HOME/.bin sh
+spectra ls
+spectra new-session
+spectra kill-session --target dev
+spectra new-window   --target dev
+spectra split-window --vertical --target dev:1
+spectra send-keys    --target dev:1.2 "make test"
 ```
 
-Checksum verification is enabled when a release includes `checksums.txt`. Set `SPECTRA_SKIP_VERIFY=1` to skip verification.
+### Default keybindings
 
-## Zero-downtime upgrades
+The prefix is `Ctrl+j`. Press `prefix ?` for the full searchable cheat sheet.
 
-`spectra --update` installs the latest release. Replacing the binary is safe
-while a server is running (the running server keeps its old inode), so the
-update succeeds even with active sessions and then prints a hint to finish
-the switch:
+| Key | Action |
+| --- | --- |
+| `Alt+Arrow` | focus pane in direction (no prefix; crosses windows/sessions at edges) |
+| `prefix \|` / `prefix "` | split vertical / horizontal |
+| `prefix c` / `prefix n` | new window / new session |
+| `prefix w` | tree popup (session → window → pane, `/` filters, `r` renames) |
+| `prefix e` | toggle the window-tree sidebar |
+| `prefix p` | command palette |
+| `prefix z` | zoom active pane |
+| `prefix [` | cursor mode (vi-style movement, `v`/`y` select and copy) |
+| `prefix y` | copy the mouse drag selection |
+| `prefix d` | detach (server keeps running) |
+| `prefix x` | close focused pane |
 
-```bash
-spectra --update          # installs the new binary
-spectra server-handoff    # moves the RUNNING server onto the new binary
-```
-
-`spectra server-handoff` performs a live handoff: a new server process (the
-freshly installed binary) connects to the running server, receives the full
-session/window/pane layout plus every pane's PTY file descriptor over a Unix
-socket (SCM_RIGHTS), and takes over serving — **without killing any pane
-process**. Running agents, builds, and shells keep going; the last ~8 KiB of
-each pane's output is replayed so screens are not blank after the switch.
-`spectra --check` only reports whether an update exists and never installs.
-
-v1 limitations:
-
-- The handoff is refused while any client is attached (there is no client
-  auto-reconnect yet). Detach all clients first (`prefix d`), run
-  `spectra server-handoff`, then reattach with `spectra`. Detached panes and
-  their processes are unaffected throughout.
-- Scrollback beyond the ~8 KiB replay tail is not transferred; older history
-  is dropped across a handoff (the layout itself is preserved).
-- A server hosting more than 64 panes refuses the handoff.
-
-If anything fails before the new server has acknowledged receipt of all PTY
-descriptors, the old server keeps running untouched and logs the aborted
-handoff.
-
-## Run
-
-```bash
-cargo run
-```
-
-Default behavior is attach-or-create:
-- if a spectra server is already running, the client attaches to it
-- otherwise spectra starts a background server and attaches automatically
-
-When attaching to an already-running server, startup options (`--cwd`, `--shell`, startup command)
-are ignored.
-
-P0 command surface:
-
-```bash
-cargo run -- attach-session [TARGET]
-cargo run -- new-session
-cargo run -- ls
-cargo run -- kill-session [--target SESSION]
-cargo run -- new-window [--target session[:window[.pane]]]
-cargo run -- split-window [--horizontal|--vertical] [--target session[:window[.pane]]]
-cargo run -- select-session [--target SESSION]
-cargo run -- select-window <WINDOW> [--target SESSION]
-cargo run -- select-pane <PANE> [--target SESSION]
-cargo run -- send-keys [--target session[:window[.pane]] | --all] <TEXT...>
-cargo run -- source-file [PATH]
-```
-
-Command mode behavior:
-- command invocations auto-start the server when missing
-- `new-session` is detached-only
-- if `new-session` bootstraps a new server, it reuses the bootstrap session (no duplicate second session)
-- `ls` prints one stable human-readable line per session
-- `kill-session` on the last session shuts down the server
-- `send-keys` sends raw text bytes to selected panes without changing focus
-
-`send-keys` targeting:
-- default (no selector): active focused pane
-- `--target session`: all panes in that session
-- `--target session:window`: all panes in that window
-- `--target session:window.pane`: one pane
-- `--all`: all panes in all sessions
-- `--target` and `--all` are mutually exclusive
-- empty payload is rejected with an explicit error
-
-Attach directly to a target (session, window, pane):
-
-```bash
-cargo run -- --attach s1:w1.p1
-cargo run -- --attach s1:w1.i1
-cargo run -- --attach main:2.3
-cargo run -- --attach dev
-cargo run -- attach-session s1:w1.p1
-```
-
-Attach target grammar:
-- `session`
-- `session:window`
-- `session:window.pane`
-
-Session selector supports:
-- exact runtime `session_id` (for example `main-1`)
-- `sN` alias (for example `s2`)
-- exact session name (case-sensitive)
-
-Window and pane segments accept bare numbers or prefixed numbers:
-- window: `1` or `w1`
-- pane id: `3` or `p3`
-- pane index in the selected window: `i1`, `i2`, ...
-
-Invalid or missing attach targets fail the client attach attempt with an explicit error.
-
-Start from a specific directory:
-
-```bash
-cargo run -- --cwd /path/to/project
-```
-
-Use a specific shell:
-
-```bash
-cargo run -- --shell /bin/zsh
-```
-
-Run a startup command through the shell:
-
-```bash
-cargo run -- -- "echo ready"
-```
-
-## Remote attach (experimental)
-
-Attach the local terminal to a spectra server on another machine, tunneled through
-`ssh -T` stdin/stdout (no TCP port is opened):
-
-```bash
-spectra --remote user@host
-spectra --remote user@host --attach session
-```
-
-Prerequisites: `ssh user@host` must work, and spectra must already be installed on
-the remote host (on PATH or at `~/.local/bin/spectra`).
-
-How it works: the local side listens on a private per-invocation Unix socket and
-relays each client connection through `ssh -T` to a hidden `remote-client-bridge`
-subcommand, which auto-starts the remote server when needed and pipes the normal
-newline-delimited-JSON client protocol over ssh stdio. A protocol version handshake
-in the client hello rejects mismatched spectra binaries with an explicit error.
-
-`SPECTRA_REMOTE_SSH_CMD` (testing/advanced): when set, its whitespace-split value
-replaces the default `ssh -T -- <host>` transport prefix; the composed remote bridge
-command is still appended as the final argument.
+With `[mouse].enabled = true`, click focuses panes, dragging on dividers resizes,
+and dragging over text selects (double/triple click expands word → run → line).
 
 ## Config
 
-Config file path:
-- `$XDG_CONFIG_HOME/spectra/config.toml`
-- fallback: `~/.config/spectra/config.toml`
-
-Example:
+`~/.config/spectra/config.toml` (or `$XDG_CONFIG_HOME/spectra/config.toml`).
+All keys are optional; see [docs/config.example.toml](docs/config.example.toml)
+for the annotated full reference.
 
 ```toml
 prefix = "C-j"
-session_name = "main"
-initial_command = "echo hello"
-editor = "vim"
-
-[shell]
-suppress_prompt_eol_marker = true
 
 [mouse]
-enabled = false
-
-[terminal]
-allow_passthrough = true
-
-[sidebar]
-default_open = true
-session_format = "{session_name}"
-window_format = "{window_label}"
-
-[status]
-format = "session {session_index}/{session_count}:{session_name} | window {window_index}/{window_count} | pane {pane_index}/{pane_count} | prefix {prefix}{lock}{zoom}{sync}{mouse}{message}"
-background = "#2E3440"
-foreground = "#D8DEE9"
-
-[agent]
-notify = "blocked"
-
-[hooks]
-session_created = ""
-session_killed = ""
-window_created = ""
-pane_split = ""
-pane_closed = ""
-config_reloaded = ""
+enabled = true
 
 [prefix_bindings]
-w = "window-tree"
-"C-Left" = "resize-left"
-c = "new-window"
-d = "detach-client"
-n = "new-session"
+N = "run: notify-send 'hello from spectra'"
 
 [global_bindings]
 "C-w" = "window-tree"
 ```
 
-Bind arbitrary shell commands with a `run:` value in `[prefix_bindings]` or
-`[global_bindings]`:
-
-```toml
-[prefix_bindings]
-N = "run: notify-send 'hello from spectra'"
-```
-
-The command runs fire-and-forget via `/bin/sh -lc` on a detached thread with the
-same `SPECTRA_*` env context as hooks (`SPECTRA_SESSION_ID`, `SPECTRA_SESSION_NAME`,
-`SPECTRA_WINDOW_ID`, `SPECTRA_WINDOW_NUMBER`, `SPECTRA_PANE_ID`); failures are
-appended to the session log. `run:` bindings do not appear in the command palette.
-Binding a key to `"none"`/`"unbound"`/`"disabled"` unbinds it.
-
-Custom action name for bindings/command palette:
-- `open-current-pane-buffer-in-editor` (also accepts `open-current-pane-buffef-in-editor`)
-- `focus-next-pane` / `focus-prev-pane` (also accepts `focus-previous-pane`)
-- `enter-cursor-mode` / `leave-cursor-mode` (`copy-mode` remains an alias of `enter-cursor-mode`)
-- `side-window-tree` / `toggle-side-window-tree`
-- `show-keybindings` / `keybindings` / `list-keys` / `help` (opens the keyboard-shortcut cheat sheet)
-- `next-window` / `prev-window` remain available for custom bindings and command palette usage
-- if `editor` is unset or blank, spectra uses `$EDITOR`; if both are missing, it defaults to `vi`
-- `[terminal].allow_passthrough` defaults to `true` and enables tmux-style DCS pass-through (`ESC Ptmux;...ESC \\`) to the outer terminal. OSC 8 hyperlinks are *not* forwarded raw: they are modelled per-cell and re-emitted by the renderer aligned with the frame, so a guest whose hyperlink open and close arrive in separate output bursts can never leave the outer terminal stuck in an open-link (underlined) state
-- `[sidebar].default_open` defaults to `true` and controls whether the window-tree sidebar is shown on session start; toggle it at runtime with the `side-window-tree` action
-- `[sidebar].session_format` / `[sidebar].window_format` control the sidebar row content with `{token}` placeholders, like `[status].format`; a `\n` in the format splits the entry into multiple sidebar lines (the selection highlight covers all of them, and clicking any line focuses the window). See "Sidebar format tokens" below
-- `[agent].notify` sends an OSC 9 desktop notification (for example `spectra: claude blocked (pane 3)`) to every attached client's host terminal when a pane's AI agent changes state: `"off"` never notifies, `"blocked"` (default) notifies when an agent enters `blocked`, `"all"` also notifies when it becomes `done` (unseen idle). The currently focused pane never notifies, and each pane notifies at most once per state until the state changes away and back. Requires a host terminal that understands OSC 9 notifications (ghostty, iTerm2, WezTerm)
-
-## Data storage
-
-Runtime data path:
-- `$XDG_DATA_HOME/spectra`
-- fallback: `~/.local/share/spectra`
-
-Per session directory stores:
-- `session-info.json`
-- `session.log`
-- `layouts/latest-layout.json`
-- `scrollback/pane-<id>-<timestamp>.txt`
-
-Global data files:
-- `command-history.db` (SQLite command palette history; used to prioritize recently run commands)
-- `update_check.toml` (cached background update-check result, TTL 24h)
-
-## Default keybindings
-
-- `Alt+Arrow` focus pane in direction (global, no prefix needed)
-  - at a vertical edge (no pane above/below), `Alt+Up`/`Alt+Down` step to the previous/next window across **all** sessions, wrapping from the last window back to the first (and from the first back to the last). Left/right at a horizontal edge still switch sessions.
-  - **macOS note**: most terminals intercept Alt+Left/Right. On Ghostty, add to your config:
-    `keybind = alt+left=text:\x1b[1;3D` and `keybind = alt+right=text:\x1b[1;3C`
-- `Ctrl+j` enter prefix mode
-- prefix `|` split vertical
-- prefix `"` split horizontal
-- prefix arrows move focus (up/down at a window edge behave like `Alt+Up`/`Alt+Down`: step across every session's windows with wrap)
-- prefix `[` enter cursor mode (frozen in-pane snapshot + scrollback selection)
-- prefix `y` copy the active mouse text selection to the clipboard (`copy-selection`)
-- prefix `c` create new window
-- prefix `n` create new session
-- prefix `p` open command palette (fzf-style command filter + Enter to execute)
-- prefix `?` open the keyboard-shortcut cheat sheet (lists every active binding; `/` filters, `j`/`k` or arrows move, `Esc`/`q` closes); also available from the command palette as `Show keyboard shortcuts`
-- prefix `r` reload config (`source-file` default path)
-- prefix `z` toggle zoom for active pane in current window
-- prefix `S` toggle synchronize-panes for current window
-- prefix `o` next pane in focus history
-- prefix `O` previous pane in focus history
-- prefix `w` or prefix `Tab` open tree popup (session -> window -> pane)
-- prefix `e` toggle side window tree split view on the left; it lists the windows of **every** session, grouped under a bold session-name header, so you can see and jump to windows in other sessions at a glance
-- prefix `Ctrl+Arrow` resize focused pane
-- prefix `{` / `}` swap window with prev/next
-- prefix `(` / `)` previous/next session
-- prefix `s` open tree popup
-- side window tree rows span all sessions: each session name is a bold header and its windows are listed (and indented) beneath it; clicking a window row switches to that session and focuses the window
-- side window tree marks the active session's focused window row with `>` + reverse highlight; header rows are never selected
-- tree popup keys: `/` enters query edit focus; in query focus use `Left`/`Right`, `Ctrl+f/b/a/e`, `Ctrl+Left/Right`, `Ctrl+w/k/u` to edit query
-- tree popup keys: `Down` (or `Ctrl+n`/`Ctrl+j`) from query focus enters candidate focus at the first match; `Ctrl+p` also switches to candidate focus and moves selection up
-- tree popup keys: in candidate focus, `Up`/`Down` (or `j`/`k`) move selection, `Left`/`Right` (or `h`/`l`, `Shift+Tab`/`Tab`) collapse-expand, `Up` on first candidate returns to query focus; `h/j/k/l` only navigate outside query focus and type into the filter while it is active
-- tree popup keys: `Enter` select, `r` rename selected session/window/pane, `Esc` leaves query focus first and then closes popup
-- prefix `$` rename current session
-- prefix `Ctrl+s` save current layout
-- prefix `l` append a manual log line
-- prefix `P` write focused pane scrollback
-- cursor mode keys: `h/j/k/l` or arrows move (drops a word-motion selection; extends a `v` selection), `w/b/e` word motions (select the traversed word outside visual mode), `0/$` start/end of line, `v` toggles a vi-style visual selection anchored at the cursor, `x` selects current line then extends linewise downward on repeat, `y` copies to clipboard and leaves the mode, `Esc`/`q` leaves mode
-- cursor mode `w/b/e` follows gargo-like classes (`word`, `punctuation`, `whitespace`): punctuation blocks such as `@` are stepped through distinctly and motion can cross line boundaries
-- command palette `Open current pane buffer in editor` writes focused pane scrollback, opens a new window running `${editor} <scrollback-file>`, and auto-closes that window when the editor exits
-- command palette action execution uses each action’s own mode transition, so selecting `session.peek_all_windows` now enters peek mode directly from the palette instead of staying in normal mode
-- prefix `d` detach current client (server keeps running)
-- prefix `x` close focused pane
-- prefix `q` quit server/session for all attached clients
-- lock mode can be entered via command palette; while locked, plain `Esc` exits lock mode (press `Esc` again to send `Esc` to the pane)
-- pane auto names follow OSC title updates (`OSC 0`/`OSC 2`), with OSC 7 cwd used as fallback when no explicit title is active
-- window auto names follow the latest pane auto-name change in each window
-- manual pane/window rename still overrides auto naming; clearing a manual name returns to OSC-driven naming
-- spectra emits OSC 2 for the focused pane auto-name so host terminal/tab title follows that value; when no OSC-derived title/cwd is available, spectra leaves the previous host title unchanged
-- when pane process exits (for example `exit`) or a write hits a closed pane IO channel, spectra closes that pane, or quits if it is the last pane
-- when `[mouse].enabled = true`: left-click focuses panes, and left-drag on dividers resizes panes
-- left-drag over pane text creates a selection that stays highlighted after release; copy it with prefix `y` (`copy-selection`). A key press or the next click drops it
-- rapid multi-click grows the selection gargo-style: double-click selects the word under the cursor, another click expands to the surrounding non-whitespace run, then the whole line
-
-Status format tokens:
-- `{session_index}` `{session_count}` `{session_id}` `{session_name}`
-- `{window_index}` `{window_count}` `{window_id}`
-- `{pane_id}` `{pane_index}` `{pane_count}`
-- `{prefix}` `{lock}` `{zoom}` `{sync}` `{mouse}` `{message}`
-- `{agent}` — detected AI agent of the focused pane as `kind:state` (for example `claude:working`; states `unknown`/`idle`/`working`/`blocked`), empty when none. Not part of the default format; add it to `[status].format` to use it. The same detection result is exposed as the `agent` field of JSON-RPC `pane.list`
-- `{update}` — `update available: vX.Y.Z` when the background update check found a newer release, empty otherwise. Not part of the default format; add it to `[status].format` to use it. The server checks once at startup with a 24h TTL cache (`update_check.toml` in the data dir, invalidated when the binary version changes); the check runs on a background thread and never blocks the server
-
-Status style defaults:
-- `[status].background = "#2E3440"`
-- `[status].foreground = "#D8DEE9"`
-
-Sidebar format tokens (`[sidebar].session_format`, default `{session_name}`):
-- `{session_index}` `{session_name}` `{session_id}` `{window_count}`
-
-Sidebar format tokens (`[sidebar].window_format`, default `{window_label}`):
-- `{window_label}` — the classic row label: `w2`, or `w2:name` when the window has a (manual or auto) name
-- `{window_index}` `{window_name}` `{window_id}` `{pane_count}`
-- `{agent}` — worst agent display state across the window's panes (`blocked` > `working` > `done` > `idle`), empty when no agent; the colored agent dot is drawn on the first line regardless of the format
-- `{session_index}` `{session_name}`
-- a `\n` splits the entry into multiple sidebar lines, for example `window_format = "w{window_index} {window_name}\n  {pane_count} panes"`
-
-Hook events (`[hooks]`) run via `/bin/sh -lc` with env context:
-- `SPECTRA_HOOK_EVENT`
-- `SPECTRA_SESSION_ID` `SPECTRA_SESSION_NAME`
-- `SPECTRA_WINDOW_ID` `SPECTRA_WINDOW_NUMBER`
-- `SPECTRA_PANE_ID`
+Reload at runtime with `prefix r`. Runtime data (session logs, layouts, scrollback
+dumps) lives under `~/.local/share/spectra`.
 
 ## Scripting API
 
-A running server also serves a JSON-RPC API over a second Unix socket
-(newline-delimited JSON, one request/response object per line):
-- `$XDG_RUNTIME_DIR/spectra/spectra-api.sock`
-- fallback: `$XDG_DATA_HOME/spectra/run/spectra-api.sock`
-
-`spectra api <METHOD> [PARAMS_JSON]` sends one request and prints the raw result
-JSON to stdout (errors go to stderr with exit code 1; it never auto-spawns a server):
+A running server serves a JSON-RPC API over a second Unix socket. `spectra api`
+sends one request and prints the result:
 
 ```bash
+spectra api session.list
 spectra api pane.read '{"pane_id":1,"lines":50}'
 spectra api pane.send_keys '{"pane_id":1,"text":"ls\n"}'
-```
-
-Read methods:
-- `session.list` — sessions with id/name/ordinal/active/window count
-- `pane.list` — panes (optional `session_id` filter) with window, focus, title, and detected `agent` (`{kind, state}`)
-- `pane.read` — pane text: `{pane_id, session_id?, lines?}`; default visible screen, `lines: N` = last N lines including scrollback
-- `plugin.list` — loaded plugins with `{name, description, has_service, on_event_commands, events, agent_manifest}` (see Plugins below)
-
-Write methods:
-- `pane.send_keys` — `{pane_id, session_id?, text}`: write `text` bytes verbatim to the pane's PTY (raw, no key encoding; same semantics as CLI `send-keys`)
-- `pane.split` — `{pane_id?, session_id?, axis: "horizontal"|"vertical"}`: focus the target pane (default: current focused), split it, return `{pane_id}` of the new pane
-- `agent.report` — `{pane_id, session_id?, kind, state: "idle"|"working"|"blocked"|"unknown"}`: externally reported agent state (e.g. from a Claude Code hook). Overrides screen-based detection for that pane for 30s after the last report, then manifest detection resumes; done derivation and notifications behave exactly like detected states
-
-Server methods:
-- `server.handoff` — internal: begin a live server handoff (used by `spectra server-handoff`, see "Zero-downtime upgrades"); returns the one-shot handoff socket, refused while clients are attached
-
-Events:
-- `events.subscribe` — `{events?: ["pane.split", ...]}` (omitted = all) marks the connection as subscribed; the server then pushes `{"event": "<name>", "params": {...}}` lines interleaved after responses. Unknown names are accepted silently but only known ones are echoed in `subscribed`
-- Event set: `session.created`, `session.killed`, `window.created`, `pane.split`, `pane.closed`, `config.reloaded` (same context fields as the `[hooks]` env vars), plus `agent.changed` `{pane_id, session_id, kind, state}` on agent display-state transitions (detected and reported)
-
-`spectra api --follow events.subscribe` prints the subscription result, then keeps
-printing pushed event lines until the server closes the connection or ctrl-c:
-
-```bash
 spectra api --follow events.subscribe '{"events":["agent.changed"]}'
 ```
 
-## Plugins
+On top of this sit two extension points:
 
-A plugin is a directory containing a `spectra-plugin.toml` manifest plus the
-scripts or binaries it references — any language, no SDK. Plugin commands are
-plain argv vectors (no shell), run with the plugin directory as working
-directory, and talk to spectra through the scripting API socket
-(`SPECTRA_API_SOCKET` is exported to every plugin process).
+- **Plugins** — a directory with a `spectra-plugin.toml` manifest (any language,
+  no SDK) can react to events, run a supervised background service, and ship
+  agent-detection manifests. Place them under `~/.config/spectra/plugins/<name>/`;
+  `spectra api plugin.list` shows what loaded.
+- **Claude Code integration** — `spectra integration install claude` wires Claude
+  Code's hooks to spectra's agent-state detection, so the sidebar and status line
+  show whether an agent in a pane is working, blocked, or done.
+  Uninstall with `spectra integration uninstall claude`.
 
-Discovery locations, scanned when the server starts and re-scanned on every
-config reload (`source-file` / prefix `r`):
-- `$XDG_CONFIG_HOME/spectra/plugins/<name>/spectra-plugin.toml` (user-authored plugins; wins name collisions)
-- `$XDG_DATA_HOME/spectra/plugins/<name>/spectra-plugin.toml` (tool-installed plugins)
-
-The manifest `name` must match the directory name and consist of lowercase
-ASCII alphanumerics/dashes (max 32 chars). Invalid manifests are logged and
-skipped; plugin failures of any kind (parse errors, spawn failures, crash
-loops) never take the server down. `spectra api plugin.list` shows what is
-loaded.
-
-A plugin can declare three capabilities, all optional:
-
-- **`[[on_event]]`** — spawn a one-shot command when a subscribed API event
-  fires (same event set as `events.subscribe`). The event JSON line
-  (`{"event": ..., "params": {...}}`) arrives on stdin, `{event}` in any argv
-  element is replaced by the event name, and `SPECTRA_EVENT` is set.
-  Fire-and-forget like `[hooks]`; failures are logged to the session log.
-- **`[service]`** — a long-running process started with the server. It is
-  restarted on exit with capped exponential backoff (1s, 2s, 4s, ... max 30s),
-  gives up after 5 exits within a minute (logged), and is killed on server
-  shutdown and on removal during a reload. Its stdout/stderr are appended to
-  `service.log` in the plugin directory (truncated at startup when over 1 MiB).
-  A service typically connects to `SPECTRA_API_SOCKET` and subscribes to events.
-- **`[agent_manifest]`** — bundle an agent-detection manifest (same TOML
-  format as the built-in `claude` one) that is merged into the detection
-  registry, enabling custom agent detection without recompiling. On an agent
-  name collision the built-in manifest wins and a warning is logged.
-
-Full example — a desktop notifier at
-`~/.config/spectra/plugins/agent-notify/spectra-plugin.toml`:
-
-```toml
-name = "agent-notify"
-description = "notify-send when an agent changes state"
-
-[[on_event]]
-events = ["agent.changed"]
-command = ["./notify.sh", "{event}"]
-```
-
-with `notify.sh` next to it:
-
-```sh
-#!/bin/sh
-# stdin: {"event":"agent.changed","params":{"pane_id":3,"kind":"claude","state":"blocked",...}}
-payload=$(cat)
-state=$(printf '%s' "$payload" | sed -n 's/.*"state":"\([a-z]*\)".*/\1/p')
-[ "$state" = "blocked" ] && notify-send "spectra" "agent blocked ($1)"
-exit 0
-```
-
-The existing `[hooks]` config remains the lightweight one-liner alternative
-(`/bin/sh -lc` commands, `SPECTRA_*` env); plugins are the structured superset
-for anything that needs argv commands, event payloads, a supervised daemon, or
-distribution as a directory.
-
-## Claude Code integration
+## Development
 
 ```bash
-spectra integration install claude
-```
-
-One command wires Claude Code's hook system to spectra's agent detection:
-- copies an embedded POSIX-sh hook script to
-  `~/.local/share/spectra/integrations/claude/spectra-agent-state.sh`
-- registers it in `~/.claude/settings.json` for the `Stop`, `Notification`,
-  `PreToolUse`, and `UserPromptSubmit` hook events (existing settings are
-  preserved, the merge is idempotent, the write is atomic, and the
-  pre-modification file is kept as `settings.json.bak`)
-
-State flows like this: every pane spawned by spectra exports
-`SPECTRA_API_SOCKET`, `SPECTRA_PANE_ID`, and `SPECTRA_SESSION_ID`; when a
-Claude Code hook event fires, the script maps it to a semantic state
-(`Stop` → idle, `Notification` → blocked for permission requests / idle for
-"waiting for your input", `UserPromptSubmit`/`PreToolUse` → working) and sends
-one `agent.report` request to the API socket. The reported state overrides
-screen-based detection for ~30 seconds, driving the sidebar markers, the
-`{agent}` status token, and agent notifications with exact hook-level timing.
-Outside spectra the env vars are unset and the script exits silently, so the
-hooks are safe to keep installed globally.
-
-`spectra integration install claude --dry-run` prints the would-be settings
-diff without writing. Uninstall removes exactly the entries the installer
-added plus the script:
-
-```bash
-spectra integration uninstall claude
-```
-
-## Development checks
-
-```bash
+cargo run          # run from source (attach-or-create)
 cargo fmt
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
+
+Architecture notes and a module map live in [docs/README.md](docs/README.md).
+See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for contribution guidelines.
+
+Releases: bump `version` in `Cargo.toml`, tag `vX.Y.Z`, and push the tag — CI
+builds Linux/macOS binaries and publishes them with checksums to a GitHub release.
