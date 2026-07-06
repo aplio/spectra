@@ -259,6 +259,26 @@ pub(super) struct KeybindingsState {
     pub selected: usize,
 }
 
+/// One row of the side window tree, which spans every session. A row is either
+/// a session header or a window belonging to that session. Both rendering and
+/// click hit-testing derive from the same ordered row list so their geometry
+/// can never drift.
+#[derive(Debug, Clone)]
+pub(super) struct SideTreeLayoutRow {
+    pub session_index: usize,
+    /// `None` marks a session header row; `Some(..)` a window under it.
+    pub window: Option<SideTreeWindowRow>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct SideTreeWindowRow {
+    pub window_number: usize,
+    pub window_id: WindowId,
+    pub pane_ids: Vec<usize>,
+    /// Whether this window is the focused window within its own session.
+    pub focused: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct PeekAllWindowsState {
     pub session_id: String,

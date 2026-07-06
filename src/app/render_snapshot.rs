@@ -82,12 +82,40 @@ impl App {
         self.view.side_window_tree_open
     }
 
-    fn side_window_tree_selected_index(&self) -> Option<usize> {
-        let windows = self.current_session().window_entries();
-        if windows.is_empty() {
-            return None;
+    /// Every side-tree row in display order: a header per session followed by
+    /// that session's windows. Shared by rendering and click hit-testing.
+    pub(super) fn side_window_tree_layout_rows(&self) -> Vec<SideTreeLayoutRow> {
+        let mut rows = Vec::new();
+        for (session_index, managed) in self.sessions.iter().enumerate() {
+            rows.push(SideTreeLayoutRow {
+                session_index,
+                window: None,
+            });
+            for entry in managed.session.window_entries() {
+                rows.push(SideTreeLayoutRow {
+                    session_index,
+                    window: Some(SideTreeWindowRow {
+                        window_number: entry.index,
+                        window_id: entry.window_id,
+                        pane_ids: entry.pane_ids.clone(),
+                        focused: entry.focused,
+                    }),
+                });
+            }
         }
-        Some(windows.iter().position(|entry| entry.focused).unwrap_or(0))
+        rows
+    }
+
+    /// Row index of the window focused in the active session; falls back to the
+    /// first window row (never a header) when nothing matches.
+    fn side_window_tree_selected_row(&self, rows: &[SideTreeLayoutRow]) -> usize {
+        rows.iter()
+            .position(|row| {
+                row.session_index == self.view.active_session
+                    && row.window.as_ref().is_some_and(|window| window.focused)
+            })
+            .or_else(|| rows.iter().position(|row| row.window.is_some()))
+            .unwrap_or(0)
     }
 
     fn side_window_tree_scroll_start(selected: usize, total: usize, visible: usize) -> usize {
@@ -145,29 +173,39 @@ impl App {
             return None;
         }
         let width = self.side_window_tree_width()?;
-        let managed = self.sessions.get(self.view.active_session)?;
-        let windows = managed.session.window_entries();
-        if windows.is_empty() {
+        let rows = self.side_window_tree_layout_rows();
+        if rows.iter().all(|row| row.window.is_none()) {
             return None;
         }
-        let selected = self
-            .side_window_tree_selected_index()
-            .unwrap_or(0)
-            .min(windows.len().saturating_sub(1));
-        let entries = windows
+        let selected = self.side_window_tree_selected_row(&rows);
+        let entries = rows
             .iter()
-            .map(|entry| {
-                let custom_name = self
-                    .effective_window_name(self.view.active_session, entry.window_id)
-                    .filter(|name| !name.is_empty());
-                let label = if let Some(name) = custom_name {
-                    format!("w{}:{name}", entry.index)
-                } else {
-                    format!("w{}", entry.index)
-                };
-                crate::ui::render::SideTreeEntry {
-                    label,
-                    indicator: Self::window_agent_indicator(managed, &entry.pane_ids),
+            .map(|row| match &row.window {
+                None => crate::ui::render::SideTreeEntry {
+                    label: self.sessions[row.session_index]
+                        .session
+                        .session_name()
+                        .to_string(),
+                    indicator: None,
+                    is_header: true,
+                },
+                Some(window) => {
+                    let custom_name = self
+                        .effective_window_name(row.session_index, window.window_id)
+                        .filter(|name| !name.is_empty());
+                    let label = if let Some(name) = custom_name {
+                        format!("w{}:{name}", window.window_number)
+                    } else {
+                        format!("w{}", window.window_number)
+                    };
+                    crate::ui::render::SideTreeEntry {
+                        label,
+                        indicator: Self::window_agent_indicator(
+                            &self.sessions[row.session_index],
+                            &window.pane_ids,
+                        ),
+                        is_header: false,
+                    }
                 }
             })
             .collect::<Vec<_>>();
@@ -194,12 +232,14 @@ impl App {
             .and_then(crate::ui::render::AgentIndicator::for_state)
     }
 
-    pub(super) fn side_window_tree_window_number_at(
+    /// Resolve a sidebar click to the `(session_index, window_number)` it lands
+    /// on, or `None` for the divider, a session header, or empty space.
+    pub(super) fn side_window_tree_target_at(
         &self,
         side: &crate::ui::render::SideWindowTree,
         col: u16,
         row: u16,
-    ) -> Option<usize> {
+    ) -> Option<(usize, usize)> {
         let col = usize::from(col);
         let row = usize::from(row);
         let workspace_rows = usize::from(self.view.rows.saturating_sub(1));
@@ -213,8 +253,8 @@ impl App {
             return None;
         }
 
-        let windows = self.current_session().window_entries();
-        if windows.is_empty() {
+        let rows = self.side_window_tree_layout_rows();
+        if rows.is_empty() {
             return None;
         }
 
@@ -223,14 +263,16 @@ impl App {
             return None;
         }
 
-        let selected = self
-            .side_window_tree_selected_index()
-            .unwrap_or(0)
-            .min(windows.len().saturating_sub(1));
-        let start = Self::side_window_tree_scroll_start(selected, windows.len(), content_height);
+        let selected = self.side_window_tree_selected_row(&rows);
+        let start = Self::side_window_tree_scroll_start(selected, rows.len(), content_height);
         let entry_index = start + row.saturating_sub(1);
 
-        windows.get(entry_index).map(|entry| entry.index)
+        rows.get(entry_index).and_then(|entry| {
+            entry
+                .window
+                .as_ref()
+                .map(|window| (entry.session_index, window.window_number))
+        })
     }
 
     fn shift_frame_for_side_window_tree(

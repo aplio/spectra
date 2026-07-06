@@ -830,7 +830,13 @@ mod tests {
 
     #[test]
     fn show_keybindings_action_names_parse() {
-        for name in ["show-keybindings", "keybindings", "list-keys", "help", "show-help"] {
+        for name in [
+            "show-keybindings",
+            "keybindings",
+            "list-keys",
+            "help",
+            "show-help",
+        ] {
             assert_eq!(
                 parse_action(name),
                 Some(CommandAction::ShowKeybindings),

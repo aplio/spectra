@@ -2662,7 +2662,8 @@ fn side_window_tree_click_switches_window_and_stays_open() {
         .expect("enter prefix");
     app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
         .expect("open side window tree");
-    app.handle_mouse_event(mouse_event(MouseEventKind::Down(MouseButton::Left), 1, 2))
+    // Row 1 (y=1) is the session header, w1 at y=2, w2 at y=3.
+    app.handle_mouse_event(mouse_event(MouseEventKind::Down(MouseButton::Left), 1, 3))
         .expect("click second side-window-tree row");
 
     assert_eq!(app.current_session().focused_window_number(), Some(2));
@@ -2697,12 +2698,13 @@ fn side_window_tree_hit_testing_honours_content_edges() {
     .expect("click divider");
     assert_eq!(app.current_session().focused_window_number(), Some(1));
 
-    // Clicking the first content column of the second row selects window 2.
+    // Row 1 is the session header and w1 sits at row 2, so w2 is at row 3.
+    // Clicking the first content column of the w2 row selects window 2.
     let first_col = u16::try_from(rect.content_x()).expect("content col");
     app.handle_mouse_event(mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         first_col,
-        2,
+        3,
     ))
     .expect("click first content column");
     assert_eq!(app.current_session().focused_window_number(), Some(2));
@@ -2716,7 +2718,7 @@ fn side_window_tree_hit_testing_honours_content_edges() {
     app.handle_mouse_event(mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         last_col,
-        2,
+        3,
     ))
     .expect("click last content column");
     assert_eq!(app.current_session().focused_window_number(), Some(2));
@@ -2792,16 +2794,111 @@ fn side_window_tree_overlay_marks_selected_window_with_gt_prefix() {
     app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
         .expect("open side window tree");
 
+    let session_name = app.current_session().session_name().to_string();
     let snapshot = app.take_render_snapshot().expect("render snapshot");
     let side = snapshot.side_window_tree.expect("sidebar data");
-    assert_eq!(side.selected, 0);
+    // Row 0 is the session header; the single window row (index 1) is selected.
+    assert_eq!(side.selected, 1);
     assert_eq!(
         side.entries,
-        vec![crate::ui::render::SideTreeEntry {
-            label: "w1".to_string(),
-            indicator: None,
-        }]
+        vec![
+            crate::ui::render::SideTreeEntry {
+                label: session_name,
+                indicator: None,
+                is_header: true,
+            },
+            crate::ui::render::SideTreeEntry {
+                label: "w1".to_string(),
+                indicator: None,
+                is_header: false,
+            }
+        ]
     );
+}
+
+#[test]
+fn side_window_tree_spans_all_sessions_with_headers() {
+    let mut app = build_app_for_resize_test();
+    app.current_session_mut()
+        .rename_session("alpha".to_string());
+    app.current_session_mut()
+        .new_window(80, 24)
+        .expect("alpha second window");
+
+    app.create_session();
+    app.current_session_mut().rename_session("beta".to_string());
+    app.current_session_mut()
+        .new_window(80, 24)
+        .expect("beta second window");
+
+    // Focus alpha's second window; selection must track the active session.
+    app.view.active_session = 0;
+    app.current_session_mut()
+        .focus_window_number(2)
+        .expect("focus alpha w2");
+    app.view.side_window_tree_open = true;
+
+    let side = app.side_window_tree_overlay().expect("sidebar overlay");
+    let rows: Vec<(&str, bool)> = side
+        .entries
+        .iter()
+        .map(|entry| (entry.label.as_str(), entry.is_header))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            ("alpha", true),
+            ("w1", false),
+            ("w2", false),
+            ("beta", true),
+            ("w1", false),
+            ("w2", false),
+        ]
+    );
+    // alpha's focused window (w2) is the third row.
+    assert_eq!(side.selected, 2);
+}
+
+#[test]
+fn alt_down_up_navigate_windows_across_sessions_with_wrap() {
+    let mut app = build_app_for_resize_test();
+    app.current_session_mut()
+        .new_window(80, 24)
+        .expect("session 0 second window");
+
+    app.create_session();
+    app.current_session_mut()
+        .new_window(80, 24)
+        .expect("session 1 second window");
+
+    // Start at the last window of the first session.
+    app.view.active_session = 0;
+    app.current_session_mut()
+        .focus_window_number(2)
+        .expect("focus s0 w2");
+
+    // Alt+Down crosses the session boundary into the next session's first window.
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT))
+        .expect("alt down into next session");
+    assert_eq!(app.view.active_session, 1);
+    assert_eq!(app.current_session().focused_window_number(), Some(1));
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT))
+        .expect("alt down within session 1");
+    assert_eq!(app.view.active_session, 1);
+    assert_eq!(app.current_session().focused_window_number(), Some(2));
+
+    // Past the final window it wraps to the very first window of session 0.
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT))
+        .expect("alt down wraps to start");
+    assert_eq!(app.view.active_session, 0);
+    assert_eq!(app.current_session().focused_window_number(), Some(1));
+
+    // Alt+Up wraps backwards to the last window of the last session.
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT))
+        .expect("alt up wraps to end");
+    assert_eq!(app.view.active_session, 1);
+    assert_eq!(app.current_session().focused_window_number(), Some(2));
 }
 
 #[test]
@@ -2819,15 +2916,16 @@ fn side_window_tree_overlay_selected_tracks_focused_window() {
     app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
         .expect("open side window tree");
 
+    // Row 0 is the session header, so window rows start at index 1.
     let first = app.take_render_snapshot().expect("first render");
-    assert_eq!(first.side_window_tree.expect("first sidebar").selected, 0);
+    assert_eq!(first.side_window_tree.expect("first sidebar").selected, 1);
 
     app.current_session_mut()
         .focus_window_number(2)
         .expect("focus second window");
     app.request_render(true);
     let second = app.take_render_snapshot().expect("second render");
-    assert_eq!(second.side_window_tree.expect("second sidebar").selected, 1);
+    assert_eq!(second.side_window_tree.expect("second sidebar").selected, 2);
 }
 
 #[test]
@@ -6529,7 +6627,8 @@ fn side_window_tree_overlay_carries_agent_indicator_for_window() {
         .iter()
         .map(|entry| entry.indicator.map(|marker| (marker.ch, marker.color)))
         .collect();
-    assert_eq!(indicators, vec![Some(('●', Color::Red)), None]);
+    // Leading `None` is the session header row, then w1 (blocked) and w2.
+    assert_eq!(indicators, vec![None, Some(('●', Color::Red)), None]);
 }
 
 #[test]
@@ -7711,13 +7810,11 @@ fn keybindings_overlay_filters_navigates_and_closes() {
     assert!(state.query_active);
     let matches = App::keybinding_candidates(state);
     assert!(
-        matches
-            .iter()
-            .all(|&i| {
-                let row = &state.rows[i];
-                let hay = format!("{} {}", row.keys, row.description).to_lowercase();
-                hay.contains('z')
-            }),
+        matches.iter().all(|&i| {
+            let row = &state.rows[i];
+            let hay = format!("{} {}", row.keys, row.description).to_lowercase();
+            hay.contains('z')
+        }),
         "filter should only keep rows fuzzy-matching the query"
     );
 

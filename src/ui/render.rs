@@ -58,12 +58,15 @@ impl AgentIndicator {
     }
 }
 
-/// One window row of the sidebar.
+/// One row of the sidebar: either a session header or a window under it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SideTreeEntry {
     pub label: String,
     /// Aggregated agent marker when any pane in the window has an agent.
     pub indicator: Option<AgentIndicator>,
+    /// True for a session-name header row; such rows are never selectable and
+    /// are drawn without the `>` marker so they group the windows beneath them.
+    pub is_header: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -510,6 +513,24 @@ fn compose_side_window_tree(
         let entry_idx = start + row;
         let entry = side.entries.get(entry_idx);
         let y = 1 + row;
+
+        // Session headers group the windows beneath them: no marker, drawn
+        // bold so they stand apart from the (indented) window rows.
+        if entry.map(|entry| entry.is_header).unwrap_or(false) {
+            let label = entry.map(|entry| entry.label.as_str()).unwrap_or_default();
+            draw_text_with_style(
+                frame,
+                content_x,
+                y,
+                &fixed_width(label, content_w),
+                CellStyle {
+                    bold: true,
+                    ..CellStyle::default()
+                },
+            );
+            continue;
+        }
+
         let is_selected = entry_idx == selected && !side.entries.is_empty();
         let marker = if is_selected { '>' } else { ' ' };
         let label = entry.map(|entry| entry.label.as_str()).unwrap_or_default();
@@ -1636,10 +1657,12 @@ mod tests {
                 SideTreeEntry {
                     label: "w1".to_string(),
                     indicator: None,
+                    is_header: false,
                 },
                 SideTreeEntry {
                     label: "w2".to_string(),
                     indicator: None,
+                    is_header: false,
                 },
             ],
             selected: 1,
@@ -1692,10 +1715,12 @@ mod tests {
                 SideTreeEntry {
                     label: "w1:very-long-window-name".to_string(),
                     indicator: AgentIndicator::for_state(crate::agent::AgentDisplayState::Blocked),
+                    is_header: false,
                 },
                 SideTreeEntry {
                     label: "w2".to_string(),
                     indicator: None,
+                    is_header: false,
                 },
             ],
             selected: 0,

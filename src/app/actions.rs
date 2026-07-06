@@ -130,6 +130,53 @@ impl App {
         }
     }
 
+    /// Move focus to the next (`delta > 0`) or previous (`delta < 0`) window in
+    /// a flat list spanning every session, wrapping around the ends. This is the
+    /// vertical-edge fallback for `Focus(Up/Down)`: at the last window of a
+    /// session it steps into the first window of the next session, and past the
+    /// final window it wraps to the very first one.
+    pub(super) fn focus_global_window_relative(&mut self, delta: isize) {
+        let order = self
+            .sessions
+            .iter()
+            .enumerate()
+            .flat_map(|(session_index, managed)| {
+                managed
+                    .session
+                    .window_entries()
+                    .into_iter()
+                    .map(move |entry| (session_index, entry.index))
+            })
+            .collect::<Vec<_>>();
+        if order.len() <= 1 {
+            return;
+        }
+
+        let focused_window = self.current_session().focused_window_number();
+        let current = order
+            .iter()
+            .position(|&(session_index, window_number)| {
+                session_index == self.view.active_session && Some(window_number) == focused_window
+            })
+            .unwrap_or(0);
+        let next = (current as isize + delta).rem_euclid(order.len() as isize) as usize;
+        let (target_session, target_window) = order[next];
+
+        if target_session != self.view.active_session {
+            self.view.active_session = target_session;
+        }
+        if self
+            .current_session_mut()
+            .focus_window_number(target_window)
+            .is_ok()
+        {
+            self.apply_action_effects(ActionEffects {
+                full_clear: true,
+                ..ActionEffects::focus()
+            });
+        }
+    }
+
     pub(super) fn handle_action(&mut self, action: CommandAction) -> AppSignal {
         let (cols, rows) = self.current_effective_pane_dims();
 
@@ -158,16 +205,8 @@ impl App {
                         Direction::Right => {
                             return self.handle_action(CommandAction::NextSession);
                         }
-                        Direction::Up => {
-                            if self.current_session_mut().focus_prev_window().is_ok() {
-                                self.apply_action_effects(ActionEffects::focus());
-                            }
-                        }
-                        Direction::Down => {
-                            if self.current_session_mut().focus_next_window().is_ok() {
-                                self.apply_action_effects(ActionEffects::focus());
-                            }
-                        }
+                        Direction::Up => self.focus_global_window_relative(-1),
+                        Direction::Down => self.focus_global_window_relative(1),
                     }
                 }
             }

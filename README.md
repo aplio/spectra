@@ -303,12 +303,13 @@ Global data files:
 ## Default keybindings
 
 - `Alt+Arrow` focus pane in direction (global, no prefix needed)
+  - at a vertical edge (no pane above/below), `Alt+Up`/`Alt+Down` step to the previous/next window across **all** sessions, wrapping from the last window back to the first (and from the first back to the last). Left/right at a horizontal edge still switch sessions.
   - **macOS note**: most terminals intercept Alt+Left/Right. On Ghostty, add to your config:
     `keybind = alt+left=text:\x1b[1;3D` and `keybind = alt+right=text:\x1b[1;3C`
 - `Ctrl+j` enter prefix mode
 - prefix `|` split vertical
 - prefix `"` split horizontal
-- prefix arrows move focus
+- prefix arrows move focus (up/down at a window edge behave like `Alt+Up`/`Alt+Down`: step across every session's windows with wrap)
 - prefix `[` enter cursor mode (frozen in-pane snapshot + scrollback selection)
 - prefix `c` create new window
 - prefix `n` create new session
@@ -320,13 +321,13 @@ Global data files:
 - prefix `o` next pane in focus history
 - prefix `O` previous pane in focus history
 - prefix `w` or prefix `Tab` open tree popup (session -> window -> pane)
-- prefix `e` toggle side window tree split view on the left (window list for the current session)
+- prefix `e` toggle side window tree split view on the left; it lists the windows of **every** session, grouped under a bold session-name header, so you can see and jump to windows in other sessions at a glance
 - prefix `Ctrl+Arrow` resize focused pane
 - prefix `{` / `}` swap window with prev/next
 - prefix `(` / `)` previous/next session
 - prefix `s` open tree popup
-- side window tree keys: `Up`/`Down` or `k`/`j` move selection, `Enter`/`Right`/`l` focuses selected window, `Esc` closes the sidebar
-- side window tree state is per window, and the current selected window row is rendered with `>` + reverse highlight
+- side window tree rows span all sessions: each session name is a bold header and its windows are listed (and indented) beneath it; clicking a window row switches to that session and focuses the window
+- side window tree marks the active session's focused window row with `>` + reverse highlight; header rows are never selected
 - tree popup keys: `/` enters query edit focus; in query focus use `Left`/`Right`, `Ctrl+f/b/a/e`, `Ctrl+Left/Right`, `Ctrl+w/k/u` to edit query
 - tree popup keys: `Down` (or `Ctrl+n`/`Ctrl+j`) from query focus enters candidate focus at the first match; `Ctrl+p` also switches to candidate focus and moves selection up
 - tree popup keys: in candidate focus, `Up`/`Down` (or `j`/`k`) move selection, `Left`/`Right` (or `h`/`l`, `Shift+Tab`/`Tab`) collapse-expand, `Up` on first candidate returns to query focus; `h/j/k/l` only navigate outside query focus and type into the filter while it is active

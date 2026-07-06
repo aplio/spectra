@@ -175,9 +175,12 @@ impl App {
                 self.view.text_selection = None;
                 let side_window_tree = self.side_window_tree_overlay();
                 if let Some(side) = side_window_tree.as_ref()
-                    && let Some(window_number) =
-                        self.side_window_tree_window_number_at(side, mouse.column, mouse.row)
+                    && let Some((session_index, window_number)) =
+                        self.side_window_tree_target_at(side, mouse.column, mouse.row)
                 {
+                    if session_index != self.view.active_session {
+                        self.select_session(session_index);
+                    }
                     if self
                         .current_session_mut()
                         .focus_window_number(window_number)
