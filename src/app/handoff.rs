@@ -333,6 +333,9 @@ impl App {
             }
             if let Some(cwd) = &entry.cwd {
                 managed.cwd_fallbacks.insert(entry.pane_id, cwd.clone());
+                managed
+                    .session
+                    .seed_pane_cwd(entry.pane_id, std::path::PathBuf::from(cwd));
             }
             let auto_name = Self::resolve_auto_pane_name(managed, entry.pane_id);
             Self::set_name(

@@ -162,6 +162,100 @@ fn split_creates_new_pane() {
     assert_eq!(session.window_count(), 1);
 }
 
+/// Factory that records every spawn cwd and makes only its first spawned
+/// backend emit an OSC 7 sequence, so a split can be asserted to inherit the
+/// focused pane's tracked cwd (either seeded at spawn or reported via OSC 7).
+struct Osc7SplitFactory {
+    configs: Arc<Mutex<Vec<PaneSpawnConfig>>>,
+    first_output: Mutex<Option<Vec<u8>>>,
+}
+
+impl PaneFactory for Osc7SplitFactory {
+    fn spawn(&self, config: &PaneSpawnConfig) -> io::Result<Box<dyn PaneBackend>> {
+        self.configs
+            .lock()
+            .expect("spawn config lock")
+            .push(config.clone());
+        let output = self
+            .first_output
+            .lock()
+            .expect("first output lock")
+            .take()
+            .map(|bytes| vec![bytes])
+            .unwrap_or_default();
+        Ok(Box::new(FakeBackend::new(output)))
+    }
+}
+
+#[test]
+fn split_inherits_seeded_spawn_cwd() {
+    // The session cwd is seeded onto the initial pane at spawn; a split before
+    // any OSC 7 is emitted must still inherit that directory.
+    let dir = std::env::temp_dir();
+    let configs = Arc::new(Mutex::new(Vec::new()));
+    let factory = SpawnConfigFactory {
+        configs: Arc::clone(&configs),
+    };
+    let mut options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    options.cwd = Some(dir.clone());
+    let mut session =
+        SessionManager::with_factory(options, Arc::new(factory), 80, 24).expect("create session");
+
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split vertical");
+
+    let configs = configs.lock().expect("configs lock");
+    assert_eq!(
+        configs.len(),
+        2,
+        "one spawn for the initial pane, one for split"
+    );
+    assert_eq!(configs[0].cwd.as_deref(), Some(dir.as_path()));
+    assert_eq!(configs[1].cwd.as_deref(), Some(dir.as_path()));
+}
+
+#[test]
+fn split_inherits_osc7_reported_cwd() {
+    // Session cwd is unset, so inheritance can only come from the OSC 7 the
+    // focused pane emits before the split.
+    let dir = std::env::temp_dir();
+    let dir_str = dir.to_str().expect("utf8 temp dir");
+    let osc7 = format!("\x1b]7;file://localhost{dir_str}\x07").into_bytes();
+
+    let configs = Arc::new(Mutex::new(Vec::new()));
+    let factory = Osc7SplitFactory {
+        configs: Arc::clone(&configs),
+        first_output: Mutex::new(Some(osc7)),
+    };
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session =
+        SessionManager::with_factory(options, Arc::new(factory), 80, 24).expect("create session");
+
+    // Drive the focused pane so it consumes the OSC 7 sequence.
+    session.poll_output();
+
+    // The event still flows to the App layer (pane naming keeps working).
+    assert!(
+        session.take_terminal_events().iter().any(
+            |event| matches!(&event.event, TerminalEvent::CwdChanged { cwd } if cwd == dir_str)
+        ),
+        "CwdChanged event should still be surfaced to the App",
+    );
+
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split vertical");
+
+    let configs = configs.lock().expect("configs lock");
+    assert_eq!(configs.len(), 2);
+    assert_eq!(
+        configs[0].cwd, None,
+        "initial pane spawns with the session cwd"
+    );
+    assert_eq!(configs[1].cwd.as_deref(), Some(dir.as_path()));
+}
+
 #[test]
 fn set_host_colors_updates_existing_and_future_panes() {
     use crate::io::host_colors::HostColors;

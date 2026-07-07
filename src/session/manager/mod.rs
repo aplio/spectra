@@ -557,6 +557,17 @@ impl SessionManager {
         true
     }
 
+    /// Seed one pane's tracked cwd after a live handoff, so splits/new windows
+    /// created in the successor process still inherit the focused directory.
+    /// Returns false when the pane does not exist.
+    pub fn seed_pane_cwd(&mut self, pane_id: PaneId, cwd: PathBuf) -> bool {
+        let Some(pane) = self.panes.get_mut(&pane_id) else {
+            return false;
+        };
+        pane.set_cwd(Some(cwd));
+        true
+    }
+
     /// Replace the factory used for future pane spawns. The successor server
     /// restores sessions through a fd-adopting factory and then swaps back to
     /// the real PTY factory so later splits spawn fresh shells.
@@ -686,6 +697,7 @@ pub(super) fn spawn_pane(
     })?;
     let mut pane = Pane::new(width, height, options.allow_passthrough, backend);
     pane.set_host_colors(options.host_colors);
+    pane.set_cwd(options.cwd.clone());
     Ok(pane)
 }
 

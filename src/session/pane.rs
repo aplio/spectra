@@ -1,4 +1,5 @@
 use std::io;
+use std::path::{Path, PathBuf};
 
 use crate::io::host_colors::HostColors;
 use crate::session::terminal_state::{StyledCell, TerminalEvent, TerminalState};
@@ -41,6 +42,11 @@ pub struct Pane {
     /// Last ≤[`MAX_REPLAY_BYTES_PER_PANE`] raw output bytes, kept so a live
     /// server handoff can repaint the pane in the successor process.
     replay_tail: Vec<u8>,
+    /// Working directory reported by the guest via OSC 7 (or seeded from the
+    /// spawn cwd). New splits/windows spawn here so they inherit the focused
+    /// pane's directory. `None` until the shell emits its first OSC 7 and no
+    /// spawn cwd was set.
+    cwd: Option<PathBuf>,
 }
 
 impl Pane {
@@ -57,7 +63,19 @@ impl Pane {
             pending_passthrough: Vec::new(),
             pending_terminal_events: Vec::new(),
             replay_tail: Vec::new(),
+            cwd: None,
         }
+    }
+
+    /// Working directory last reported by the guest (OSC 7) or seeded at spawn.
+    pub fn cwd(&self) -> Option<&Path> {
+        self.cwd.as_deref()
+    }
+
+    /// Seed/override the tracked cwd. Called by `spawn_pane` with the spawn
+    /// cwd, and by the handoff path with the transferred cwd metadata.
+    pub fn set_cwd(&mut self, cwd: Option<PathBuf>) {
+        self.cwd = cwd;
     }
 
     pub fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
@@ -107,8 +125,13 @@ impl Pane {
             self.push_replay_tail(&chunk);
             self.pending_passthrough
                 .extend(self.terminal.drain_passthrough());
-            self.pending_terminal_events
-                .extend(self.terminal.drain_events());
+            let events = self.terminal.drain_events();
+            for event in &events {
+                if let TerminalEvent::CwdChanged { cwd } = event {
+                    self.cwd = Some(PathBuf::from(cwd));
+                }
+            }
+            self.pending_terminal_events.extend(events);
             changed = true;
         }
         if changed && let Some(target_origin) = preserve_view_origin {
@@ -393,6 +416,15 @@ mod tests {
         let mut pane = pane_with_output(vec![b"hello ".to_vec(), b"world".to_vec()]);
         assert!(pane.poll_output());
         assert_eq!(pane.replay_tail(), b"hello world");
+    }
+
+    #[test]
+    fn poll_output_tracks_osc7_cwd() {
+        let osc7 = b"\x1b]7;file://localhost/tmp/some/dir\x07".to_vec();
+        let mut pane = pane_with_output(vec![osc7]);
+        assert_eq!(pane.cwd(), None);
+        assert!(pane.poll_output());
+        assert_eq!(pane.cwd(), Some(std::path::Path::new("/tmp/some/dir")));
     }
 
     #[test]

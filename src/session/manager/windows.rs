@@ -4,11 +4,16 @@ impl SessionManager {
     pub fn split_focused(&mut self, axis: SplitAxis, cols: u16, rows: u16) -> Result<(), String> {
         self.ensure_active_window_unzoomed()?;
         let area = workspace_area(cols, rows);
+        let inherited_cwd = self.focused_pane_cwd();
         let new_pane_id = self.next_pane_id;
         self.next_pane_id += 1;
 
+        let mut pane_options = self.options.clone();
+        if let Some(cwd) = inherited_cwd {
+            pane_options.cwd = Some(cwd);
+        }
         let mut new_pane = spawn_pane(
-            &self.options,
+            &pane_options,
             &*self.pane_factory,
             new_pane_id,
             area.width.max(1),
@@ -26,7 +31,8 @@ impl SessionManager {
     }
 
     pub fn new_window(&mut self, cols: u16, rows: u16) -> Result<(), String> {
-        self.new_window_with_command(cols, rows, self.options.command.clone())
+        let inherited_cwd = self.focused_pane_cwd();
+        self.new_window_with_command_cwd(cols, rows, self.options.command.clone(), inherited_cwd)
     }
 
     pub fn new_window_with_command(
@@ -35,12 +41,25 @@ impl SessionManager {
         rows: u16,
         command: Vec<String>,
     ) -> Result<(), String> {
+        self.new_window_with_command_cwd(cols, rows, command, None)
+    }
+
+    fn new_window_with_command_cwd(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        command: Vec<String>,
+        cwd: Option<PathBuf>,
+    ) -> Result<(), String> {
         let area = workspace_area(cols, rows);
         let new_pane_id = self.next_pane_id;
         self.next_pane_id += 1;
 
         let mut pane_options = self.options.clone();
         pane_options.command = command;
+        if let Some(cwd) = cwd {
+            pane_options.cwd = Some(cwd);
+        }
         let new_pane = spawn_pane(
             &pane_options,
             &*self.pane_factory,
@@ -63,6 +82,19 @@ impl SessionManager {
         self.active_window = self.windows.len().saturating_sub(1);
         self.apply_layout_sizes(cols, rows)
             .map_err(|err| err.to_string())
+    }
+
+    /// Current working directory of the focused pane, resolved from the cwd it
+    /// reported via OSC 7 (or the cwd it was spawned with). Used so a freshly
+    /// split pane or new window starts in the same directory the user is
+    /// already in, rather than the session's startup directory. Returns `None`
+    /// (falling back to the session cwd) when there is no focused pane, no cwd
+    /// has been tracked yet, or the tracked path is no longer a directory (e.g.
+    /// a stale or remote OSC 7 path that does not resolve locally).
+    fn focused_pane_cwd(&self) -> Option<PathBuf> {
+        let pane_id = self.focused_pane_id()?;
+        let cwd = self.panes.get(&pane_id)?.cwd()?;
+        cwd.is_dir().then(|| cwd.to_path_buf())
     }
 
     pub fn focus(&mut self, direction: Direction, cols: u16, rows: u16) -> Result<(), String> {
