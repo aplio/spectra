@@ -30,6 +30,35 @@ impl App {
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
 
+        // Resolve a pending `g` chord (`gg`, `ge`, `gh`, `gl`). Any other key
+        // simply cancels the chord and is otherwise ignored, mirroring gargo.
+        if std::mem::take(&mut state.pending_goto) && !has_ctrl_or_alt {
+            match key.code {
+                KeyCode::Char('g') => {
+                    Self::cursor_mode_drop_transient_selection(&mut state);
+                    Self::cursor_mode_goto_line(&mut state, 0);
+                }
+                KeyCode::Char('e') => {
+                    Self::cursor_mode_drop_transient_selection(&mut state);
+                    let last = state.lines.len().saturating_sub(1);
+                    Self::cursor_mode_goto_line(&mut state, last);
+                }
+                KeyCode::Char('h') => {
+                    Self::cursor_mode_drop_transient_selection(&mut state);
+                    state.cursor.col = 0;
+                }
+                KeyCode::Char('l') => {
+                    Self::cursor_mode_drop_transient_selection(&mut state);
+                    let len = Self::cursor_mode_line_char_len(&state, state.cursor.line);
+                    state.cursor.col = len.saturating_sub(1);
+                }
+                _ => {}
+            }
+            Self::cursor_mode_clamp_cursor(&mut state);
+            Self::cursor_mode_ensure_visible(&mut state, view_rows);
+            return InputMode::CursorMode { state };
+        }
+
         match key.code {
             KeyCode::Esc => return InputMode::Normal,
             KeyCode::Char('q') if !has_ctrl_or_alt => return InputMode::Normal,
@@ -67,6 +96,14 @@ impl App {
                 Self::cursor_mode_drop_transient_selection(&mut state);
                 let len = Self::cursor_mode_line_char_len(&state, state.cursor.line);
                 state.cursor.col = len.saturating_sub(1);
+            }
+            KeyCode::Char('g') if !has_ctrl_or_alt => {
+                state.pending_goto = true;
+            }
+            KeyCode::Char('G') if !has_ctrl_or_alt => {
+                Self::cursor_mode_drop_transient_selection(&mut state);
+                let last = state.lines.len().saturating_sub(1);
+                Self::cursor_mode_goto_line(&mut state, last);
             }
             KeyCode::Char('w') if !has_ctrl_or_alt => {
                 if !state.visual {
@@ -165,6 +202,23 @@ impl App {
         };
     }
 
+    /// Jumps the cursor to `line` (clamped to the buffer), preserving the
+    /// column where possible — the shared landing for `gg`/`ge`/`G`.
+    fn cursor_mode_goto_line(state: &mut CursorModeState, line: usize) {
+        if state.lines.is_empty() {
+            state.cursor = CursorModePoint::default();
+            return;
+        }
+        let max_line = state.lines.len().saturating_sub(1);
+        state.cursor.line = line.min(max_line);
+        let len = Self::cursor_mode_line_char_len(state, state.cursor.line);
+        state.cursor.col = if len == 0 {
+            0
+        } else {
+            state.cursor.col.min(len - 1)
+        };
+    }
+
     pub(super) fn cursor_mode_scroll_by(
         state: &mut CursorModeState,
         delta: isize,
@@ -222,6 +276,7 @@ impl App {
             selection_anchor: None,
             visual: false,
             viewport_top,
+            pending_goto: false,
         };
         Self::cursor_mode_clamp_cursor(&mut state);
         Self::cursor_mode_ensure_visible(&mut state, view_rows);

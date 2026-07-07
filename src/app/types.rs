@@ -217,6 +217,9 @@ pub(super) struct CursorModeState {
     /// the selection instead of dropping the anchor.
     pub visual: bool,
     pub viewport_top: usize,
+    /// True after a bare `g` press, waiting for the second key of a `g`
+    /// chord (`gg`, `ge`, `gh`, `gl`). Reset on the next key.
+    pub pending_goto: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

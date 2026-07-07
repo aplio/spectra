@@ -54,7 +54,7 @@ The prefix is `Ctrl+j`. Press `prefix ?` for the full searchable cheat sheet.
 | `prefix e` | toggle the window-tree sidebar |
 | `prefix p` | command palette |
 | `prefix z` | zoom active pane |
-| `prefix [` | cursor mode (vi-style movement, `v`/`y` select and copy) |
+| `prefix [` | cursor mode (vi-style movement, `g` chords `gg`/`ge`/`gh`/`gl`, `v`/`y` select and copy) |
 | `prefix y` | copy the mouse drag selection |
 | `prefix d` | detach (server keeps running) |
 | `prefix x` | close focused pane (closes the window, then the session, when it's the last one) |

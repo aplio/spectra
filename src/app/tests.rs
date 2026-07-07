@@ -3771,6 +3771,7 @@ fn cursor_mode_movement_and_word_navigation() {
             selection_anchor: None,
             visual: false,
             viewport_top: 0,
+            pending_goto: false,
         },
     };
 
@@ -3829,6 +3830,125 @@ fn cursor_mode_movement_and_word_navigation() {
 }
 
 #[test]
+fn cursor_mode_goto_chord_jumps_like_gargo() {
+    let mut app = build_app_for_resize_test();
+    app.view.input_mode = InputMode::CursorMode {
+        state: super::CursorModeState {
+            pane_id: 1,
+            lines: vec![
+                "first line".to_string(),
+                "second".to_string(),
+                "third line here".to_string(),
+            ],
+            styled_lines: Vec::new(),
+            cursor: super::CursorModePoint { line: 0, col: 2 },
+            selection_anchor: None,
+            visual: false,
+            viewport_top: 0,
+            pending_goto: false,
+        },
+    };
+
+    // `ge` jumps to the last line.
+    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+        .expect("g starts chord");
+    let InputMode::CursorMode { state } = &app.view.input_mode else {
+        panic!("expected cursor mode");
+    };
+    assert!(state.pending_goto, "g should arm the goto chord");
+    assert_eq!(state.cursor.line, 0, "bare g does not move");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
+        .expect("ge to file end");
+    let InputMode::CursorMode { state } = &app.view.input_mode else {
+        panic!("expected cursor mode");
+    };
+    assert!(!state.pending_goto, "chord resets after second key");
+    assert_eq!(state.cursor.line, 2);
+    assert_eq!(state.cursor.col, 2);
+
+    // `gl` jumps to line end, `gh` to line start.
+    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+        .expect("g starts chord");
+    app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE))
+        .expect("gl to line end");
+    let InputMode::CursorMode { state } = &app.view.input_mode else {
+        panic!("expected cursor mode");
+    };
+    assert_eq!(state.cursor.col, 14);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+        .expect("g starts chord");
+    app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE))
+        .expect("gh to line start");
+    let InputMode::CursorMode { state } = &app.view.input_mode else {
+        panic!("expected cursor mode");
+    };
+    assert_eq!(state.cursor.col, 0);
+
+    // `gg` jumps back to the first line.
+    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+        .expect("g starts chord");
+    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+        .expect("gg to file start");
+    let InputMode::CursorMode { state } = &app.view.input_mode else {
+        panic!("expected cursor mode");
+    };
+    assert_eq!(state.cursor.line, 0);
+
+    // A bare `G` also jumps to the last line.
+    app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE))
+        .expect("G to file end");
+    let InputMode::CursorMode { state } = &app.view.input_mode else {
+        panic!("expected cursor mode");
+    };
+    assert_eq!(state.cursor.line, 2);
+
+    // An unrecognized key after `g` cancels the chord without acting.
+    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+        .expect("g starts chord");
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE))
+        .expect("z cancels chord");
+    let InputMode::CursorMode { state } = &app.view.input_mode else {
+        panic!("expected cursor mode still active");
+    };
+    assert!(!state.pending_goto, "unknown key clears the chord");
+    assert_eq!(state.cursor.line, 2, "cancel does not move");
+}
+
+#[test]
+fn cursor_mode_goto_chord_extends_visual_selection() {
+    let mut app = build_app_for_resize_test();
+    app.view.input_mode = InputMode::CursorMode {
+        state: super::CursorModeState {
+            pane_id: 1,
+            lines: vec!["one".to_string(), "two".to_string(), "three".to_string()],
+            styled_lines: Vec::new(),
+            cursor: super::CursorModePoint { line: 0, col: 0 },
+            selection_anchor: Some(super::CursorModePoint { line: 0, col: 0 }),
+            visual: true,
+            viewport_top: 0,
+            pending_goto: false,
+        },
+    };
+
+    // `ge` should extend the visual selection to the bottom.
+    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+        .expect("g starts chord");
+    app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
+        .expect("ge to file end");
+    let InputMode::CursorMode { state } = &app.view.input_mode else {
+        panic!("expected cursor mode");
+    };
+    assert_eq!(state.cursor.line, 2);
+    assert_eq!(
+        state.selection_anchor,
+        Some(super::CursorModePoint { line: 0, col: 0 }),
+        "visual anchor survives the jump"
+    );
+}
+
+#[test]
 fn cursor_mode_word_navigation_crosses_lines_like_gargo() {
     let mut app = build_app_for_resize_test();
     app.view.input_mode = InputMode::CursorMode {
@@ -3840,6 +3960,7 @@ fn cursor_mode_word_navigation_crosses_lines_like_gargo() {
             selection_anchor: None,
             visual: false,
             viewport_top: 0,
+            pending_goto: false,
         },
     };
 
@@ -3888,6 +4009,7 @@ fn cursor_mode_word_navigation_handles_punctuation_blocks_like_gargo() {
             selection_anchor: None,
             visual: false,
             viewport_top: 0,
+            pending_goto: false,
         },
     };
 
@@ -3939,6 +4061,7 @@ fn cursor_mode_word_end_navigation_crosses_lines_like_gargo() {
             selection_anchor: None,
             visual: false,
             viewport_top: 0,
+            pending_goto: false,
         },
     };
 
@@ -3971,6 +4094,7 @@ fn cursor_mode_word_end_navigation_handles_punctuation_blocks_like_gargo() {
             selection_anchor: None,
             visual: false,
             viewport_top: 0,
+            pending_goto: false,
         },
     };
 
@@ -4015,6 +4139,7 @@ fn cursor_mode_v_toggles_selection_anchor() {
             selection_anchor: None,
             visual: false,
             viewport_top: 0,
+            pending_goto: false,
         },
     };
 
@@ -4048,6 +4173,7 @@ fn cursor_mode_space_does_not_toggle_selection_anchor() {
             selection_anchor: Some(super::CursorModePoint { line: 0, col: 1 }),
             visual: false,
             viewport_top: 0,
+            pending_goto: false,
         },
     };
 
@@ -4075,6 +4201,7 @@ fn cursor_mode_x_selects_current_line() {
             selection_anchor: None,
             visual: false,
             viewport_top: 0,
+            pending_goto: false,
         },
     };
 
@@ -4103,6 +4230,7 @@ fn cursor_mode_x_extends_line_selection_down() {
             selection_anchor: None,
             visual: false,
             viewport_top: 0,
+            pending_goto: false,
         },
     };
 
@@ -4133,6 +4261,7 @@ fn cursor_mode_x_at_last_line_does_not_move_past_buffer_end() {
             selection_anchor: None,
             visual: false,
             viewport_top: 0,
+            pending_goto: false,
         },
     };
 
@@ -4161,6 +4290,7 @@ fn cursor_mode_selection_extracts_multiline_text() {
         selection_anchor: Some(super::CursorModePoint { line: 0, col: 1 }),
         visual: false,
         viewport_top: 0,
+        pending_goto: false,
     };
 
     assert_eq!(
