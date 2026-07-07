@@ -153,6 +153,20 @@ impl App {
         )
     }
 
+    /// Height (in rows) of the focused pane as it is actually laid out. Used to
+    /// bound scrolling so a split pane scrolls against its own viewport rather
+    /// than the full workspace height.
+    pub(super) fn focused_pane_view_rows(&self) -> usize {
+        self.pane_frame_for_current_view_with_sidebar(None)
+            .panes
+            .iter()
+            .find(|pane| pane.focused)
+            .map(|pane| pane.rect.height)
+            .filter(|height| *height > 0)
+            .unwrap_or_else(|| usize::from(self.view.rows.saturating_sub(1)))
+            .max(1)
+    }
+
     fn side_window_tree_width(&self) -> Option<usize> {
         Self::side_window_tree_width_for_cols(self.view.cols).map(usize::from)
     }

@@ -180,7 +180,7 @@ impl App {
 
         // Handle scroll events in both Normal and cursor modes.
         const MOUSE_SCROLL_LINES: isize = 3;
-        let pane_view_rows = usize::from(self.view.rows.saturating_sub(1)).max(1);
+        let pane_view_rows = self.focused_pane_view_rows();
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 self.needs_render = true;

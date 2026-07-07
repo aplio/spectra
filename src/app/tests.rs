@@ -5523,6 +5523,41 @@ fn normal_send_bytes_marks_render_when_manual_scroll_is_reset() {
 }
 
 #[test]
+fn mouse_scroll_reaches_history_top_in_split_pane() {
+    let (mut app, _writes) = build_recording_app_with_history();
+    app.mouse_enabled = true;
+    app.current_session_mut()
+        .split_focused(crate::ui::window_manager::SplitAxis::Horizontal, 80, 24)
+        .expect("split focused pane");
+    // Feed the recorded history into the freshly split panes.
+    app.tick();
+
+    // A stacked split leaves the focused pane shorter than the workspace, so
+    // scrolling must bound against the pane height, not the full view.
+    let pane_rows = app.focused_pane_view_rows();
+    let workspace_rows = usize::from(app.view.rows.saturating_sub(1));
+    assert!(
+        pane_rows < workspace_rows,
+        "split pane height {pane_rows} should be smaller than workspace {workspace_rows}",
+    );
+
+    // Scroll up well past the top of the buffer.
+    for _ in 0..100 {
+        app.handle_mouse_event(mouse_event(MouseEventKind::ScrollUp, 1, 1))
+            .expect("scroll up");
+    }
+
+    let origin = app
+        .current_session()
+        .focused_view_row_origin(pane_rows)
+        .expect("focused view origin");
+    assert_eq!(
+        origin, 0,
+        "manual scroll should reach the top of history in a split pane",
+    );
+}
+
+#[test]
 fn kitty_enabled_pane_receives_csi_u_encoded_keys() {
     // The guest pushes kitty keyboard flags (bit 1: disambiguate).
     let (mut app, writes) = build_recording_app_with_output(vec![b"\x1b[>1u".to_vec()]);
