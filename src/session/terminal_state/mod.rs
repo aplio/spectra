@@ -10,6 +10,7 @@ pub use modes::MouseProtocol;
 use modes::KittyKeyboardStack;
 use passthrough::TmuxPassthroughState;
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crossterm::style::Color;
@@ -323,7 +324,7 @@ impl TerminalState {
 
 struct SavedScreen {
     cells: Vec<StyledCell>,
-    scrollback: Vec<HistoryLine>,
+    scrollback: VecDeque<HistoryLine>,
     row_boundaries: Vec<RowBoundary>,
     cursor_x: usize,
     cursor_y: usize,
@@ -336,7 +337,11 @@ struct TerminalGrid {
     width: usize,
     height: usize,
     cells: Vec<StyledCell>,
-    scrollback: Vec<HistoryLine>,
+    /// Scrollback is a deque because the hot path once it is full is
+    /// push-one-line + evict-one-line per scrolled row: with a Vec the
+    /// eviction (`drain(0..1)`) memmoves the entire history on every
+    /// newline, which dominated flood-ingest profiles.
+    scrollback: VecDeque<HistoryLine>,
     row_boundaries: Vec<RowBoundary>,
     scroll_top: usize,
     scroll_bottom: usize,

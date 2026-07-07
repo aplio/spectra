@@ -152,7 +152,7 @@ impl TerminalGrid {
         self.height = new_height;
         self.cells = new_cells;
         self.row_boundaries = new_boundaries;
-        self.scrollback = new_scrollback;
+        self.scrollback = new_scrollback.into();
         self.scroll_top = 0;
         self.scroll_bottom = new_height.saturating_sub(1);
         self.cursor_x = cursor_col.min(new_width.saturating_sub(1));

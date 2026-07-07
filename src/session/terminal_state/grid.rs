@@ -9,7 +9,7 @@ impl TerminalGrid {
             width,
             height,
             cells: vec![StyledCell::default(); width * height],
-            scrollback: Vec::new(),
+            scrollback: VecDeque::new(),
             row_boundaries: vec![RowBoundary::None; height],
             scroll_top: 0,
             scroll_bottom: height.saturating_sub(1),
@@ -119,8 +119,9 @@ impl TerminalGrid {
         if scrollback_keep > 0 {
             let start = self.scrollback.len().saturating_sub(scrollback_keep);
             lines.extend(
-                self.scrollback[start..]
+                self.scrollback
                     .iter()
+                    .skip(start)
                     .map(|line| line.text.clone()),
             );
         }
@@ -531,14 +532,13 @@ impl TerminalGrid {
         cells: Vec<StyledCell>,
         boundary_to_next: RowBoundary,
     ) {
-        self.scrollback.push(HistoryLine {
+        self.scrollback.push_back(HistoryLine {
             text,
             cells,
             boundary_to_next,
         });
-        let overflow = self.scrollback.len().saturating_sub(MAX_SCROLLBACK_LINES);
-        if overflow > 0 {
-            self.scrollback.drain(0..overflow);
+        while self.scrollback.len() > MAX_SCROLLBACK_LINES {
+            self.scrollback.pop_front();
         }
     }
 
