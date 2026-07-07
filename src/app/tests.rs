@@ -2213,6 +2213,38 @@ fn command_palette_includes_show_keybindings() {
 }
 
 #[test]
+fn command_palette_includes_copy_version() {
+    let entries = App::command_palette_entries();
+    assert!(entries.iter().any(|entry| {
+        entry.id == "help.copy_version" && entry.action == CommandAction::CopyVersion
+    }));
+}
+
+#[test]
+fn command_palette_copy_version_copies_to_clipboard() {
+    let mut app = build_app_for_resize_test();
+    // Drive a non-local (remote) client so the copy is delivered via a queued
+    // OSC52 sequence rather than spawning a native clipboard tool, which is
+    // unavailable in headless test environments.
+    app.active_client_id = super::LOCAL_CLIENT_ID + 1;
+    open_command_palette(&mut app);
+    type_command_palette_query(&mut app, "copy spectra version");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .expect("execute selected command");
+    let expected = format!(
+        "spectra v{} ({}/{})",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    assert_eq!(
+        app.view.pending_clipboard_ansi,
+        vec![crate::clipboard::osc52_sequence(&expected)],
+        "version string should be queued to the client clipboard"
+    );
+}
+
+#[test]
 fn command_palette_show_keybindings_opens_overlay() {
     let mut app = build_app_for_resize_test();
     open_command_palette(&mut app);

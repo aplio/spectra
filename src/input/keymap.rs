@@ -38,6 +38,8 @@ pub enum CommandAction {
     LeaveCursorMode,
     /// Copy the active mouse text selection to the clipboard.
     CopySelection,
+    /// Copy the spectra version string to the clipboard.
+    CopyVersion,
     CommandPalette,
     ToggleZoom,
     ToggleSynchronizePanes,
@@ -96,6 +98,7 @@ impl CommandAction {
             Self::EnterCursorMode => "Enter cursor mode".to_string(),
             Self::LeaveCursorMode => "Leave cursor mode".to_string(),
             Self::CopySelection => "Copy mouse selection".to_string(),
+            Self::CopyVersion => "Copy spectra version".to_string(),
             Self::CommandPalette => "Open command palette".to_string(),
             Self::ToggleZoom => "Toggle zoom".to_string(),
             Self::ToggleSynchronizePanes => "Toggle synchronize panes".to_string(),

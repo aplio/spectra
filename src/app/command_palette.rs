@@ -556,6 +556,14 @@ impl App {
         );
         Self::push_command_palette_entry(
             &mut entries,
+            "help.copy_version",
+            CommandAction::CopyVersion,
+            "Copy spectra version",
+            "copy spectra version clipboard about",
+            &["action: copy version info to system clipboard"],
+        );
+        Self::push_command_palette_entry(
+            &mut entries,
             "config.reload",
             CommandAction::ReloadConfig,
             "Reload config",

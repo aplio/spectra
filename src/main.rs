@@ -11,10 +11,6 @@ fn main() {
         std::process::exit(1);
     }
     let mode = cli.mode();
-    if mode == spectra::cli::CliMode::Version {
-        println!("{}", spectra::cli::Cli::version_string());
-        return;
-    }
     if matches!(
         mode,
         spectra::cli::CliMode::Update | spectra::cli::CliMode::Check
@@ -55,7 +51,6 @@ fn main() {
         spectra::cli::CliMode::Update | spectra::cli::CliMode::Check => {
             unreachable!("update/check modes handled above")
         }
-        spectra::cli::CliMode::Version => unreachable!("version mode handled above"),
         spectra::cli::CliMode::RunServer => spectra::runtime::server::run(cli),
         spectra::cli::CliMode::AttachOrCreate => {
             spectra::runtime::client::run_attach_or_create(cli)

@@ -654,6 +654,20 @@ impl App {
 
     /// Copy the active mouse selection (kept visible after mouse-up) to the
     /// clipboard and drop the highlight. Bound to the copy-selection action.
+    pub(super) fn copy_spectra_version(&mut self) {
+        let info = format!(
+            "spectra v{} ({}/{})",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
+        match self.copy_text_for_active_client(&info) {
+            Ok(()) => self.set_message(&format!("copied: {info}"), Duration::from_secs(2)),
+            Err(err) => self.set_message(&format!("copy failed: {err}"), Duration::from_secs(3)),
+        }
+        self.needs_render = true;
+    }
+
     pub(super) fn copy_active_text_selection(&mut self) {
         let Some(sel) = self.view.text_selection.take() else {
             self.set_message("no selection to copy", Duration::from_secs(2));
