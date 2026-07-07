@@ -21,14 +21,12 @@ pub enum UpdateCommand {
 struct UpdateRequest {
     current_version: String,
     target: String,
-    expected_asset_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LatestRelease {
     version: String,
     tag: String,
-    asset_name: String,
 }
 
 trait UpdateSource {
@@ -115,7 +113,6 @@ impl UpdateSource for MockUpdateSource {
             MockUpdateState::UpToDate => Ok(LatestRelease {
                 version: request.current_version.clone(),
                 tag: format!("v{}", request.current_version),
-                asset_name: request.expected_asset_name.clone(),
             }),
             MockUpdateState::HasUpdate => {
                 let mut version = parse_semver(&request.current_version)?;
@@ -123,7 +120,6 @@ impl UpdateSource for MockUpdateSource {
                 Ok(LatestRelease {
                     version: version.to_string(),
                     tag: format!("v{version}"),
-                    asset_name: request.expected_asset_name.clone(),
                 })
             }
         }
@@ -217,7 +213,7 @@ fn check_latest_with_source(
     source: &dyn UpdateSource,
     request: &UpdateRequest,
 ) -> Result<Option<String>, String> {
-    let latest = validated_latest_release(source, request)?;
+    let latest = source.latest_release(request)?;
     let current = parse_semver(&request.current_version)?;
     let newest = parse_semver(&latest.version)?;
     Ok((newest > current).then(|| newest.to_string()))
@@ -248,7 +244,7 @@ fn run_with_source(
     command: UpdateCommand,
     request: &UpdateRequest,
 ) -> Result<UpdateOutcome, String> {
-    let latest = validated_latest_release(source, request)?;
+    let latest = source.latest_release(request)?;
     let current = parse_semver(&request.current_version)?;
     let newest = parse_semver(&latest.version)?;
     match command {
@@ -295,20 +291,6 @@ fn run_with_source(
     }
 }
 
-fn validated_latest_release(
-    source: &dyn UpdateSource,
-    request: &UpdateRequest,
-) -> Result<LatestRelease, String> {
-    let latest = source.latest_release(request)?;
-    if latest.asset_name != request.expected_asset_name {
-        return Err(format!(
-            "release asset mismatch for {}: expected {}, got {}",
-            request.target, request.expected_asset_name, latest.asset_name
-        ));
-    }
-    Ok(latest)
-}
-
 fn use_mock_update_source() -> bool {
     matches!(
         std::env::var("SPECTRA_TEST_UPDATE_SOURCE").as_deref(),
@@ -318,11 +300,9 @@ fn use_mock_update_source() -> bool {
 
 fn build_request() -> Result<UpdateRequest, String> {
     let target = resolve_target_triple()?;
-    let expected_asset_name = format!("{BIN_NAME}-{target}.tar.gz");
     Ok(UpdateRequest {
         current_version: env!("CARGO_PKG_VERSION").to_string(),
         target,
-        expected_asset_name,
     })
 }
 
@@ -343,17 +323,19 @@ fn latest_release_from_release(
     release: Release,
     request: &UpdateRequest,
 ) -> Result<LatestRelease, String> {
-    let asset = release.asset_for(&request.target, None).ok_or_else(|| {
+    release.asset_for(&request.target, None).ok_or_else(|| {
         format!(
             "latest release does not include an asset for target {}",
             request.target
         )
     })?;
-    Ok(LatestRelease {
-        version: normalize_version_string(&release.version),
-        tag: release.version,
-        asset_name: asset.name,
-    })
+    let version = normalize_version_string(&release.version);
+    let tag = if release.version.starts_with('v') {
+        release.version
+    } else {
+        format!("v{version}")
+    };
+    Ok(LatestRelease { version, tag })
 }
 
 fn normalize_version_string(version: &str) -> String {
@@ -377,7 +359,6 @@ mod tests {
         UpdateRequest {
             current_version: "0.1.5".to_string(),
             target: "linux-x86_64".to_string(),
-            expected_asset_name: "spectra-linux-x86_64.tar.gz".to_string(),
         }
     }
 
