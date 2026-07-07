@@ -364,6 +364,59 @@ impl App {
                     self.needs_full_clear = true;
                 }
             }
+            CommandAction::EnterResizeMode => {
+                self.view.input_mode = InputMode::ResizeMode;
+            }
+            CommandAction::SwapPane(direction) => {
+                match self
+                    .current_session_mut()
+                    .swap_pane_in_direction(direction, cols, rows)
+                {
+                    Ok(()) => self.apply_action_effects(ActionEffects::reorder()),
+                    Err(err) => self.set_message(&err, Duration::from_secs(2)),
+                }
+            }
+            CommandAction::BreakPane => {
+                match self
+                    .current_session_mut()
+                    .break_focused_pane_to_new_window(cols, rows)
+                {
+                    Ok(pane_id) => {
+                        self.apply_action_effects(ActionEffects::structure(
+                            HookEvent::WindowCreated,
+                        ));
+                        self.write_log(&format!("broke pane {pane_id} into new window"));
+                        self.set_message("pane moved to new window", Duration::from_secs(2));
+                    }
+                    Err(err) => {
+                        self.set_message(
+                            &format!("break pane failed: {err}"),
+                            Duration::from_secs(3),
+                        );
+                    }
+                }
+            }
+            CommandAction::MovePaneToWindow(number) => {
+                match self
+                    .current_session_mut()
+                    .move_focused_pane_to_window(number, cols, rows)
+                {
+                    Ok(pane_id) => {
+                        self.apply_action_effects(ActionEffects::reorder());
+                        self.write_log(&format!("moved pane {pane_id} to window {number}"));
+                        self.set_message(
+                            &format!("pane moved to window {number}"),
+                            Duration::from_secs(2),
+                        );
+                    }
+                    Err(err) => {
+                        self.set_message(
+                            &format!("move pane failed: {err}"),
+                            Duration::from_secs(3),
+                        );
+                    }
+                }
+            }
             CommandAction::SwapPrevWindow => {
                 if self.current_session_mut().swap_prev_window().is_ok() {
                     self.apply_action_effects(ActionEffects::reorder());
@@ -626,12 +679,15 @@ impl App {
         self.session_template.allow_passthrough = allow_passthrough;
         let undo_close_timeout = Duration::from_secs(loaded.pane.undo_close_seconds);
         self.session_template.undo_close_timeout = undo_close_timeout;
+        let new_cwd = loaded.shell.new_cwd.clone();
+        self.session_template.new_cwd = new_cwd.clone();
         for managed in &mut self.sessions {
             managed
                 .session
                 .set_suppress_prompt_eol_marker(suppress_prompt_eol_marker);
             managed.session.set_allow_passthrough(allow_passthrough);
             managed.session.set_undo_close_timeout(undo_close_timeout);
+            managed.session.set_new_cwd_policy(new_cwd.clone());
         }
 
         self.mouse_enabled = loaded.mouse.enabled;

@@ -15,6 +15,7 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use crate::app::App;
+use crate::ui::window_manager::{Direction, LayoutTree, SplitAxis};
 
 pub const PARSE_ERROR: i64 = -32700;
 pub const METHOD_NOT_FOUND: i64 = -32601;
@@ -191,6 +192,11 @@ fn handle_method(
         "pane.read" => pane_read(app, params),
         "pane.send_keys" => pane_send_keys(app, params),
         "pane.split" => pane_split(app, params),
+        "pane.swap" => pane_swap(app, params),
+        "pane.move" => pane_move(app, params),
+        "layout.export" => layout_export(app, params),
+        "layout.apply" => layout_apply(app, params),
+        "layout.set_split_ratio" => layout_set_split_ratio(app, params),
         "agent.report" => agent_report(app, params),
         "plugin.list" => plugin_list(app),
         #[cfg(unix)]
@@ -281,6 +287,199 @@ fn pane_split(app: &mut App, params: Option<&Value>) -> Result<Value, MethodErro
         .api_split_pane(pane_id, session_id, axis)
         .map_err(|message| (PANE_NOT_FOUND, message))?;
     Ok(json!({ "pane_id": new_pane_id }))
+}
+
+/// `pane.swap`: focus the target pane (default: the currently focused pane)
+/// and swap it with its nearest neighbor in `direction`, keeping the split
+/// shape and both panes' PTYs.
+fn pane_swap(app: &mut App, params: Option<&Value>) -> Result<Value, MethodError> {
+    let params = params_object(params)?;
+    let pane_id = optional_usize_param(params, "pane_id")?;
+    let session_id = optional_str_param(params, "session_id")?;
+    let direction = match optional_str_param(params, "direction")? {
+        Some("left") => Direction::Left,
+        Some("down") => Direction::Down,
+        Some("up") => Direction::Up,
+        Some("right") => Direction::Right,
+        Some(other) => {
+            return Err(invalid_params(&format!(
+                "direction must be \"left\"|\"down\"|\"up\"|\"right\", got {other:?}"
+            )));
+        }
+        None => return Err(invalid_params("direction is required")),
+    };
+
+    app.api_swap_pane(pane_id, session_id, direction)
+        .map_err(|message| (PANE_NOT_FOUND, message))?;
+    Ok(json!({ "ok": true }))
+}
+
+/// `pane.move`: relocate the target pane (default: the currently focused
+/// pane) with its PTY intact. Exactly one destination is required:
+/// `to_window: N` grafts it into window N, `new_window: true` breaks it out
+/// into a new window, `to_session: "<id>"` adopts it into another session
+/// (where it gets that session's next pane id).
+fn pane_move(app: &mut App, params: Option<&Value>) -> Result<Value, MethodError> {
+    let params = params_object(params)?;
+    let pane_id = optional_usize_param(params, "pane_id")?;
+    let session_id = optional_str_param(params, "session_id")?;
+    let to_window = optional_usize_param(params, "to_window")?;
+    let new_window = match params.and_then(|map| map.get("new_window")) {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => return Err(invalid_params("new_window must be a boolean")),
+    };
+    let to_session = optional_str_param(params, "to_session")?;
+
+    let destinations = usize::from(to_window.is_some())
+        + usize::from(new_window)
+        + usize::from(to_session.is_some());
+    if destinations != 1 {
+        return Err(invalid_params(
+            "exactly one of to_window, new_window, to_session is required",
+        ));
+    }
+
+    if let Some(target_session) = to_session {
+        let Some(pane_id) = pane_id else {
+            return Err(invalid_params("pane_id is required with to_session"));
+        };
+        let new_pane_id = app
+            .api_move_pane_to_session(pane_id, session_id, target_session)
+            .map_err(|message| (PANE_NOT_FOUND, message))?;
+        return Ok(json!({ "pane_id": new_pane_id, "session_id": target_session }));
+    }
+
+    let (moved_pane_id, window) = app
+        .api_move_pane_in_session(pane_id, session_id, to_window)
+        .map_err(|message| (PANE_NOT_FOUND, message))?;
+    Ok(json!({ "pane_id": moved_pane_id, "window": window }))
+}
+
+/// `layout.export`: portable split tree of one window (default: the
+/// session's focused window).
+fn layout_export(app: &App, params: Option<&Value>) -> Result<Value, MethodError> {
+    let params = params_object(params)?;
+    let session_id = optional_str_param(params, "session_id")?;
+    let window = optional_usize_param(params, "window")?;
+
+    let (session_id, window, tree) = app
+        .api_layout_export(session_id, window)
+        .map_err(|message| (PANE_NOT_FOUND, message))?;
+    Ok(json!({
+        "session_id": session_id,
+        "window": window,
+        "layout": layout_tree_to_json(&tree),
+    }))
+}
+
+/// `layout.apply`: rearrange one window (default: the session's focused
+/// window) into the given layout. The layout's leaves must reference exactly
+/// the panes currently in that window.
+fn layout_apply(app: &mut App, params: Option<&Value>) -> Result<Value, MethodError> {
+    let params = params_object(params)?;
+    let session_id = optional_str_param(params, "session_id")?;
+    let window = optional_usize_param(params, "window")?;
+    let Some(layout) = params.and_then(|map| map.get("layout")) else {
+        return Err(invalid_params("layout is required"));
+    };
+    let tree = layout_tree_from_json(layout).map_err(|message| invalid_params(&message))?;
+
+    app.api_layout_apply(session_id, window, &tree)
+        .map_err(|message| (PANE_NOT_FOUND, message))?;
+    Ok(json!({ "ok": true }))
+}
+
+/// `layout.set_split_ratio`: set the first-child share (percent, clamped
+/// 10..=90) of the split directly containing the pane.
+fn layout_set_split_ratio(app: &mut App, params: Option<&Value>) -> Result<Value, MethodError> {
+    let params = params_object(params)?;
+    let Some(pane_id) = optional_usize_param(params, "pane_id")? else {
+        return Err(invalid_params("pane_id is required"));
+    };
+    let session_id = optional_str_param(params, "session_id")?;
+    let Some(ratio) = optional_usize_param(params, "ratio")? else {
+        return Err(invalid_params("ratio is required"));
+    };
+    if ratio > 100 {
+        return Err(invalid_params("ratio must be 0..=100"));
+    }
+
+    app.api_layout_set_split_ratio(pane_id, session_id, ratio as u8)
+        .map_err(|message| (PANE_NOT_FOUND, message))?;
+    Ok(json!({ "ok": true }))
+}
+
+/// Wire form of a layout tree:
+/// `{"type": "leaf", "pane_id": N}` or
+/// `{"type": "split", "axis": "vertical"|"horizontal", "ratio_percent": N,
+///   "first": ..., "second": ...}`.
+fn layout_tree_to_json(tree: &LayoutTree) -> Value {
+    match tree {
+        LayoutTree::Leaf { item } => json!({ "type": "leaf", "pane_id": item }),
+        LayoutTree::Split {
+            axis,
+            ratio_percent,
+            first,
+            second,
+        } => json!({
+            "type": "split",
+            "axis": match axis {
+                SplitAxis::Vertical => "vertical",
+                SplitAxis::Horizontal => "horizontal",
+            },
+            "ratio_percent": ratio_percent,
+            "first": layout_tree_to_json(first),
+            "second": layout_tree_to_json(second),
+        }),
+    }
+}
+
+fn layout_tree_from_json(value: &Value) -> Result<LayoutTree, String> {
+    let Some(object) = value.as_object() else {
+        return Err("layout node must be an object".to_string());
+    };
+    match object.get("type").and_then(Value::as_str) {
+        Some("leaf") => {
+            let pane_id = object
+                .get("pane_id")
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| "leaf node needs a numeric pane_id".to_string())?;
+            Ok(LayoutTree::Leaf { item: pane_id })
+        }
+        Some("split") => {
+            let axis = match object.get("axis").and_then(Value::as_str) {
+                Some("vertical") => SplitAxis::Vertical,
+                Some("horizontal") => SplitAxis::Horizontal,
+                _ => {
+                    return Err("split node needs axis \"vertical\" or \"horizontal\"".to_string());
+                }
+            };
+            let ratio_percent = match object.get("ratio_percent") {
+                None | Some(Value::Null) => 50,
+                Some(value) => value
+                    .as_u64()
+                    .filter(|ratio| *ratio <= 100)
+                    .ok_or_else(|| "ratio_percent must be an integer 0..=100".to_string())?
+                    as u8,
+            };
+            let first = object
+                .get("first")
+                .ok_or_else(|| "split node needs first".to_string())?;
+            let second = object
+                .get("second")
+                .ok_or_else(|| "split node needs second".to_string())?;
+            Ok(LayoutTree::Split {
+                axis,
+                ratio_percent,
+                first: Box::new(layout_tree_from_json(first)?),
+                second: Box::new(layout_tree_from_json(second)?),
+            })
+        }
+        Some(other) => Err(format!("unknown layout node type {other:?}")),
+        None => Err("layout node needs a string \"type\" field".to_string()),
+    }
 }
 
 /// `agent.report`: externally reported agent state for one pane, overriding

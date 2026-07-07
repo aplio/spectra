@@ -393,6 +393,7 @@ mod tests {
                 synchronize_panes: false,
                 zoom_snapshot: None,
             }],
+            pane_cwds: HashMap::new(),
         };
 
         HandoffHeader {

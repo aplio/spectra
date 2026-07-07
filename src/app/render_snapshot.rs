@@ -627,6 +627,9 @@ impl App {
             InputMode::PeekAllWindows { .. } => {
                 return "peek all panes: any key exits and restores focus".to_string();
             }
+            InputMode::ResizeMode => {
+                return "resize mode: arrows/hjkl resize, Shift or H/J/K/L fine step, Esc/Enter/q exit".to_string();
+            }
             InputMode::Keybindings { state } => {
                 let mode = if state.query_active {
                     "filter"

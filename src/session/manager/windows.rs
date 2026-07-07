@@ -4,7 +4,7 @@ impl SessionManager {
     pub fn split_focused(&mut self, axis: SplitAxis, cols: u16, rows: u16) -> Result<(), String> {
         self.ensure_active_window_unzoomed()?;
         let area = workspace_area(cols, rows);
-        let inherited_cwd = self.focused_pane_cwd();
+        let inherited_cwd = self.new_pane_cwd();
         let new_pane_id = self.next_pane_id;
         self.next_pane_id += 1;
 
@@ -31,7 +31,7 @@ impl SessionManager {
     }
 
     pub fn new_window(&mut self, cols: u16, rows: u16) -> Result<(), String> {
-        let inherited_cwd = self.focused_pane_cwd();
+        let inherited_cwd = self.new_pane_cwd();
         self.new_window_with_command_cwd(cols, rows, self.options.command.clone(), inherited_cwd)
     }
 
@@ -95,6 +95,21 @@ impl SessionManager {
         let pane_id = self.focused_pane_id()?;
         let cwd = self.panes.get(&pane_id)?.cwd()?;
         cwd.is_dir().then(|| cwd.to_path_buf())
+    }
+
+    /// Working directory for a freshly split pane or new window under the
+    /// configured `[shell] new_cwd` policy. `None` falls back to the
+    /// session's startup cwd (`options.cwd`), which is what `current` means;
+    /// unresolvable paths (missing home, stale fixed path) also fall back.
+    fn new_pane_cwd(&self) -> Option<PathBuf> {
+        match &self.options.new_cwd {
+            NewCwdPolicy::Follow => self.focused_pane_cwd(),
+            NewCwdPolicy::Home => std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|home| home.is_dir()),
+            NewCwdPolicy::Current => None,
+            NewCwdPolicy::Path(path) => path.is_dir().then(|| path.clone()),
+        }
     }
 
     pub fn focus(&mut self, direction: Direction, cols: u16, rows: u16) -> Result<(), String> {
@@ -169,6 +184,258 @@ impl SessionManager {
         self.windows.swap(self.active_window, target);
         self.active_window = target;
         Ok(())
+    }
+
+    /// Swap the focused pane with its nearest neighbor in `direction`,
+    /// preserving the split shape and both panes' PTYs. Focus follows the
+    /// pane to its new position.
+    pub fn swap_pane_in_direction(
+        &mut self,
+        direction: Direction,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), String> {
+        self.ensure_active_window_unzoomed()?;
+        let area = workspace_area(cols, rows);
+        self.active_window_mut()?
+            .manager
+            .swap_focused_in_direction(direction, area)?;
+        self.apply_layout_sizes(cols, rows)
+            .map_err(|err| err.to_string())
+    }
+
+    /// Break the focused pane out of its window into a new window at the end
+    /// of the window list (tmux break-pane). The pane keeps its PTY and id.
+    pub fn break_focused_pane_to_new_window(
+        &mut self,
+        cols: u16,
+        rows: u16,
+    ) -> Result<PaneId, String> {
+        self.ensure_active_window_unzoomed()?;
+        let window = self
+            .active_window()
+            .ok_or_else(|| "No windows available".to_string())?;
+        if window.manager.pane_count() <= 1 {
+            return Err("pane is already its own window".to_string());
+        }
+
+        let pane_id = self
+            .active_window_mut()?
+            .manager
+            .close_focused()
+            .map_err(|err| err.to_string())?;
+        let window_id = self.next_window_id;
+        self.next_window_id += 1;
+        self.windows.push(SessionWindow {
+            id: window_id,
+            manager: WindowManager::new(pane_id),
+            zoomed: false,
+            synchronize_panes: false,
+            zoom_snapshot: None,
+        });
+        self.active_window = self.windows.len().saturating_sub(1);
+        self.apply_layout_sizes(cols, rows)
+            .map_err(|err| err.to_string())?;
+        Ok(pane_id)
+    }
+
+    /// Move the focused pane into window `number` (1-based), grafting it as
+    /// a vertical split of that window's focused pane (tmux join-pane). The
+    /// pane keeps its PTY and id; a source window this empties is removed.
+    pub fn move_focused_pane_to_window(
+        &mut self,
+        number: usize,
+        cols: u16,
+        rows: u16,
+    ) -> Result<PaneId, String> {
+        let target_index = number
+            .checked_sub(1)
+            .ok_or_else(|| "Window number must be >= 1".to_string())?;
+        if target_index >= self.windows.len() {
+            return Err("Window number out of range".to_string());
+        }
+        if target_index == self.active_window {
+            return Err("pane is already in that window".to_string());
+        }
+        self.ensure_active_window_unzoomed()?;
+        {
+            let target = self
+                .windows
+                .get_mut(target_index)
+                .ok_or_else(|| "No windows available".to_string())?;
+            Self::restore_zoom(target)?;
+        }
+
+        let source_index = self.active_window;
+        let pane_id = self.windows[source_index]
+            .manager
+            .focused_pane_id()
+            .ok_or_else(|| "No focused pane".to_string())?;
+
+        let mut target_index = target_index;
+        if self.windows[source_index].manager.pane_count() > 1 {
+            self.windows[source_index]
+                .manager
+                .close_focused()
+                .map_err(|err| err.to_string())?;
+        } else {
+            self.windows.remove(source_index);
+            if source_index < target_index {
+                target_index -= 1;
+            }
+        }
+
+        self.windows[target_index]
+            .manager
+            .split_focused(SplitAxis::Vertical, pane_id);
+        self.active_window = target_index;
+        self.apply_layout_sizes(cols, rows)
+            .map_err(|err| err.to_string())?;
+        Ok(pane_id)
+    }
+
+    /// Detach `pane_id` from this session with its PTY intact, for adoption
+    /// by another session ([`Self::adopt_pane_as_window`]). Removes the leaf
+    /// (and the window when it was the only pane). Errors when the pane is
+    /// this session's last one.
+    pub fn take_pane_for_transfer(
+        &mut self,
+        pane_id: PaneId,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Pane, String> {
+        let Some(window_index) = self
+            .windows
+            .iter()
+            .position(|window| window.manager.contains_pane_id(pane_id))
+        else {
+            return Err(format!("pane {pane_id} not found"));
+        };
+        if self.panes.len() <= 1 {
+            return Err("cannot move the session's last pane".to_string());
+        }
+
+        {
+            let window = self
+                .windows
+                .get_mut(window_index)
+                .ok_or_else(|| "No windows available".to_string())?;
+            Self::restore_zoom(window)?;
+        }
+
+        if self.windows[window_index].manager.pane_count() > 1 {
+            let manager = &mut self.windows[window_index].manager;
+            manager.focus_pane_id(pane_id)?;
+            manager.close_focused().map_err(|err| err.to_string())?;
+        } else {
+            self.windows.remove(window_index);
+            if self.active_window >= self.windows.len() {
+                self.active_window = self.windows.len().saturating_sub(1);
+            } else if window_index < self.active_window {
+                self.active_window -= 1;
+            }
+        }
+
+        let pane = self
+            .panes
+            .remove(&pane_id)
+            .ok_or_else(|| format!("pane {pane_id} backend missing"))?;
+        self.apply_layout_sizes(cols, rows)
+            .map_err(|err| err.to_string())?;
+        Ok(pane)
+    }
+
+    /// Adopt a pane transferred from another session as a new window. Pane
+    /// ids are per-session, so the pane gets this session's next id.
+    pub fn adopt_pane_as_window(
+        &mut self,
+        pane: Pane,
+        cols: u16,
+        rows: u16,
+    ) -> Result<PaneId, String> {
+        let pane_id = self.next_pane_id;
+        self.next_pane_id += 1;
+        self.panes.insert(pane_id, pane);
+
+        let window_id = self.next_window_id;
+        self.next_window_id += 1;
+        self.windows.push(SessionWindow {
+            id: window_id,
+            manager: WindowManager::new(pane_id),
+            zoomed: false,
+            synchronize_panes: false,
+            zoom_snapshot: None,
+        });
+        self.active_window = self.windows.len().saturating_sub(1);
+        self.apply_layout_sizes(cols, rows)
+            .map_err(|err| err.to_string())?;
+        Ok(pane_id)
+    }
+
+    /// Export the split tree of window `number` (1-based). A zoomed window
+    /// exports its pre-zoom shape.
+    pub fn export_window_layout(&self, number: usize) -> Result<LayoutTree, String> {
+        let index = number
+            .checked_sub(1)
+            .ok_or_else(|| "Window number must be >= 1".to_string())?;
+        let window = self
+            .windows
+            .get(index)
+            .ok_or_else(|| "Window number out of range".to_string())?;
+        if window.zoomed
+            && let Some(snapshot) = window.zoom_snapshot.as_ref()
+        {
+            return WindowManager::from_snapshot(snapshot.clone())?.export_tree();
+        }
+        window.manager.export_tree()
+    }
+
+    /// Rearrange window `number` (1-based) into `tree`. The tree's leaves
+    /// must be exactly the panes currently in that window.
+    pub fn apply_window_layout(
+        &mut self,
+        number: usize,
+        tree: &LayoutTree,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), String> {
+        let index = number
+            .checked_sub(1)
+            .ok_or_else(|| "Window number must be >= 1".to_string())?;
+        let window = self
+            .windows
+            .get_mut(index)
+            .ok_or_else(|| "Window number out of range".to_string())?;
+        Self::restore_zoom(window)?;
+        window.manager.apply_tree(tree)?;
+        self.apply_layout_sizes(cols, rows)
+            .map_err(|err| err.to_string())
+    }
+
+    /// Set the first-child share (percent, clamped 10..=90) of the split
+    /// directly containing `pane_id`.
+    pub fn set_split_ratio(
+        &mut self,
+        pane_id: PaneId,
+        ratio_percent: u8,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), String> {
+        let Some(window_index) = self
+            .windows
+            .iter()
+            .position(|window| window.manager.contains_pane_id(pane_id))
+        else {
+            return Err(format!("pane {pane_id} not found"));
+        };
+        let window = self
+            .windows
+            .get_mut(window_index)
+            .ok_or_else(|| "No windows available".to_string())?;
+        Self::restore_zoom(window)?;
+        window.manager.set_split_ratio(pane_id, ratio_percent)?;
+        self.apply_layout_sizes(cols, rows)
+            .map_err(|err| err.to_string())
     }
 
     pub fn resize_focused(

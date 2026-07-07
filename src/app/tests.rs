@@ -20,6 +20,7 @@ use crate::session::pane::{FakeBackend, PaneBackend};
 use crate::session::pty_backend::{PaneFactory, PaneSpawnConfig};
 use crate::session::terminal_state::TerminalEvent;
 use crate::storage::DataStore;
+use crate::ui::window_manager::{Direction, SplitAxis};
 
 use super::{
     API_EVENT_QUEUE_MAX, AgentTracking, App, AppSignal, AttachTarget, InputMode, ManagedSession,
@@ -8545,4 +8546,258 @@ fn keybindings_overlay_filters_navigates_and_closes() {
     app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE))
         .expect("close overlay");
     assert!(matches!(app.view.input_mode, InputMode::Normal));
+}
+
+// --- Pane operations: swap / move / layout API / resize mode ---
+
+#[test]
+fn swap_pane_action_swaps_focused_pane_within_window() {
+    let (mut app, _writes) = build_recording_app_multi_session();
+    app.current_session_mut()
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split focused pane");
+    let focused = app.current_session().focused_pane_id().expect("focused");
+
+    app.handle_action(CommandAction::SwapPane(Direction::Left));
+
+    // Focus follows the pane; it is now the left/first pane of its window.
+    assert_eq!(app.current_session().focused_pane_id(), Some(focused));
+    let window = app
+        .current_session()
+        .focused_window_number()
+        .expect("focused window");
+    let pane_ids = app
+        .current_session()
+        .pane_ids_for_window_number(window)
+        .expect("window panes");
+    assert_eq!(pane_ids.first(), Some(&focused));
+}
+
+#[test]
+fn break_pane_action_moves_pane_to_new_window() {
+    let (mut app, _writes) = build_recording_app_multi_session();
+    app.current_session_mut()
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split focused pane");
+    let focused = app.current_session().focused_pane_id().expect("focused");
+    let windows_before = app.current_session().window_count();
+
+    app.handle_action(CommandAction::BreakPane);
+
+    assert_eq!(app.current_session().window_count(), windows_before + 1);
+    assert_eq!(app.current_session().focused_pane_id(), Some(focused));
+    let window = app
+        .current_session()
+        .focused_window_number()
+        .expect("focused window");
+    assert_eq!(
+        app.current_session().pane_ids_for_window_number(window),
+        Some(vec![focused])
+    );
+}
+
+#[test]
+fn move_pane_to_window_action_grafts_into_target() {
+    let (mut app, _writes) = build_recording_app_multi_session();
+    // main-1 has window 1 (pane 1) and window 2 (pane 2, focused).
+    app.handle_action(CommandAction::MovePaneToWindow(1));
+
+    assert_eq!(app.current_session().window_count(), 1);
+    assert_eq!(
+        app.current_session().pane_ids_for_window_number(1),
+        Some(vec![1, 2])
+    );
+    assert_eq!(app.current_session().focused_pane_id(), Some(2));
+}
+
+#[test]
+fn enter_resize_mode_resizes_until_esc() {
+    let (mut app, _writes) = build_recording_app_multi_session();
+    app.current_session_mut()
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split focused pane");
+
+    app.handle_action(CommandAction::EnterResizeMode);
+    assert!(matches!(app.view.input_mode, InputMode::ResizeMode));
+    assert!(app.status_line().contains("resize mode"));
+
+    let width_of_focused = |app: &App| {
+        let pane_id = app.current_session().focused_pane_id().expect("focused");
+        app.current_session()
+            .frame(80, 24)
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id == pane_id)
+            .expect("focused pane in frame")
+            .rect
+            .width
+    };
+    let before = width_of_focused(&app);
+    app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE))
+        .expect("resize left");
+    assert!(matches!(app.view.input_mode, InputMode::ResizeMode));
+    let after = width_of_focused(&app);
+    assert!(
+        after > before,
+        "focused pane should widen ({before} -> {after})"
+    );
+
+    // Non-resize keys are swallowed; Esc leaves the mode.
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+        .expect("swallowed key");
+    assert!(matches!(app.view.input_mode, InputMode::ResizeMode));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .expect("exit resize mode");
+    assert!(matches!(app.view.input_mode, InputMode::Normal));
+}
+
+#[test]
+fn api_pane_swap_requires_direction() {
+    let (mut app, _writes) = build_recording_app_multi_session();
+    let response = api_response(&mut app, r#"{"id":40,"method":"pane.swap","params":{}}"#);
+    assert_eq!(response["error"]["code"], crate::api::INVALID_PARAMS);
+}
+
+#[test]
+fn api_pane_swap_swaps_target_pane() {
+    let (mut app, _writes) = build_recording_app_multi_session();
+    app.current_session_mut()
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split focused pane");
+    let focused = app.current_session().focused_pane_id().expect("focused");
+
+    let response = api_response(
+        &mut app,
+        r#"{"id":41,"method":"pane.swap","params":{"direction":"left"}}"#,
+    );
+    assert_eq!(response["result"]["ok"], true);
+
+    let window = app
+        .current_session()
+        .focused_window_number()
+        .expect("focused window");
+    let pane_ids = app
+        .current_session()
+        .pane_ids_for_window_number(window)
+        .expect("window panes");
+    assert_eq!(pane_ids.first(), Some(&focused));
+}
+
+#[test]
+fn api_pane_move_requires_exactly_one_destination() {
+    let (mut app, _writes) = build_recording_app_multi_session();
+    let response = api_response(&mut app, r#"{"id":42,"method":"pane.move","params":{}}"#);
+    assert_eq!(response["error"]["code"], crate::api::INVALID_PARAMS);
+
+    let response = api_response(
+        &mut app,
+        r#"{"id":43,"method":"pane.move","params":{"to_window":1,"new_window":true}}"#,
+    );
+    assert_eq!(response["error"]["code"], crate::api::INVALID_PARAMS);
+}
+
+#[test]
+fn api_pane_move_to_window_and_new_window() {
+    let (mut app, _writes) = build_recording_app_multi_session();
+    // Move focused pane 2 (window 2) into window 1.
+    let response = api_response(
+        &mut app,
+        r#"{"id":44,"method":"pane.move","params":{"to_window":1}}"#,
+    );
+    assert_eq!(response["result"]["pane_id"], 2);
+    assert_eq!(response["result"]["window"], 1);
+    assert_eq!(app.current_session().window_count(), 1);
+
+    // Break it back out into a new window.
+    let response = api_response(
+        &mut app,
+        r#"{"id":45,"method":"pane.move","params":{"pane_id":2,"new_window":true}}"#,
+    );
+    assert_eq!(response["result"]["pane_id"], 2);
+    assert_eq!(response["result"]["window"], 2);
+    assert_eq!(app.current_session().window_count(), 2);
+}
+
+#[test]
+fn api_pane_move_to_session_transfers_pane() {
+    let (mut app, _writes) = build_recording_app_multi_session();
+    let response = api_response(
+        &mut app,
+        r#"{"id":46,"method":"pane.move","params":{"pane_id":2,"to_session":"alt-2"}}"#,
+    );
+
+    // alt-2 already has pane 1, so the moved pane gets id 2 there.
+    assert_eq!(response["result"]["pane_id"], 2);
+    assert_eq!(response["result"]["session_id"], "alt-2");
+    assert_eq!(app.sessions[0].session.pane_count(), 1);
+    assert_eq!(app.sessions[0].session.window_count(), 1);
+    assert_eq!(app.sessions[1].session.pane_count(), 2);
+    assert_eq!(app.sessions[1].session.window_count(), 2);
+    // The move follows the pane: the target session is now active.
+    assert_eq!(app.view.active_session, 1);
+    assert_eq!(app.current_session().focused_pane_id(), Some(2));
+}
+
+#[test]
+fn api_layout_export_apply_roundtrip_and_set_split_ratio() {
+    let (mut app, _writes) = build_recording_app_multi_session();
+    app.current_session_mut()
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split focused pane");
+
+    let response = api_response(&mut app, r#"{"id":47,"method":"layout.export"}"#);
+    let layout = response["result"]["layout"].clone();
+    assert_eq!(layout["type"], "split");
+    assert_eq!(layout["axis"], "vertical");
+    let window = response["result"]["window"].clone();
+
+    // Apply the mirrored layout: swap first and second children.
+    let mirrored = serde_json::json!({
+        "type": "split",
+        "axis": "horizontal",
+        "ratio_percent": 30,
+        "first": layout["second"],
+        "second": layout["first"],
+    });
+    let request = serde_json::json!({
+        "id": 48,
+        "method": "layout.apply",
+        "params": { "window": window, "layout": mirrored },
+    });
+    let response = api_response(&mut app, &request.to_string());
+    assert_eq!(response["result"]["ok"], true);
+
+    let response = api_response(&mut app, r#"{"id":49,"method":"layout.export"}"#);
+    let exported = &response["result"]["layout"];
+    assert_eq!(exported["axis"], "horizontal");
+    assert_eq!(exported["ratio_percent"], 30);
+    assert_eq!(exported["first"]["pane_id"], layout["second"]["pane_id"]);
+
+    // set_split_ratio on a leaf's parent split.
+    let pane_id = exported["first"]["pane_id"].clone();
+    let request = serde_json::json!({
+        "id": 50,
+        "method": "layout.set_split_ratio",
+        "params": { "pane_id": pane_id, "ratio": 80 },
+    });
+    let response = api_response(&mut app, &request.to_string());
+    assert_eq!(response["result"]["ok"], true);
+    let response = api_response(&mut app, r#"{"id":51,"method":"layout.export"}"#);
+    assert_eq!(response["result"]["layout"]["ratio_percent"], 80);
+}
+
+#[test]
+fn api_layout_apply_rejects_bad_layout() {
+    let (mut app, _writes) = build_recording_app_multi_session();
+    let response = api_response(
+        &mut app,
+        r#"{"id":52,"method":"layout.apply","params":{"layout":{"type":"leaf","pane_id":99}}}"#,
+    );
+    assert_eq!(response["error"]["code"], crate::api::PANE_NOT_FOUND);
+
+    let response = api_response(
+        &mut app,
+        r#"{"id":53,"method":"layout.apply","params":{"layout":{"type":"nope"}}}"#,
+    );
+    assert_eq!(response["error"]["code"], crate::api::INVALID_PARAMS);
 }

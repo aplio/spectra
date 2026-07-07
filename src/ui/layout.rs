@@ -103,6 +103,41 @@ impl Node {
     }
 }
 
+/// Portable split-tree shape: the BSP structure and ratios of one window,
+/// with leaves identified by item id (pane id) instead of internal window
+/// ids. Exported/applied through the JSON-RPC layout API so scripts can
+/// reshape windows declaratively.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LayoutTree<ItemId>
+where
+    ItemId: Copy + Eq,
+{
+    Leaf {
+        item: ItemId,
+    },
+    Split {
+        axis: SplitAxis,
+        ratio_percent: u8,
+        first: Box<LayoutTree<ItemId>>,
+        second: Box<LayoutTree<ItemId>>,
+    },
+}
+
+impl<ItemId> LayoutTree<ItemId>
+where
+    ItemId: Copy + Eq,
+{
+    fn collect_items(&self, out: &mut Vec<ItemId>) {
+        match self {
+            Self::Leaf { item } => out.push(*item),
+            Self::Split { first, second, .. } => {
+                first.collect_items(out);
+                second.collect_items(out);
+            }
+        }
+    }
+}
+
 enum RemoveResult {
     NotFound(Node),
     Removed {
@@ -535,6 +570,156 @@ where
         Ok(())
     }
 
+    /// Swap the focused leaf's item with the item of its nearest neighbor in
+    /// `direction`, keeping the split shape intact. Focus follows the moved
+    /// item to its new position.
+    pub fn swap_focused_in_direction(
+        &mut self,
+        direction: Direction,
+        area: PaneRect,
+    ) -> Result<(), String> {
+        let layout = self.layout(area);
+        let focused = layout
+            .panes
+            .iter()
+            .find(|pane| pane.window_id == self.focused_window)
+            .copied()
+            .ok_or_else(|| "No focused pane".to_string())?;
+        let target = Self::directional_neighbor(&layout.panes, focused, direction)
+            .ok_or_else(|| "No pane in that direction".to_string())?;
+
+        self.windows.insert(focused.window_id, target.item_id);
+        self.windows.insert(target.window_id, focused.item_id);
+        self.focused_window = target.window_id;
+        Ok(())
+    }
+
+    /// Export the split-tree shape with item ids at the leaves.
+    pub fn export_tree(&self) -> Result<LayoutTree<ItemId>, String> {
+        Self::export_node(&self.root, &self.windows)
+    }
+
+    fn export_node(
+        node: &Node,
+        windows: &HashMap<WindowId, ItemId>,
+    ) -> Result<LayoutTree<ItemId>, String> {
+        match node {
+            Node::Leaf { window_id } => windows
+                .get(window_id)
+                .copied()
+                .map(|item| LayoutTree::Leaf { item })
+                .ok_or_else(|| format!("window {window_id} has no item mapping")),
+            Node::Split {
+                axis,
+                ratio_percent,
+                first,
+                second,
+            } => Ok(LayoutTree::Split {
+                axis: *axis,
+                ratio_percent: *ratio_percent,
+                first: Box::new(Self::export_node(first, windows)?),
+                second: Box::new(Self::export_node(second, windows)?),
+            }),
+        }
+    }
+
+    /// Replace the split-tree shape with `tree`. The tree's leaf items must
+    /// be exactly the items currently in this window tree (each exactly
+    /// once); only the arrangement changes. Focus stays on the same item.
+    pub fn apply_tree(&mut self, tree: &LayoutTree<ItemId>) -> Result<(), String> {
+        let mut tree_items = Vec::new();
+        tree.collect_items(&mut tree_items);
+        for (index, item) in tree_items.iter().enumerate() {
+            if tree_items[..index].contains(item) {
+                return Err("layout has a duplicate pane".to_string());
+            }
+        }
+        if tree_items.len() != self.windows.len()
+            || !self
+                .windows
+                .values()
+                .all(|current| tree_items.contains(current))
+        {
+            return Err("layout panes do not match the window's panes".to_string());
+        }
+
+        let focused_item = self.focused_item_id();
+        let mut windows = HashMap::new();
+        let root = Self::build_node(tree, &mut self.next_window_id, &mut windows);
+        self.root = root;
+        self.windows = windows;
+        if let Some(focused_item) = focused_item {
+            let _ = self.focus_item_id(focused_item);
+        } else {
+            self.focused_window = self.root.first_leaf();
+        }
+        Ok(())
+    }
+
+    fn build_node(
+        tree: &LayoutTree<ItemId>,
+        next_window_id: &mut WindowId,
+        windows: &mut HashMap<WindowId, ItemId>,
+    ) -> Node {
+        match tree {
+            LayoutTree::Leaf { item } => {
+                let window_id = *next_window_id;
+                *next_window_id += 1;
+                windows.insert(window_id, *item);
+                Node::Leaf { window_id }
+            }
+            LayoutTree::Split {
+                axis,
+                ratio_percent,
+                first,
+                second,
+            } => Node::Split {
+                axis: *axis,
+                ratio_percent: (*ratio_percent).clamp(10, 90),
+                first: Box::new(Self::build_node(first, next_window_id, windows)),
+                second: Box::new(Self::build_node(second, next_window_id, windows)),
+            },
+        }
+    }
+
+    /// Set the ratio of the split directly containing `item_id`'s leaf.
+    /// `ratio_percent` is the share of the split's first (left/top) child,
+    /// clamped to 10..=90.
+    pub fn set_ratio_for_item(&mut self, item_id: ItemId, ratio_percent: u8) -> Result<(), String> {
+        let window_id = self
+            .windows
+            .iter()
+            .find_map(|(window_id, current)| (*current == item_id).then_some(*window_id))
+            .ok_or_else(|| "Pane ID not found".to_string())?;
+        let ratio_percent = ratio_percent.clamp(10, 90);
+        if Self::set_parent_ratio(&mut self.root, window_id, ratio_percent) {
+            Ok(())
+        } else {
+            Err("Pane is not part of a split".to_string())
+        }
+    }
+
+    fn set_parent_ratio(node: &mut Node, target_window: WindowId, ratio: u8) -> bool {
+        match node {
+            Node::Leaf { .. } => false,
+            Node::Split {
+                ratio_percent,
+                first,
+                second,
+                ..
+            } => {
+                let is_parent = matches!(**first, Node::Leaf { window_id } if window_id == target_window)
+                    || matches!(**second, Node::Leaf { window_id } if window_id == target_window);
+                if is_parent {
+                    *ratio_percent = ratio;
+                    return true;
+                }
+                Self::set_parent_ratio(first, target_window, ratio)
+                    || Self::set_parent_ratio(second, target_window, ratio)
+            }
+        }
+    }
+
     pub fn resize_focused(&mut self, direction: Direction, amount: u16) -> Result<(), String> {
         if amount == 0 {
             return Ok(());
@@ -964,7 +1149,9 @@ fn resize_delta(
 
 #[cfg(test)]
 mod tests {
-    use super::{Direction, Divider, DividerOrientation, Layout, PaneRect, SplitAxis, WindowTree};
+    use super::{
+        Direction, Divider, DividerOrientation, Layout, LayoutTree, PaneRect, SplitAxis, WindowTree,
+    };
 
     fn area() -> PaneRect {
         PaneRect {
@@ -1095,6 +1282,143 @@ mod tests {
         let after = tree.layout(area());
         assert_eq!(after.panes, before.panes);
         assert_eq!(after.dividers, before.dividers);
+    }
+
+    #[test]
+    fn swap_focused_in_direction_exchanges_items_and_keeps_shape() {
+        let mut tree = WindowTree::new(1usize);
+        tree.split_focused(SplitAxis::Vertical, 2);
+        // Focused is pane 2 (right); swap it left with pane 1.
+        let before = tree.layout(area());
+        tree.swap_focused_in_direction(Direction::Left, area())
+            .expect("swap left");
+
+        assert_eq!(tree.ordered_item_ids(), vec![2, 1]);
+        assert_eq!(tree.focused_item_id(), Some(2));
+        // The split shape (rects and dividers) is unchanged.
+        let after = tree.layout(area());
+        assert_eq!(
+            after.panes.iter().map(|p| p.rect).collect::<Vec<_>>(),
+            before.panes.iter().map(|p| p.rect).collect::<Vec<_>>()
+        );
+        assert_eq!(after.dividers, before.dividers);
+    }
+
+    #[test]
+    fn swap_focused_in_direction_errors_without_neighbor() {
+        let mut tree = WindowTree::new(1usize);
+        tree.split_focused(SplitAxis::Vertical, 2);
+        let err = tree
+            .swap_focused_in_direction(Direction::Up, area())
+            .expect_err("no neighbor above");
+        assert_eq!(err, "No pane in that direction");
+        assert_eq!(tree.ordered_item_ids(), vec![1, 2]);
+    }
+
+    #[test]
+    fn export_tree_reflects_structure() {
+        let mut tree = WindowTree::new(1usize);
+        tree.split_focused(SplitAxis::Vertical, 2);
+        tree.split_focused(SplitAxis::Horizontal, 3);
+
+        let exported = tree.export_tree().expect("export");
+        assert_eq!(
+            exported,
+            LayoutTree::Split {
+                axis: SplitAxis::Vertical,
+                ratio_percent: 50,
+                first: Box::new(LayoutTree::Leaf { item: 1 }),
+                second: Box::new(LayoutTree::Split {
+                    axis: SplitAxis::Horizontal,
+                    ratio_percent: 50,
+                    first: Box::new(LayoutTree::Leaf { item: 2 }),
+                    second: Box::new(LayoutTree::Leaf { item: 3 }),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn apply_tree_rearranges_existing_items() {
+        let mut tree = WindowTree::new(1usize);
+        tree.split_focused(SplitAxis::Vertical, 2);
+        tree.split_focused(SplitAxis::Horizontal, 3);
+        tree.focus_item_id(2).expect("focus pane 2");
+
+        let target = LayoutTree::Split {
+            axis: SplitAxis::Horizontal,
+            ratio_percent: 30,
+            first: Box::new(LayoutTree::Leaf { item: 3 }),
+            second: Box::new(LayoutTree::Split {
+                axis: SplitAxis::Vertical,
+                ratio_percent: 60,
+                first: Box::new(LayoutTree::Leaf { item: 2 }),
+                second: Box::new(LayoutTree::Leaf { item: 1 }),
+            }),
+        };
+        tree.apply_tree(&target).expect("apply layout");
+
+        assert_eq!(tree.ordered_item_ids(), vec![3, 2, 1]);
+        assert_eq!(tree.focused_item_id(), Some(2));
+        assert_eq!(tree.export_tree().expect("re-export"), target);
+    }
+
+    #[test]
+    fn apply_tree_rejects_mismatched_and_duplicate_items() {
+        let mut tree = WindowTree::new(1usize);
+        tree.split_focused(SplitAxis::Vertical, 2);
+
+        let missing = LayoutTree::Leaf { item: 1usize };
+        assert!(tree.apply_tree(&missing).is_err());
+
+        let unknown = LayoutTree::Split {
+            axis: SplitAxis::Vertical,
+            ratio_percent: 50,
+            first: Box::new(LayoutTree::Leaf { item: 1 }),
+            second: Box::new(LayoutTree::Leaf { item: 99 }),
+        };
+        assert!(tree.apply_tree(&unknown).is_err());
+
+        let duplicate = LayoutTree::Split {
+            axis: SplitAxis::Vertical,
+            ratio_percent: 50,
+            first: Box::new(LayoutTree::Leaf { item: 1 }),
+            second: Box::new(LayoutTree::Leaf { item: 1 }),
+        };
+        let err = tree.apply_tree(&duplicate).expect_err("duplicate leaf");
+        assert!(err.contains("duplicate"));
+
+        // Failed applies leave the tree untouched.
+        assert_eq!(tree.ordered_item_ids(), vec![1, 2]);
+    }
+
+    #[test]
+    fn set_ratio_for_item_adjusts_parent_split() {
+        let mut tree = WindowTree::new(1usize);
+        tree.split_focused(SplitAxis::Vertical, 2);
+
+        tree.set_ratio_for_item(1, 70).expect("set ratio");
+        let exported = tree.export_tree().expect("export");
+        match exported {
+            LayoutTree::Split { ratio_percent, .. } => assert_eq!(ratio_percent, 70),
+            other => panic!("expected split root, got {other:?}"),
+        }
+
+        // Out-of-range ratios clamp instead of erroring.
+        tree.set_ratio_for_item(1, 99).expect("set clamped ratio");
+        match tree.export_tree().expect("export") {
+            LayoutTree::Split { ratio_percent, .. } => assert_eq!(ratio_percent, 90),
+            other => panic!("expected split root, got {other:?}"),
+        }
+
+        assert!(tree.set_ratio_for_item(42, 50).is_err());
+    }
+
+    #[test]
+    fn set_ratio_for_item_errors_on_single_leaf() {
+        let mut tree = WindowTree::new(1usize);
+        let err = tree.set_ratio_for_item(1, 50).expect_err("no split");
+        assert_eq!(err, "Pane is not part of a split");
     }
 
     #[test]

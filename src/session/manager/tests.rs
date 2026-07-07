@@ -967,6 +967,7 @@ fn restore_rejects_snapshot_without_windows() {
         next_window_id: 1,
         active_window: 0,
         windows: Vec::new(),
+        pane_cwds: std::collections::HashMap::new(),
     };
 
     let err = match SessionManager::with_factory_from_runtime_snapshot(
@@ -1256,4 +1257,358 @@ fn dead_pane_is_not_retained_for_undo_close() {
     session.close_focused(80, 24).expect("close focused pane");
     assert!(!session.has_restorable_closed_pane());
     assert!(session.restore_last_closed_pane(80, 24).is_err());
+}
+
+#[test]
+fn swap_pane_in_direction_exchanges_panes_and_follows_focus() {
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options, Arc::new(FakeFactory), 80, 24)
+        .expect("create session");
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split vertical");
+    assert_eq!(session.focused_pane_id(), Some(2));
+
+    session
+        .swap_pane_in_direction(Direction::Left, 80, 24)
+        .expect("swap left");
+
+    assert_eq!(session.all_pane_ids(), vec![2, 1]);
+    assert_eq!(session.focused_pane_id(), Some(2));
+}
+
+#[test]
+fn swap_pane_in_direction_errors_without_neighbor() {
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options, Arc::new(FakeFactory), 80, 24)
+        .expect("create session");
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split vertical");
+
+    let err = session
+        .swap_pane_in_direction(Direction::Up, 80, 24)
+        .expect_err("no neighbor above");
+    assert_eq!(err, "No pane in that direction");
+    assert_eq!(session.all_pane_ids(), vec![1, 2]);
+}
+
+#[test]
+fn break_focused_pane_moves_it_into_a_new_window() {
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options, Arc::new(FakeFactory), 80, 24)
+        .expect("create session");
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split vertical");
+
+    let moved = session
+        .break_focused_pane_to_new_window(80, 24)
+        .expect("break pane");
+
+    assert_eq!(moved, 2);
+    assert_eq!(session.window_count(), 2);
+    assert_eq!(session.pane_count(), 2);
+    assert_eq!(session.focused_pane_id(), Some(2));
+    assert_eq!(session.pane_ids_for_window_number(1), Some(vec![1]));
+    assert_eq!(session.pane_ids_for_window_number(2), Some(vec![2]));
+}
+
+#[test]
+fn break_focused_pane_rejects_single_pane_window() {
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options, Arc::new(FakeFactory), 80, 24)
+        .expect("create session");
+
+    let err = session
+        .break_focused_pane_to_new_window(80, 24)
+        .expect_err("single pane cannot break out");
+    assert!(err.contains("already its own window"));
+}
+
+#[test]
+fn move_focused_pane_to_window_grafts_and_prunes_empty_source() {
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options, Arc::new(FakeFactory), 80, 24)
+        .expect("create session");
+    session.new_window(80, 24).expect("new window");
+    assert_eq!(session.window_count(), 2);
+    assert_eq!(session.focused_pane_id(), Some(2));
+
+    let moved = session
+        .move_focused_pane_to_window(1, 80, 24)
+        .expect("move pane to window 1");
+
+    assert_eq!(moved, 2);
+    // The emptied source window is gone; both panes live in the target.
+    assert_eq!(session.window_count(), 1);
+    assert_eq!(session.pane_ids_for_window_number(1), Some(vec![1, 2]));
+    assert_eq!(session.focused_pane_id(), Some(2));
+}
+
+#[test]
+fn move_focused_pane_to_window_keeps_multi_pane_source() {
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options, Arc::new(FakeFactory), 80, 24)
+        .expect("create session");
+    session.new_window(80, 24).expect("new window");
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split in window 2");
+    assert_eq!(session.focused_pane_id(), Some(3));
+
+    let moved = session
+        .move_focused_pane_to_window(1, 80, 24)
+        .expect("move pane to window 1");
+
+    assert_eq!(moved, 3);
+    assert_eq!(session.window_count(), 2);
+    assert_eq!(session.pane_ids_for_window_number(1), Some(vec![1, 3]));
+    assert_eq!(session.pane_ids_for_window_number(2), Some(vec![2]));
+}
+
+#[test]
+fn move_focused_pane_to_window_rejects_current_window() {
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options, Arc::new(FakeFactory), 80, 24)
+        .expect("create session");
+
+    let err = session
+        .move_focused_pane_to_window(1, 80, 24)
+        .expect_err("same window is rejected");
+    assert!(err.contains("already in that window"));
+}
+
+#[test]
+fn take_and_adopt_pane_transfers_between_sessions() {
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut source = SessionManager::with_factory(options.clone(), Arc::new(FakeFactory), 80, 24)
+        .expect("create source session");
+    let mut target = SessionManager::with_factory(options, Arc::new(FakeFactory), 80, 24)
+        .expect("create target session");
+    source
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split source");
+
+    let pane = source
+        .take_pane_for_transfer(2, 80, 24)
+        .expect("take pane 2");
+    assert_eq!(source.pane_count(), 1);
+    assert!(!source.pane_exists(2));
+
+    let adopted = target
+        .adopt_pane_as_window(pane, 80, 24)
+        .expect("adopt pane");
+    // Pane ids are per-session: the target already used id 1, so the
+    // adopted pane gets the next free id there.
+    assert_eq!(adopted, 2);
+    assert_eq!(target.window_count(), 2);
+    assert_eq!(target.focused_pane_id(), Some(adopted));
+}
+
+#[test]
+fn take_pane_for_transfer_rejects_last_pane() {
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options, Arc::new(FakeFactory), 80, 24)
+        .expect("create session");
+
+    let err = match session.take_pane_for_transfer(1, 80, 24) {
+        Ok(_) => panic!("last pane cannot leave"),
+        Err(err) => err,
+    };
+    assert!(err.contains("last pane"));
+}
+
+#[test]
+fn export_and_apply_window_layout_roundtrip() {
+    use crate::ui::window_manager::LayoutTree;
+
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options, Arc::new(FakeFactory), 80, 24)
+        .expect("create session");
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split vertical");
+    session
+        .split_focused(SplitAxis::Horizontal, 80, 24)
+        .expect("split horizontal");
+
+    let exported = session.export_window_layout(1).expect("export layout");
+    let mut items = Vec::new();
+    fn collect(tree: &LayoutTree, out: &mut Vec<usize>) {
+        match tree {
+            LayoutTree::Leaf { item } => out.push(*item),
+            LayoutTree::Split { first, second, .. } => {
+                collect(first, out);
+                collect(second, out);
+            }
+        }
+    }
+    collect(&exported, &mut items);
+    assert_eq!(items, vec![1, 2, 3]);
+
+    // Rearrange: flat three-way with pane 3 first.
+    let target = LayoutTree::Split {
+        axis: SplitAxis::Vertical,
+        ratio_percent: 40,
+        first: Box::new(LayoutTree::Leaf { item: 3 }),
+        second: Box::new(LayoutTree::Split {
+            axis: SplitAxis::Vertical,
+            ratio_percent: 50,
+            first: Box::new(LayoutTree::Leaf { item: 1 }),
+            second: Box::new(LayoutTree::Leaf { item: 2 }),
+        }),
+    };
+    session
+        .apply_window_layout(1, &target, 80, 24)
+        .expect("apply layout");
+
+    assert_eq!(session.pane_ids_for_window_number(1), Some(vec![3, 1, 2]));
+    assert_eq!(session.export_window_layout(1).expect("re-export"), target);
+}
+
+#[test]
+fn apply_window_layout_rejects_foreign_pane_set() {
+    use crate::ui::window_manager::LayoutTree;
+
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options, Arc::new(FakeFactory), 80, 24)
+        .expect("create session");
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split vertical");
+
+    let foreign = LayoutTree::Split {
+        axis: SplitAxis::Vertical,
+        ratio_percent: 50,
+        first: Box::new(LayoutTree::Leaf { item: 1 }),
+        second: Box::new(LayoutTree::Leaf { item: 42 }),
+    };
+    assert!(session.apply_window_layout(1, &foreign, 80, 24).is_err());
+    assert_eq!(session.pane_ids_for_window_number(1), Some(vec![1, 2]));
+}
+
+#[test]
+fn set_split_ratio_widens_first_pane() {
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options, Arc::new(FakeFactory), 80, 24)
+        .expect("create session");
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split vertical");
+
+    let width_of = |session: &SessionManager, pane_id: usize| {
+        session
+            .frame(80, 24)
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id == pane_id)
+            .expect("pane in frame")
+            .rect
+            .width
+    };
+    let before = width_of(&session, 1);
+    session
+        .set_split_ratio(1, 80, 80, 24)
+        .expect("set split ratio");
+    let after = width_of(&session, 1);
+    assert!(
+        after > before,
+        "left pane should widen ({before} -> {after})"
+    );
+
+    assert!(session.set_split_ratio(99, 50, 80, 24).is_err());
+}
+
+#[test]
+fn runtime_snapshot_restores_pane_cwds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options.clone(), Arc::new(FakeFactory), 80, 24)
+        .expect("create session");
+    assert!(session.seed_pane_cwd(1, dir.path().to_path_buf()));
+
+    let snapshot = session.runtime_snapshot();
+    assert_eq!(
+        snapshot.pane_cwds.get(&1).map(|cwd| cwd.as_path()),
+        Some(dir.path())
+    );
+
+    let configs = Arc::new(Mutex::new(Vec::new()));
+    let factory = SpawnConfigFactory {
+        configs: Arc::clone(&configs),
+    };
+    let _restored = SessionManager::with_factory_from_runtime_snapshot(
+        options,
+        Arc::new(factory),
+        snapshot,
+        80,
+        24,
+    )
+    .expect("restore session");
+
+    let configs = configs.lock().expect("spawn config lock");
+    assert_eq!(configs.len(), 1);
+    assert_eq!(configs[0].cwd.as_deref(), Some(dir.path()));
+}
+
+#[test]
+fn new_cwd_policy_controls_split_cwd() {
+    use crate::config::NewCwdPolicy;
+
+    let fixed_dir = tempfile::tempdir().expect("tempdir");
+    let follow_dir = tempfile::tempdir().expect("tempdir");
+
+    // Fixed path policy: new panes spawn in the configured directory.
+    let mut options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    options.new_cwd = NewCwdPolicy::Path(fixed_dir.path().to_path_buf());
+    let configs = Arc::new(Mutex::new(Vec::new()));
+    let factory = SpawnConfigFactory {
+        configs: Arc::clone(&configs),
+    };
+    let mut session =
+        SessionManager::with_factory(options, Arc::new(factory), 80, 24).expect("create session");
+    session.seed_pane_cwd(1, follow_dir.path().to_path_buf());
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split vertical");
+    {
+        let configs = configs.lock().expect("spawn config lock");
+        assert_eq!(configs[1].cwd.as_deref(), Some(fixed_dir.path()));
+    }
+
+    // `current` ignores the focused pane's cwd and keeps the session cwd.
+    let mut options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    options.new_cwd = NewCwdPolicy::Current;
+    let configs = Arc::new(Mutex::new(Vec::new()));
+    let factory = SpawnConfigFactory {
+        configs: Arc::clone(&configs),
+    };
+    let mut session =
+        SessionManager::with_factory(options, Arc::new(factory), 80, 24).expect("create session");
+    session.seed_pane_cwd(1, follow_dir.path().to_path_buf());
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split vertical");
+    {
+        let configs = configs.lock().expect("spawn config lock");
+        assert_eq!(configs[1].cwd, None);
+    }
+
+    // `follow` (the default) inherits the focused pane's tracked cwd.
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let configs = Arc::new(Mutex::new(Vec::new()));
+    let factory = SpawnConfigFactory {
+        configs: Arc::clone(&configs),
+    };
+    let mut session =
+        SessionManager::with_factory(options, Arc::new(factory), 80, 24).expect("create session");
+    session.seed_pane_cwd(1, follow_dir.path().to_path_buf());
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split vertical");
+    {
+        let configs = configs.lock().expect("spawn config lock");
+        assert_eq!(configs[1].cwd.as_deref(), Some(follow_dir.path()));
+    }
 }

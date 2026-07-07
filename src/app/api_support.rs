@@ -112,12 +112,13 @@ impl App {
     /// return the new pane id. Reuses the same path as the CLI
     /// `split-window` command (sizing via current effective dims, same
     /// action effects and `pane_split` hook).
-    pub fn api_split_pane(
+    /// Resolve an API request's target session/pane: select the session that
+    /// owns `pane_id` (or the named/active session) and focus the pane.
+    fn api_focus_target(
         &mut self,
         pane_id: Option<usize>,
         session_id: Option<&str>,
-        axis: crate::ui::window_manager::SplitAxis,
-    ) -> Result<usize, String> {
+    ) -> Result<(), String> {
         let session_index = match pane_id {
             Some(pane_id) => self
                 .sessions
@@ -140,10 +141,56 @@ impl App {
             self.select_session(session_index);
         }
         if let Some(pane_id) = pane_id {
-            self.current_session_mut()
-                .focus_pane_id(pane_id)
-                .map_err(|err| format!("split-window failed: {err}"))?;
+            self.current_session_mut().focus_pane_id(pane_id)?;
         }
+        Ok(())
+    }
+
+    /// Session index owning `pane_id` (optionally restricted to one session).
+    fn api_session_index_for_pane(
+        &self,
+        pane_id: usize,
+        session_id: Option<&str>,
+    ) -> Result<usize, String> {
+        self.sessions
+            .iter()
+            .position(|managed| {
+                session_id.is_none_or(|filter| filter == managed.session_id)
+                    && managed.session.pane_exists(pane_id)
+            })
+            .ok_or_else(|| "pane not found".to_string())
+    }
+
+    /// Session index by API session id, defaulting to the active session.
+    fn api_session_index(&self, session_id: Option<&str>) -> Result<usize, String> {
+        match session_id {
+            Some(filter) => self
+                .sessions
+                .iter()
+                .position(|managed| managed.session_id == filter)
+                .ok_or_else(|| format!("session `{filter}` not found")),
+            None => Ok(self.view.active_session),
+        }
+    }
+
+    /// Shared post-mutation bookkeeping for API methods that restructure
+    /// panes or windows.
+    fn api_apply_structure_effects(&mut self) {
+        self.record_focus_for_active_session();
+        self.sync_tree_names();
+        self.needs_render = true;
+        self.needs_full_clear = true;
+        self.persist_active_session_info();
+    }
+
+    pub fn api_split_pane(
+        &mut self,
+        pane_id: Option<usize>,
+        session_id: Option<&str>,
+        axis: crate::ui::window_manager::SplitAxis,
+    ) -> Result<usize, String> {
+        self.api_focus_target(pane_id, session_id)
+            .map_err(|err| format!("split-window failed: {err}"))?;
 
         let (cols, rows) = self.current_effective_pane_dims();
         self.current_session_mut()
@@ -160,6 +207,181 @@ impl App {
         self.current_session()
             .focused_pane_id()
             .ok_or_else(|| "split-window failed: no focused pane after split".to_string())
+    }
+
+    /// `pane.swap` for the JSON-RPC API: focus the target pane (default: the
+    /// focused pane) and swap it with its nearest neighbor in `direction`,
+    /// keeping the split shape and both PTYs.
+    pub fn api_swap_pane(
+        &mut self,
+        pane_id: Option<usize>,
+        session_id: Option<&str>,
+        direction: crate::ui::window_manager::Direction,
+    ) -> Result<(), String> {
+        self.api_focus_target(pane_id, session_id)?;
+        let (cols, rows) = self.current_effective_pane_dims();
+        self.current_session_mut()
+            .swap_pane_in_direction(direction, cols, rows)?;
+        self.sync_focus_history_for_active_session();
+        self.api_apply_structure_effects();
+        Ok(())
+    }
+
+    /// `pane.move` (to window / new window) for the JSON-RPC API: relocate
+    /// the target pane within its session, PTY intact. `to_window: None`
+    /// breaks the pane out into a new window. Returns the pane id and the
+    /// window number it now lives in.
+    pub fn api_move_pane_in_session(
+        &mut self,
+        pane_id: Option<usize>,
+        session_id: Option<&str>,
+        to_window: Option<usize>,
+    ) -> Result<(usize, usize), String> {
+        self.api_focus_target(pane_id, session_id)?;
+        let (cols, rows) = self.current_effective_pane_dims();
+        let moved = match to_window {
+            Some(number) => self
+                .current_session_mut()
+                .move_focused_pane_to_window(number, cols, rows)?,
+            None => {
+                let moved = self
+                    .current_session_mut()
+                    .break_focused_pane_to_new_window(cols, rows)?;
+                self.emit_hook(HookEvent::WindowCreated, self.current_hook_context());
+                moved
+            }
+        };
+        self.sync_focus_history_for_active_session();
+        self.api_apply_structure_effects();
+        let window = self
+            .current_session()
+            .focused_window_number()
+            .ok_or_else(|| "move pane failed: no focused window".to_string())?;
+        Ok((moved, window))
+    }
+
+    /// `pane.move` (to session) for the JSON-RPC API: detach the pane from
+    /// its session and adopt it into `target_session` as a new window, PTY
+    /// intact. Pane ids are per-session, so the pane gets a new id in the
+    /// target session; returns it.
+    pub fn api_move_pane_to_session(
+        &mut self,
+        pane_id: usize,
+        session_id: Option<&str>,
+        target_session: &str,
+    ) -> Result<usize, String> {
+        let source_index = self.api_session_index_for_pane(pane_id, session_id)?;
+        let target_index = self
+            .sessions
+            .iter()
+            .position(|managed| managed.session_id == target_session)
+            .ok_or_else(|| format!("session `{target_session}` not found"))?;
+        if source_index == target_index {
+            return Err("pane is already in that session".to_string());
+        }
+
+        let (cols, rows) = self.current_effective_pane_dims();
+        let pane = self.sessions[source_index]
+            .session
+            .take_pane_for_transfer(pane_id, cols, rows)?;
+        let new_pane_id = self.sessions[target_index]
+            .session
+            .adopt_pane_as_window(pane, cols, rows)?;
+
+        // Per-pane bookkeeping follows the pane to its new id; detection
+        // state is rebuilt from scratch in the target session.
+        let source = &mut self.sessions[source_index];
+        let name = source.pane_names.remove(&pane_id);
+        source.pane_auto_names.remove(&pane_id);
+        let title = source.terminal_titles.remove(&pane_id);
+        let cwd_fallback = source.cwd_fallbacks.remove(&pane_id);
+        source
+            .agents
+            .prune_closed_panes(|candidate| candidate != pane_id);
+        let target = &mut self.sessions[target_index];
+        if let Some(name) = name {
+            target.pane_names.insert(new_pane_id, name);
+        }
+        if let Some(title) = title {
+            target.terminal_titles.insert(new_pane_id, title);
+        }
+        if let Some(cwd_fallback) = cwd_fallback {
+            target.cwd_fallbacks.insert(new_pane_id, cwd_fallback);
+        }
+
+        if target_index != self.view.active_session {
+            self.select_session(target_index);
+        }
+        let _ = self.current_session_mut().focus_pane_id(new_pane_id);
+        self.emit_hook(HookEvent::WindowCreated, self.current_hook_context());
+        self.api_apply_structure_effects();
+        Ok(new_pane_id)
+    }
+
+    /// `layout.export` for the JSON-RPC API: the split tree of one window
+    /// (default: the session's focused window) as a portable layout.
+    pub fn api_layout_export(
+        &self,
+        session_id: Option<&str>,
+        window: Option<usize>,
+    ) -> Result<(String, usize, crate::ui::window_manager::LayoutTree), String> {
+        let index = self.api_session_index(session_id)?;
+        let managed = &self.sessions[index];
+        let number = match window {
+            Some(number) => number,
+            None => managed
+                .session
+                .focused_window_number()
+                .ok_or_else(|| "session has no windows".to_string())?,
+        };
+        let tree = managed.session.export_window_layout(number)?;
+        Ok((managed.session_id.clone(), number, tree))
+    }
+
+    /// `layout.apply` for the JSON-RPC API: rearrange one window (default:
+    /// the session's focused window) into the given layout. The layout's
+    /// leaves must reference exactly the panes currently in that window.
+    pub fn api_layout_apply(
+        &mut self,
+        session_id: Option<&str>,
+        window: Option<usize>,
+        tree: &crate::ui::window_manager::LayoutTree,
+    ) -> Result<(), String> {
+        let index = self.api_session_index(session_id)?;
+        let number = match window {
+            Some(number) => number,
+            None => self.sessions[index]
+                .session
+                .focused_window_number()
+                .ok_or_else(|| "session has no windows".to_string())?,
+        };
+        let (cols, rows) = self.current_effective_pane_dims();
+        self.sessions[index]
+            .session
+            .apply_window_layout(number, tree, cols, rows)?;
+        self.needs_render = true;
+        self.needs_full_clear = true;
+        self.persist_active_session_info();
+        Ok(())
+    }
+
+    /// `layout.set_split_ratio` for the JSON-RPC API: set the first-child
+    /// share (percent) of the split directly containing `pane_id`.
+    pub fn api_layout_set_split_ratio(
+        &mut self,
+        pane_id: usize,
+        session_id: Option<&str>,
+        ratio_percent: u8,
+    ) -> Result<(), String> {
+        let index = self.api_session_index_for_pane(pane_id, session_id)?;
+        let (cols, rows) = self.current_effective_pane_dims();
+        self.sessions[index]
+            .session
+            .set_split_ratio(pane_id, ratio_percent, cols, rows)?;
+        self.needs_render = true;
+        self.needs_full_clear = true;
+        self.persist_active_session_info();
+        Ok(())
     }
 
     /// `agent.report` for the JSON-RPC API: store an externally reported

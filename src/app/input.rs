@@ -772,9 +772,62 @@ impl App {
             }
             InputMode::PeekAllWindows { state } => self.handle_peek_all_windows_mode_key(state),
             InputMode::Keybindings { state } => self.handle_keybindings_mode_key(state, key),
+            InputMode::ResizeMode => self.handle_resize_mode_key(key),
             InputMode::Normal => InputMode::Normal,
         };
         Ok(signal)
+    }
+
+    /// Sticky resize mode: arrows/hjkl resize by the one-shot step, their
+    /// shifted variants by a fine step; Esc/Enter/q leaves the mode. Other
+    /// keys are swallowed so the mode stays modal.
+    fn handle_resize_mode_key(&mut self, key: KeyEvent) -> InputMode {
+        use crossterm::event::KeyCode;
+
+        const RESIZE_MODE_STEP: u16 = 5;
+        const RESIZE_MODE_FINE_STEP: u16 = 1;
+
+        let (direction, fine) = match key.code {
+            KeyCode::Left | KeyCode::Char('h') => (Some(Direction::Left), false),
+            KeyCode::Down | KeyCode::Char('j') => (Some(Direction::Down), false),
+            KeyCode::Up | KeyCode::Char('k') => (Some(Direction::Up), false),
+            KeyCode::Right | KeyCode::Char('l') => (Some(Direction::Right), false),
+            KeyCode::Char('H') => (Some(Direction::Left), true),
+            KeyCode::Char('J') => (Some(Direction::Down), true),
+            KeyCode::Char('K') => (Some(Direction::Up), true),
+            KeyCode::Char('L') => (Some(Direction::Right), true),
+            _ => (None, false),
+        };
+        let fine = fine
+            || (!matches!(key.code, KeyCode::Char(_))
+                && key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::SHIFT));
+
+        if let Some(direction) = direction {
+            let amount = if fine {
+                RESIZE_MODE_FINE_STEP
+            } else {
+                RESIZE_MODE_STEP
+            };
+            let (cols, rows) = self.current_effective_pane_dims();
+            if self
+                .current_session_mut()
+                .resize_focused(direction, amount, cols, rows)
+                .is_ok()
+            {
+                self.needs_full_clear = true;
+            }
+            return InputMode::ResizeMode;
+        }
+
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                self.set_message("resize mode off", Duration::from_secs(2));
+                InputMode::Normal
+            }
+            _ => InputMode::ResizeMode,
+        }
     }
 
     pub(super) fn open_peek_all_windows(&mut self) {
@@ -841,7 +894,7 @@ impl App {
                 }
                 Ok(AppSignal::None)
             }
-            InputMode::PeekAllWindows { .. } => Ok(AppSignal::None),
+            InputMode::PeekAllWindows { .. } | InputMode::ResizeMode => Ok(AppSignal::None),
             InputMode::Keybindings { state } => {
                 if state.query_active {
                     let text = text.trim_end_matches(['\r', '\n']).trim_end_matches('\0');
