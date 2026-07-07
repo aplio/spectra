@@ -3,7 +3,10 @@ use std::time::Duration;
 
 use crossterm::style::Color;
 
-use super::{CellStyle, MAX_OSC8_URI_LEN, StyledCell, TerminalEvent, TerminalState};
+use super::{
+    CellStyle, MAX_OSC8_URI_LEN, ProgressReport, ProgressState, StyledCell, TerminalEvent,
+    TerminalState,
+};
 
 #[test]
 fn writes_and_wraps() {
@@ -164,6 +167,265 @@ fn osc133_prompt_marks_track_last_prompt_row() {
 }
 
 #[test]
+fn osc133_bcd_marks_track_command_lifecycle() {
+    let mut state = TerminalState::new(20, 6);
+    assert_eq!(state.semantic_prompt(), super::SemanticPrompt::default());
+
+    state.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07make\r\n");
+    let prompt = state.semantic_prompt();
+    assert_eq!(prompt.prompt_abs_row, Some(0));
+    assert_eq!(prompt.input_abs_row, Some(0));
+    assert!(!prompt.command_running);
+
+    state.feed(b"\x1b]133;C\x07building...\r\n");
+    let prompt = state.semantic_prompt();
+    assert_eq!(prompt.output_abs_row, Some(1));
+    assert!(prompt.command_running);
+
+    state.feed(b"\x1b]133;D;2\x07");
+    let prompt = state.semantic_prompt();
+    assert!(!prompt.command_running);
+    assert_eq!(prompt.last_exit_code, Some(2));
+
+    // D without a code ends the command but reports no (stale) code.
+    state.feed(b"\x1b]133;C\x07\x1b]133;D\x07");
+    let prompt = state.semantic_prompt();
+    assert!(!prompt.command_running);
+    assert_eq!(prompt.last_exit_code, None);
+}
+
+#[test]
+fn osc9_plain_payload_emits_notification_event() {
+    let mut state = TerminalState::new(20, 2);
+    state.feed(b"\x1b]9;build finished\x07");
+    assert_eq!(
+        state.drain_events(),
+        vec![TerminalEvent::Notification {
+            message: "build finished".to_string()
+        }]
+    );
+
+    // A payload containing ';' survives vte's parameter splitting.
+    state.feed(b"\x1b]9;done; see logs\x1b\\");
+    assert_eq!(
+        state.drain_events(),
+        vec![TerminalEvent::Notification {
+            message: "done; see logs".to_string()
+        }]
+    );
+
+    // ConEmu subcommands other than progress are dropped, not shown as
+    // notifications.
+    state.feed(b"\x1b]9;2;a message box\x07\x1b]9;12\x07");
+    assert!(state.drain_events().is_empty());
+}
+
+#[test]
+fn osc777_notify_emits_notification_event() {
+    let mut state = TerminalState::new(20, 2);
+    state.feed(b"\x1b]777;notify;Build;done in 3s\x07");
+    assert_eq!(
+        state.drain_events(),
+        vec![TerminalEvent::Notification {
+            message: "Build: done in 3s".to_string()
+        }]
+    );
+
+    // Title-only form and unknown 777 subcommands.
+    state.feed(b"\x1b]777;notify;Ping\x07\x1b]777;other;x\x07");
+    assert_eq!(
+        state.drain_events(),
+        vec![TerminalEvent::Notification {
+            message: "Ping".to_string()
+        }]
+    );
+}
+
+#[test]
+fn osc9_4_progress_tracks_state_and_emits_events() {
+    let mut state = TerminalState::new(20, 2);
+    assert_eq!(state.progress(), None);
+
+    state.feed(b"\x1b]9;4;1;30\x07");
+    let expected = Some(ProgressReport {
+        state: ProgressState::Normal,
+        percent: Some(30),
+    });
+    assert_eq!(state.progress(), expected);
+    assert_eq!(
+        state.drain_events(),
+        vec![TerminalEvent::ProgressChanged { progress: expected }]
+    );
+
+    // Repeating the same report doesn't spam events.
+    state.feed(b"\x1b]9;4;1;30\x07");
+    assert!(state.drain_events().is_empty());
+
+    // Values above 100 clamp; error/paused keep an optional percentage;
+    // indeterminate has none.
+    state.feed(b"\x1b]9;4;1;250\x07");
+    assert_eq!(
+        state.progress(),
+        Some(ProgressReport {
+            state: ProgressState::Normal,
+            percent: Some(100),
+        })
+    );
+    state.feed(b"\x1b]9;4;2\x07");
+    assert_eq!(
+        state.progress(),
+        Some(ProgressReport {
+            state: ProgressState::Error,
+            percent: None,
+        })
+    );
+    state.feed(b"\x1b]9;4;3;40\x07");
+    assert_eq!(
+        state.progress(),
+        Some(ProgressReport {
+            state: ProgressState::Indeterminate,
+            percent: None,
+        })
+    );
+
+    // 9;4;0 (and a bare 9;4) removes the indicator.
+    state.drain_events();
+    state.feed(b"\x1b]9;4;0\x07");
+    assert_eq!(state.progress(), None);
+    assert_eq!(
+        state.drain_events(),
+        vec![TerminalEvent::ProgressChanged { progress: None }]
+    );
+
+    // Unknown states are dropped without touching the current report.
+    state.feed(b"\x1b]9;4;7;10\x07");
+    assert_eq!(state.progress(), None);
+    assert!(state.drain_events().is_empty());
+}
+
+#[test]
+fn osc4_palette_set_query_and_reset() {
+    let mut state = TerminalState::new(10, 2);
+
+    // Query an untouched index: xterm default palette (1 = 205,0,0).
+    state.feed(b"\x1b]4;1;?\x07");
+    assert_eq!(
+        state.drain_responses(),
+        vec![b"\x1b]4;1;rgb:cdcd/0000/0000\x07".to_vec()]
+    );
+
+    // Set + query, including multiple pairs in one sequence.
+    state.feed(b"\x1b]4;1;#ff0000;2;rgb:00/ff/00\x1b\\");
+    state.feed(b"\x1b]4;1;?;2;?\x07");
+    assert_eq!(
+        state.drain_responses(),
+        vec![
+            b"\x1b]4;1;rgb:ffff/0000/0000\x07".to_vec(),
+            b"\x1b]4;2;rgb:0000/ffff/0000\x07".to_vec(),
+        ]
+    );
+
+    // Cells drawn with the overridden index resolve to the override.
+    state.feed(b"\x1b[31mX");
+    let cell = state.row_cells(0)[0].clone();
+    assert_eq!(
+        cell.style.fg,
+        Some(Color::Rgb {
+            r: 0xff,
+            g: 0x00,
+            b: 0x00
+        })
+    );
+
+    // OSC 104 with an index resets only that entry; without, all of them.
+    state.feed(b"\x1b]104;1\x07");
+    let cell = state.row_cells(0)[0].clone();
+    assert_eq!(cell.style.fg, Some(Color::AnsiValue(1)));
+    state.feed(b"\x1b]4;1;#ff0000\x07\x1b]104\x07");
+    let cell = state.row_cells(0)[0].clone();
+    assert_eq!(cell.style.fg, Some(Color::AnsiValue(1)));
+
+    // Out-of-range indices are ignored.
+    state.feed(b"\x1b]4;300;#ff0000\x07\x1b]4;300;?\x07");
+    assert!(state.drain_responses().is_empty());
+}
+
+#[test]
+fn osc10_11_overrides_apply_to_default_colored_cells() {
+    let mut state = TerminalState::new(10, 2);
+    state.feed(b"plain");
+    assert_eq!(state.row_cells(0)[0].style.fg, None);
+
+    state.feed(b"\x1b]10;#101010\x07\x1b]11;#202020\x07");
+    let cell = state.row_cells(0)[0].clone();
+    assert_eq!(
+        cell.style.fg,
+        Some(Color::Rgb {
+            r: 0x10,
+            g: 0x10,
+            b: 0x10
+        })
+    );
+    assert_eq!(
+        cell.style.bg,
+        Some(Color::Rgb {
+            r: 0x20,
+            g: 0x20,
+            b: 0x20
+        })
+    );
+
+    // Explicit colors are untouched by the default overrides.
+    state.feed(b"\x1b[38;2;1;2;3mx");
+    let cell = state.row_cells(0)[5].clone();
+    assert_eq!(cell.style.fg, Some(Color::Rgb { r: 1, g: 2, b: 3 }));
+
+    state.feed(b"\x1b]110\x07\x1b]111\x07");
+    let cell = state.row_cells(0)[0].clone();
+    assert_eq!(cell.style.fg, None);
+    assert_eq!(cell.style.bg, None);
+}
+
+#[test]
+fn osc12_cursor_color_set_query_reset() {
+    let mut state = TerminalState::new(10, 2);
+    assert_eq!(state.cursor_color(), None);
+
+    // Without an override the query stays unanswered (the host cursor
+    // color is unknown).
+    state.feed(b"\x1b]12;?\x07");
+    assert!(state.drain_responses().is_empty());
+
+    state.feed(b"\x1b]12;rgb:ff/80/00\x07");
+    assert_eq!(state.cursor_color(), Some((0xff, 0x80, 0x00)));
+    state.feed(b"\x1b]12;?\x1b\\");
+    assert_eq!(
+        state.drain_responses(),
+        vec![b"\x1b]12;rgb:ffff/8080/0000\x1b\\".to_vec()]
+    );
+
+    state.feed(b"\x1b]112\x07");
+    assert_eq!(state.cursor_color(), None);
+}
+
+#[test]
+fn color_spec_scaling_matches_xparsecolor() {
+    let mut state = TerminalState::new(10, 2);
+    // 1-digit rgb: channels scale (0xa/0xf -> 0xaa), '#' digits are the
+    // most significant bits (#abc -> a0/b0/c0).
+    state.feed(b"\x1b]10;rgb:a/b/c\x07\x1b]10;?\x07");
+    assert_eq!(
+        state.drain_responses(),
+        vec![b"\x1b]10;rgb:aaaa/bbbb/cccc\x07".to_vec()]
+    );
+    state.feed(b"\x1b]10;#abc\x07\x1b]10;?\x07");
+    assert_eq!(
+        state.drain_responses(),
+        vec![b"\x1b]10;rgb:a0a0/b0b0/c0c0\x07".to_vec()]
+    );
+}
+
+#[test]
 fn osc10_11_queries_answer_from_cached_host_colors() {
     use crate::io::host_colors::HostColors;
 
@@ -212,7 +474,7 @@ fn osc10_11_queries_stay_silent_without_cached_colors() {
 }
 
 #[test]
-fn osc10_11_set_forms_are_ignored() {
+fn osc10_11_set_forms_store_pane_overrides() {
     use crate::io::host_colors::HostColors;
 
     let colors = HostColors {
@@ -222,15 +484,35 @@ fn osc10_11_set_forms_are_ignored() {
     let mut state = TerminalState::new(10, 2);
     state.set_host_colors(colors);
 
-    // Guests setting the default colors are ignored in v1: no reply,
-    // no crash, and the cached colors stay untouched.
+    // A set stores a pane-local override (the cached host colors stay
+    // untouched) and later queries answer from the override.
     state.feed(b"\x1b]10;rgb:1111/2222/3333\x07");
     state.feed(b"\x1b]11;#123456\x1b\\");
     state.feed(b"\x1b]10\x07");
     assert!(state.drain_responses().is_empty());
     assert_eq!(state.host_colors(), colors);
 
-    // Queries still answer from the untouched cache afterwards.
+    state.feed(b"\x1b]10;?\x07");
+    assert_eq!(
+        state.drain_responses(),
+        vec![b"\x1b]10;rgb:1111/2222/3333\x07".to_vec()]
+    );
+    state.feed(b"\x1b]11;?\x07");
+    assert_eq!(
+        state.drain_responses(),
+        vec![b"\x1b]11;rgb:1212/3434/5656\x07".to_vec()]
+    );
+
+    // OSC 110/111 drop the overrides; queries fall back to the cache.
+    state.feed(b"\x1b]110\x07\x1b]111\x07");
+    state.feed(b"\x1b]10;?\x07");
+    assert_eq!(
+        state.drain_responses(),
+        vec![b"\x1b]10;rgb:ffff/ffff/ffff\x07".to_vec()]
+    );
+
+    // An unparsable spec is dropped rather than clobbering state.
+    state.feed(b"\x1b]10;notacolor\x07");
     state.feed(b"\x1b]10;?\x07");
     assert_eq!(
         state.drain_responses(),

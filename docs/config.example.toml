@@ -18,6 +18,11 @@ enabled = false
 # tmux-compatible pass-through (DCS tmux;...ST) to the outer terminal.
 allow_passthrough = true
 
+[pane]
+# Seconds a closed pane is kept alive (process still running) so
+# `restore-pane` (prefix u) can undo the close. 0 disables it. (default: 10)
+undo_close_seconds = 10
+
 [sidebar]
 # Show the window-tree sidebar by default on session start. (default: true)
 default_open = true
@@ -41,6 +46,7 @@ session_killed = ""
 window_created = ""
 pane_split = ""
 pane_closed = ""
+pane_restored = ""
 config_reloaded = ""
 
 [prefix_bindings]

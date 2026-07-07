@@ -101,6 +101,7 @@ impl SessionManager {
             session_name: snapshot.session_name,
             pending_passthrough: Vec::new(),
             pending_terminal_events: Vec::new(),
+            closed_panes: Vec::new(),
         };
         session.active_window = session
             .active_window

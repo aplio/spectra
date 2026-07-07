@@ -123,6 +123,39 @@ pub fn osc9_notification_sequence(message: &str) -> String {
     format!("\x1b]9;{sanitized}\x07")
 }
 
+/// Build a ConEmu OSC 9;4 progress sequence for the host terminal.
+/// `None` removes the indicator.
+pub fn osc94_progress_sequence(
+    progress: Option<crate::session::terminal_state::ProgressReport>,
+) -> String {
+    use crate::session::terminal_state::ProgressState;
+
+    let Some(report) = progress else {
+        return "\x1b]9;4;0\x07".to_string();
+    };
+    let state = match report.state {
+        ProgressState::Normal => 1,
+        ProgressState::Error => 2,
+        ProgressState::Indeterminate => 3,
+        ProgressState::Paused => 4,
+    };
+    match report.percent {
+        Some(percent) => format!("\x1b]9;4;{state};{percent}\x07"),
+        None => format!("\x1b]9;4;{state}\x07"),
+    }
+}
+
+/// Build an OSC 12 escape sequence setting the host cursor color.
+pub fn osc12_cursor_color_sequence((r, g, b): (u8, u8, u8)) -> String {
+    format!("\x1b]12;rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}\x07")
+}
+
+/// Build an OSC 112 escape sequence restoring the host's default cursor
+/// color.
+pub fn osc112_reset_cursor_color_sequence() -> String {
+    "\x1b]112\x07".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{mouse_capture_sequence, osc2_title_sequence, osc9_notification_sequence};

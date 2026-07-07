@@ -14,6 +14,7 @@ impl SessionManager {
         let mut panes = Vec::new();
         let mut focused_cursor = None;
         let mut cursor_style = crossterm::cursor::SetCursorStyle::DefaultUserShape;
+        let mut cursor_color = None;
 
         for pane_layout in &layout.panes {
             if let Some(pane) = self.panes.get(&pane_layout.pane_id) {
@@ -30,6 +31,7 @@ impl SessionManager {
                         let cursor_y = pane_layout.rect.y + visible_cursor_y.min(max_y);
                         focused_cursor = Some((cursor_x as u16, cursor_y as u16));
                         cursor_style = pane.cursor_style();
+                        cursor_color = pane.cursor_color();
                     }
                 }
                 panes.push(RenderPane {
@@ -48,6 +50,7 @@ impl SessionManager {
             dividers: layout.dividers,
             focused_cursor,
             cursor_style,
+            cursor_color,
         }
     }
 
@@ -64,6 +67,7 @@ impl SessionManager {
         let mut panes = Vec::new();
         let mut focused_cursor = None;
         let mut cursor_style = crossterm::cursor::SetCursorStyle::DefaultUserShape;
+        let mut cursor_color = None;
 
         for (pane_id, rect) in pane_ids.into_iter().zip(rects.into_iter()) {
             if let Some(pane) = self.panes.get(&pane_id) {
@@ -80,6 +84,7 @@ impl SessionManager {
                         let cursor_y = rect.y + visible_cursor_y.min(max_y);
                         focused_cursor = Some((cursor_x as u16, cursor_y as u16));
                         cursor_style = pane.cursor_style();
+                        cursor_color = pane.cursor_color();
                     }
                 }
                 panes.push(RenderPane {
@@ -98,6 +103,7 @@ impl SessionManager {
             dividers,
             focused_cursor,
             cursor_style,
+            cursor_color,
         }
     }
 
@@ -173,6 +179,7 @@ fn empty_frame() -> RenderFrame {
         dividers: Vec::new(),
         focused_cursor: None,
         cursor_style: crossterm::cursor::SetCursorStyle::DefaultUserShape,
+        cursor_color: None,
     }
 }
 

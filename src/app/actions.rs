@@ -148,9 +148,47 @@ impl App {
                 ..ActionEffects::reorder()
             });
             self.write_log(&format!("{reason}: closed focused pane"));
-            self.set_message("pane closed", Duration::from_secs(2));
+            let message = self
+                .undo_close_hint()
+                .map(|hint| format!("pane closed ({hint} to restore)"))
+                .unwrap_or_else(|| "pane closed".to_string());
+            self.set_message(&message, Duration::from_secs(3));
         } else {
             self.set_message("pane close failed", Duration::from_secs(2));
+        }
+    }
+
+    /// Key-chord hint for undoing the close just performed (e.g. `C-j u`),
+    /// shown in the status message. `None` when nothing was retained or the
+    /// restore action is unbound.
+    fn undo_close_hint(&self) -> Option<String> {
+        if !self.current_session().has_restorable_closed_pane() {
+            return None;
+        }
+        let key = self
+            .view
+            .keys
+            .prefix_key_for(&CommandAction::RestoreClosedPane)?;
+        Some(format!("{} {key}", self.view.keys.prefix_key_display()))
+    }
+
+    /// Restore the most recently closed pane (undo close), if one is still
+    /// within its retention window.
+    pub(super) fn restore_last_closed_pane(&mut self) {
+        let (cols, rows) = self.current_effective_pane_dims();
+        match self
+            .current_session_mut()
+            .restore_last_closed_pane(cols, rows)
+        {
+            Ok(pane_id) => {
+                self.apply_action_effects(ActionEffects {
+                    hook: Some(HookEvent::PaneRestored),
+                    ..ActionEffects::reorder()
+                });
+                self.write_log(&format!("restored closed pane {pane_id}"));
+                self.set_message("pane restored", Duration::from_secs(2));
+            }
+            Err(err) => self.set_message(&err, Duration::from_secs(2)),
         }
     }
 
@@ -275,6 +313,7 @@ impl App {
                 }
             }
             CommandAction::ClosePane => self.close_focused_or_quit("close pane"),
+            CommandAction::RestoreClosedPane => self.restore_last_closed_pane(),
             CommandAction::Quit => self.request_quit(),
             CommandAction::DetachClient => return AppSignal::DetachClient,
 
@@ -585,11 +624,14 @@ impl App {
         self.session_template.suppress_prompt_eol_marker = suppress_prompt_eol_marker;
         let allow_passthrough = loaded.terminal.allow_passthrough;
         self.session_template.allow_passthrough = allow_passthrough;
+        let undo_close_timeout = Duration::from_secs(loaded.pane.undo_close_seconds);
+        self.session_template.undo_close_timeout = undo_close_timeout;
         for managed in &mut self.sessions {
             managed
                 .session
                 .set_suppress_prompt_eol_marker(suppress_prompt_eol_marker);
             managed.session.set_allow_passthrough(allow_passthrough);
+            managed.session.set_undo_close_timeout(undo_close_timeout);
         }
 
         self.mouse_enabled = loaded.mouse.enabled;

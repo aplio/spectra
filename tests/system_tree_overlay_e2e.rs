@@ -150,6 +150,7 @@ fn sample_frame() -> RenderFrame {
         dividers: vec![],
         focused_cursor: Some((2, 0)),
         cursor_style: crossterm::cursor::SetCursorStyle::DefaultUserShape,
+        cursor_color: None,
     }
 }
 

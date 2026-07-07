@@ -1113,3 +1113,147 @@ fn send_paste_to_active_window_wraps_only_bracketed_panes() {
         vec![(1, b"txt".to_vec()), (2, b"\x1b[200~txt\x1b[201~".to_vec()),]
     );
 }
+
+fn undo_close_session() -> SessionManager {
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    SessionManager::with_factory(options, Arc::new(FakeFactory), 80, 24).expect("create session")
+}
+
+fn active_window_layout(session: &SessionManager) -> crate::ui::window_manager::Layout {
+    session
+        .active_window()
+        .expect("active window")
+        .manager
+        .layout(super::workspace_area(80, 24))
+}
+
+#[test]
+fn close_focused_retains_pane_and_restore_returns_it_to_position() {
+    let mut session = undo_close_session();
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split vertical");
+    let layout_before_close = active_window_layout(&session);
+
+    session.close_focused(80, 24).expect("close focused pane");
+    assert_eq!(session.pane_count(), 1);
+    assert!(!session.pane_exists(2));
+    assert!(session.has_restorable_closed_pane());
+
+    let restored = session
+        .restore_last_closed_pane(80, 24)
+        .expect("restore closed pane");
+    assert_eq!(restored, 2);
+    assert_eq!(session.pane_count(), 2);
+    assert_eq!(session.focused_pane_id(), Some(2));
+    assert!(!session.has_restorable_closed_pane());
+    assert_eq!(
+        active_window_layout(&session).panes,
+        layout_before_close.panes
+    );
+}
+
+#[test]
+fn restore_recreates_window_removed_by_close() {
+    let mut session = undo_close_session();
+    session.new_window(80, 24).expect("new window");
+    assert_eq!(session.window_count(), 2);
+    assert_eq!(session.focused_pane_id(), Some(2));
+
+    session
+        .close_focused(80, 24)
+        .expect("close only pane in window");
+    assert_eq!(session.window_count(), 1);
+
+    let restored = session
+        .restore_last_closed_pane(80, 24)
+        .expect("restore closed pane");
+    assert_eq!(restored, 2);
+    assert_eq!(session.window_count(), 2);
+    assert_eq!(session.focused_pane_id(), Some(2));
+    assert_eq!(session.focused_window_number(), Some(2));
+}
+
+#[test]
+fn restore_falls_back_to_split_when_layout_changed_since_close() {
+    let mut session = undo_close_session();
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split vertical");
+    session.close_focused(80, 24).expect("close pane 2");
+    session
+        .split_focused(SplitAxis::Horizontal, 80, 24)
+        .expect("split horizontal");
+    assert_eq!(session.pane_count(), 2);
+
+    let restored = session
+        .restore_last_closed_pane(80, 24)
+        .expect("restore closed pane");
+    assert_eq!(restored, 2);
+    assert_eq!(session.pane_count(), 3);
+    assert_eq!(session.focused_pane_id(), Some(2));
+    assert!(session.pane_exists(1) && session.pane_exists(2) && session.pane_exists(3));
+}
+
+#[test]
+fn restore_returns_most_recently_closed_pane_first() {
+    let mut session = undo_close_session();
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split pane 2");
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split pane 3");
+
+    session.close_focused(80, 24).expect("close pane 3");
+    session.close_focused(80, 24).expect("close pane 2");
+
+    assert_eq!(session.restore_last_closed_pane(80, 24), Ok(2));
+    assert_eq!(session.restore_last_closed_pane(80, 24), Ok(3));
+    assert_eq!(session.pane_count(), 3);
+    assert!(
+        session.restore_last_closed_pane(80, 24).is_err(),
+        "no retained pane is left to restore"
+    );
+}
+
+#[test]
+fn zero_undo_close_timeout_disables_retention() {
+    let mut session = undo_close_session();
+    session.set_undo_close_timeout(std::time::Duration::ZERO);
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split vertical");
+
+    session.close_focused(80, 24).expect("close focused pane");
+    assert!(!session.has_restorable_closed_pane());
+    assert!(session.restore_last_closed_pane(80, 24).is_err());
+}
+
+#[test]
+fn retained_pane_is_purged_after_the_grace_period() {
+    let mut session = undo_close_session();
+    session.set_undo_close_timeout(std::time::Duration::from_millis(1));
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split vertical");
+
+    session.close_focused(80, 24).expect("close focused pane");
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    assert!(!session.has_restorable_closed_pane());
+    assert!(session.restore_last_closed_pane(80, 24).is_err());
+}
+
+#[test]
+fn dead_pane_is_not_retained_for_undo_close() {
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options, Arc::new(ClosedFactory), 80, 24)
+        .expect("create session");
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split vertical");
+
+    session.close_focused(80, 24).expect("close focused pane");
+    assert!(!session.has_restorable_closed_pane());
+    assert!(session.restore_last_closed_pane(80, 24).is_err());
+}

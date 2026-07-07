@@ -21,6 +21,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub terminal: TerminalConfig,
     #[serde(default)]
+    pub pane: PaneConfig,
+    #[serde(default)]
     pub status: StatusConfig,
     #[serde(default)]
     pub agent: AgentConfig,
@@ -49,6 +51,7 @@ impl Default for AppConfig {
             shell: ShellConfig::default(),
             mouse: MouseConfig::default(),
             terminal: TerminalConfig::default(),
+            pane: PaneConfig::default(),
             status: StatusConfig::default(),
             agent: AgentConfig::default(),
             sidebar: SidebarConfig::default(),
@@ -89,6 +92,26 @@ impl Default for TerminalConfig {
             allow_passthrough: true,
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PaneConfig {
+    /// Seconds a user-closed pane is kept alive so `restore-pane` can undo
+    /// the close (ghostty-style undo close). 0 disables retention.
+    #[serde(default = "default_undo_close_seconds")]
+    pub undo_close_seconds: u64,
+}
+
+impl Default for PaneConfig {
+    fn default() -> Self {
+        Self {
+            undo_close_seconds: default_undo_close_seconds(),
+        }
+    }
+}
+
+fn default_undo_close_seconds() -> u64 {
+    10
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -155,6 +178,7 @@ pub struct HooksConfig {
     pub window_created: Option<String>,
     pub pane_split: Option<String>,
     pub pane_closed: Option<String>,
+    pub pane_restored: Option<String>,
     pub config_reloaded: Option<String>,
 }
 

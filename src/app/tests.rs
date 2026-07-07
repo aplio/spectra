@@ -1069,6 +1069,42 @@ fn tick_queues_tmux_passthrough_for_each_attached_client_on_session() {
 }
 
 #[test]
+fn guest_osc9_notification_is_broadcast_to_each_attached_client() {
+    let (mut app, _) = build_recording_app_with_output(vec![b"\x1b]9;build done\x07".to_vec()]);
+    let remote_client_id = 43;
+    app.register_client(remote_client_id, 80, 24);
+
+    app.tick();
+
+    assert_eq!(
+        app.take_pending_passthrough_ansi_for_client(super::LOCAL_CLIENT_ID),
+        vec!["\x1b]9;build done\x07".to_string()]
+    );
+    assert_eq!(
+        app.take_pending_passthrough_ansi_for_client(remote_client_id),
+        vec!["\x1b]9;build done\x07".to_string()]
+    );
+}
+
+#[test]
+fn guest_progress_report_is_broadcast_and_removed() {
+    let (mut app, _) = build_recording_app_with_output(vec![
+        b"\x1b]9;4;1;55\x07".to_vec(),
+        b"\x1b]9;4;0\x07".to_vec(),
+    ]);
+
+    app.tick();
+
+    assert_eq!(
+        app.take_pending_passthrough_ansi_for_client(super::LOCAL_CLIENT_ID),
+        vec![
+            "\x1b]9;4;1;55\x07".to_string(),
+            "\x1b]9;4;0\x07".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn disabling_passthrough_stops_forwarding_tmux_wrapped_sequences() {
     let (mut app, _) = build_recording_app_with_output(vec![
         b"\x1bPtmux;\x1b\x1b]52;c;aGVsbG8=\x07\x1b\\".to_vec(),
@@ -2354,11 +2390,75 @@ fn command_palette_shows_only_leave_cursor_mode_in_cursor_mode() {
     let entries = App::command_palette_entries_for(super::CommandPaletteContext {
         locked_input: false,
         cursor_mode_active: true,
+        ..Default::default()
     });
     assert!(entries.iter().any(|entry| {
         entry.id == "cursor-mode.leave" && entry.action == CommandAction::LeaveCursorMode
     }));
     assert!(!entries.iter().any(|entry| entry.id == "cursor-mode.enter"));
+}
+
+#[test]
+fn restore_pane_action_restores_the_closed_pane() {
+    let mut app = build_app_for_resize_test();
+    app.current_session_mut()
+        .split_focused(crate::ui::window_manager::SplitAxis::Vertical, 80, 24)
+        .expect("split pane");
+    let closed = app.current_session().focused_pane_id();
+    assert_eq!(closed, Some(2));
+
+    let _ = app.handle_action(CommandAction::ClosePane);
+    assert_eq!(app.current_session().pane_count(), 1);
+    let message = app
+        .view
+        .status_message
+        .as_ref()
+        .map(|message| message.text.clone())
+        .unwrap_or_default();
+    assert!(
+        message.contains("to restore"),
+        "close message should hint the undo-close chord, got `{message}`"
+    );
+
+    let _ = app.handle_action(CommandAction::RestoreClosedPane);
+    assert_eq!(app.current_session().pane_count(), 2);
+    assert_eq!(app.current_session().focused_pane_id(), closed);
+}
+
+#[test]
+fn restore_pane_action_without_retained_pane_reports_a_message() {
+    let mut app = build_app_for_resize_test();
+    let _ = app.handle_action(CommandAction::RestoreClosedPane);
+    assert_eq!(app.current_session().pane_count(), 1);
+    let message = app
+        .view
+        .status_message
+        .as_ref()
+        .map(|message| message.text.clone())
+        .unwrap_or_default();
+    assert!(message.contains("no recently closed pane"));
+}
+
+#[test]
+fn command_palette_lists_restore_only_while_a_closed_pane_is_retained() {
+    let mut app = build_app_for_resize_test();
+
+    let ctx = app.command_palette_context();
+    assert!(!ctx.can_restore_pane);
+    let entries = App::command_palette_entries_for(ctx);
+    assert!(!entries.iter().any(|entry| entry.id == "pane.restore"));
+
+    app.current_session_mut()
+        .split_focused(crate::ui::window_manager::SplitAxis::Vertical, 80, 24)
+        .expect("split pane");
+    let _ = app.handle_action(CommandAction::ClosePane);
+
+    let ctx = app.command_palette_context();
+    assert!(ctx.can_restore_pane);
+    let entries = App::command_palette_entries_for(ctx);
+    assert!(entries.iter().any(|entry| {
+        entry.id == "pane.restore" && entry.action == CommandAction::RestoreClosedPane
+    }));
 }
 
 #[test]
