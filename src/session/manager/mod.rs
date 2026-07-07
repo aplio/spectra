@@ -95,6 +95,10 @@ pub struct RenderFrame {
     /// forwarded to the host terminal (and reset via OSC 112) by the
     /// renderer.
     pub cursor_color: Option<(u8, u8, u8)>,
+    /// The focused pane's guest hid its cursor (DECTCEM). `focused_cursor`
+    /// still carries the cell so a client may park the host cursor there for
+    /// IME anchoring, but by default the host cursor stays hidden.
+    pub focused_cursor_hidden: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

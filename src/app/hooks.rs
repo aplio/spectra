@@ -62,7 +62,7 @@ impl App {
         self.spawn_shell_detached("run binding", command.to_string(), context, Vec::new());
     }
 
-    fn spawn_shell_detached(
+    pub(super) fn spawn_shell_detached(
         &mut self,
         label: &str,
         command: String,

@@ -29,6 +29,7 @@ impl App {
             app.mark_focused_agent_seen();
             let side_window_tree = app.side_window_tree_overlay();
             let mut frame = app.pane_frame_for_current_view_with_sidebar(side_window_tree.as_ref());
+            app.apply_ime_cursor_policy(&mut frame);
             // Apply text selection highlighting to pane cells
             if let Some(sel) = &app.view.text_selection {
                 Self::apply_selection_highlight(&mut frame, sel);
@@ -415,16 +416,25 @@ impl App {
             let Some(cells) = pane.rows.get_mut(row) else {
                 continue;
             };
-            let from = if abs_row == start_abs_row {
+            let mut from = if abs_row == start_abs_row {
                 start_col
             } else {
                 0
             };
-            let to = if abs_row == end_abs_row {
+            let mut to = if abs_row == end_abs_row {
                 (end_col + 1).min(cells.len())
             } else {
                 cells.len()
             };
+            // Snap the highlight to whole wide chars: include the owner when
+            // the start lands on a continuation cell, and the continuation
+            // when the end lands on the owner.
+            while from > 0 && cells.get(from).is_some_and(|cell| cell.ch == '\0') {
+                from -= 1;
+            }
+            while cells.get(to).is_some_and(|cell| cell.ch == '\0') {
+                to += 1;
+            }
             for cell in cells.get_mut(from..to).into_iter().flatten() {
                 cell.style.reverse = !cell.style.reverse;
             }

@@ -29,6 +29,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub sidebar: SidebarConfig,
     #[serde(default)]
+    pub ime: ImeConfig,
+    #[serde(default)]
     pub hooks: HooksConfig,
     #[serde(default)]
     pub prefix_bindings: HashMap<String, String>,
@@ -55,6 +57,7 @@ impl Default for AppConfig {
             status: StatusConfig::default(),
             agent: AgentConfig::default(),
             sidebar: SidebarConfig::default(),
+            ime: ImeConfig::default(),
             hooks: HooksConfig::default(),
             prefix_bindings: HashMap::new(),
             global_bindings: HashMap::new(),
@@ -215,6 +218,41 @@ impl Default for SidebarConfig {
     }
 }
 
+/// CJK / IME affordances (herdr-inspired).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ImeConfig {
+    /// Park the host cursor (shown) at the focused pane's cursor cell even
+    /// when the guest hid it via DECTCEM, so IMEs that anchor their
+    /// candidate window to the real terminal cursor point at the right
+    /// place. Apps like Claude Code hide the cursor and draw their own; this
+    /// re-reveals it at the guest cursor position.
+    #[serde(default)]
+    pub reveal_hidden_cursor: bool,
+    /// Cursor shape used while a hidden cursor is revealed. `None` keeps the
+    /// guest's current shape.
+    pub cursor_shape: Option<ImeCursorShape>,
+    /// Agent kinds (manifest names like "claude") the reveal applies to.
+    /// Empty means every pane, regardless of detected agent.
+    #[serde(default)]
+    pub agents: Vec<String>,
+    /// Shell command run when the prefix key arms pending state, e.g.
+    /// `im-select com.apple.keylayout.ABC` (macOS) or `fcitx5-remote -c`
+    /// (Linux), so the key after the prefix is not eaten by the IME.
+    pub prefix_ascii_command: Option<String>,
+    /// Shell command run when the pending prefix state ends, to restore the
+    /// previous input source.
+    pub prefix_restore_command: Option<String>,
+}
+
+/// Host cursor shape used while revealing a hidden cursor for IME anchoring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImeCursorShape {
+    Block,
+    Bar,
+    Underline,
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct HooksConfig {
     pub session_created: Option<String>,
@@ -283,6 +321,11 @@ mod tests {
         assert!(config.sidebar.default_open);
         assert!(config.sidebar.session_format.is_none());
         assert!(config.sidebar.window_format.is_none());
+        assert!(!config.ime.reveal_hidden_cursor);
+        assert!(config.ime.cursor_shape.is_none());
+        assert!(config.ime.agents.is_empty());
+        assert!(config.ime.prefix_ascii_command.is_none());
+        assert!(config.ime.prefix_restore_command.is_none());
         assert!(config.hooks.session_created.is_none());
         assert!(config.prefix_bindings.is_empty());
         assert!(config.global_bindings.is_empty());
@@ -351,6 +394,13 @@ default_open = false
 session_format = "{session_index}:{session_name}"
 window_format = "w{window_index} {window_name}\n  {agent}"
 
+[ime]
+reveal_hidden_cursor = true
+cursor_shape = "bar"
+agents = ["claude"]
+prefix_ascii_command = "im-select com.apple.keylayout.ABC"
+prefix_restore_command = "im-select com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese"
+
 [hooks]
 session_created = "echo created"
 config_reloaded = "echo reloaded"
@@ -387,6 +437,17 @@ C-w = "window-list"
         assert_eq!(
             config.sidebar.window_format.as_deref(),
             Some("w{window_index} {window_name}\n  {agent}")
+        );
+        assert!(config.ime.reveal_hidden_cursor);
+        assert_eq!(config.ime.cursor_shape, Some(super::ImeCursorShape::Bar));
+        assert_eq!(config.ime.agents, vec!["claude".to_string()]);
+        assert_eq!(
+            config.ime.prefix_ascii_command.as_deref(),
+            Some("im-select com.apple.keylayout.ABC")
+        );
+        assert_eq!(
+            config.ime.prefix_restore_command.as_deref(),
+            Some("im-select com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese")
         );
         assert_eq!(
             config.hooks.session_created.as_deref(),

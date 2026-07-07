@@ -12,6 +12,14 @@ use crate::session::terminal_state::StyledCell;
 pub(super) enum CursorModeWordClass {
     Word,
     Whitespace,
+    /// Hiragana run: word motions stop at kana/kanji transitions (vim-like).
+    Hiragana,
+    /// Katakana run, including halfwidth katakana and the prolonged sound
+    /// mark, so ラーメン is one word.
+    Katakana,
+    /// Remaining double-width chars: CJK ideographs, hangul, full-width
+    /// forms.
+    Wide,
     Other,
 }
 
@@ -260,10 +268,17 @@ impl App {
             .current_session()
             .focused_view_row_origin(view_rows)
             .unwrap_or_else(|| lines.len().saturating_sub(view_rows));
-        let (cursor_col, cursor_line) = self
+        let (cursor_cell_col, cursor_line) = self
             .current_session()
             .focused_cursor_absolute_position()
             .unwrap_or((0, lines.len().saturating_sub(1)));
+        // The pane cursor is a display-cell column; cursor-mode points are
+        // char indices, which differ as soon as wide (CJK) chars precede the
+        // cursor on the row.
+        let cursor_col = lines
+            .get(cursor_line)
+            .map(|line| Self::cursor_mode_cell_col_to_char_col(line, cursor_cell_col))
+            .unwrap_or(cursor_cell_col);
 
         let mut state = CursorModeState {
             pane_id: focused_pane.pane_id,
@@ -369,7 +384,16 @@ impl App {
         } else if ch.is_whitespace() {
             CursorModeWordClass::Whitespace
         } else {
-            CursorModeWordClass::Other
+            match ch {
+                '\u{3041}'..='\u{309F}' => CursorModeWordClass::Hiragana,
+                '\u{30A1}'..='\u{30FF}' | '\u{31F0}'..='\u{31FF}' | '\u{FF66}'..='\u{FF9F}' => {
+                    CursorModeWordClass::Katakana
+                }
+                // CJK punctuation (、。「」 …) groups with ASCII punctuation.
+                '\u{3000}'..='\u{303F}' => CursorModeWordClass::Other,
+                _ if UnicodeWidthChar::width(ch) == Some(2) => CursorModeWordClass::Wide,
+                _ => CursorModeWordClass::Other,
+            }
         }
     }
 
@@ -725,6 +749,9 @@ impl App {
             (pane.rect.x.saturating_add(cursor_col)) as u16,
             (pane.rect.y.saturating_add(cursor_row)) as u16,
         ));
+        // Cursor mode shows spectra's own cursor, independent of the guest's
+        // DECTCEM state.
+        frame.focused_cursor_hidden = false;
     }
 
     fn cursor_mode_line_to_cells(line: &[StyledCell], width: usize) -> Vec<StyledCell> {
@@ -818,6 +845,26 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Inverse of [`Self::cursor_mode_char_col_to_cell_col`]: map a pane
+    /// display-cell column onto the index of the char occupying that cell.
+    /// Columns past the text map to the char count (end of line).
+    fn cursor_mode_cell_col_to_char_col(line: &str, cell_col: usize) -> usize {
+        let mut cells = 0usize;
+        let mut chars = 0usize;
+        for ch in line.chars() {
+            if cells >= cell_col {
+                return chars;
+            }
+            cells += UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
+            // A cell column landing inside a wide char maps to that char.
+            if cells > cell_col {
+                return chars;
+            }
+            chars += 1;
+        }
+        chars
     }
 
     fn cursor_mode_char_col_to_cell_col(line: &str, col: usize, width: usize) -> usize {

@@ -8,6 +8,7 @@ mod copy_mode;
 #[cfg(unix)]
 pub mod handoff;
 mod hooks;
+mod ime;
 mod input;
 mod keybindings;
 mod persistence;
@@ -133,6 +134,10 @@ pub struct App {
     hooks: config::HooksConfig,
     editor_command: Option<String>,
     agent_notify: config::AgentNotifyMode,
+    ime: config::ImeConfig,
+    /// Whether the `[ime]` prefix input-source switch currently considers
+    /// the prefix pending (the ascii command has run, restore has not).
+    prefix_input_source_switched: bool,
     editor_pane_close_targets: Vec<EditorPaneCloseTarget>,
     store: DataStore,
     command_history: CommandHistory,
@@ -240,6 +245,8 @@ impl App {
             hooks: runtime_ui.hooks,
             editor_command: runtime_ui.editor_command,
             agent_notify: runtime_ui.agent_notify,
+            ime: runtime_ui.ime,
+            prefix_input_source_switched: false,
             editor_pane_close_targets: Vec::new(),
             store,
             command_history,
@@ -310,6 +317,7 @@ impl App {
             agent_notify: app_config.agent.notify,
             sidebar_default_open: app_config.sidebar.default_open,
             sidebar_formats: SidebarFormats::from_config(&app_config.sidebar),
+            ime: app_config.ime.clone(),
         };
 
         Ok(AppBootstrap {
@@ -439,6 +447,8 @@ impl App {
             hooks: runtime_ui.hooks,
             editor_command: runtime_ui.editor_command,
             agent_notify: runtime_ui.agent_notify,
+            ime: runtime_ui.ime,
+            prefix_input_source_switched: false,
             editor_pane_close_targets: Vec::new(),
             store: store.clone(),
             command_history,

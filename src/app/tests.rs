@@ -318,6 +318,8 @@ fn build_app_for_resize_test() -> App {
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
+        ime: crate::config::ImeConfig::default(),
+        prefix_input_source_switched: false,
         editor_pane_close_targets: Vec::new(),
         store: DataStore::from_base_dir_for_tests(data_dir.clone()),
         command_history: CommandHistory::new_with_data_dir(data_dir),
@@ -444,6 +446,8 @@ fn build_app_with_history() -> App {
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
+        ime: crate::config::ImeConfig::default(),
+        prefix_input_source_switched: false,
         editor_pane_close_targets: Vec::new(),
         store: DataStore::from_base_dir_for_tests(data_dir.clone()),
         command_history: CommandHistory::new_with_data_dir(data_dir),
@@ -563,6 +567,8 @@ fn build_app_with_write_behavior(behavior: WriteBehavior) -> App {
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
+        ime: crate::config::ImeConfig::default(),
+        prefix_input_source_switched: false,
         editor_pane_close_targets: Vec::new(),
         store: DataStore::from_base_dir_for_tests(data_dir.clone()),
         command_history: CommandHistory::new_with_data_dir(data_dir),
@@ -639,6 +645,8 @@ fn build_app_with_close_on_write_behavior(behavior: CloseOnWriteBehavior) -> App
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
+        ime: crate::config::ImeConfig::default(),
+        prefix_input_source_switched: false,
         editor_pane_close_targets: Vec::new(),
         store: DataStore::from_base_dir_for_tests(data_dir.clone()),
         command_history: CommandHistory::new_with_data_dir(data_dir),
@@ -754,6 +762,8 @@ fn build_recording_app_one_session() -> (App, RecordedWrites) {
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
+        ime: crate::config::ImeConfig::default(),
+        prefix_input_source_switched: false,
         editor_pane_close_targets: Vec::new(),
         store: DataStore::from_base_dir_for_tests(data_dir.clone()),
         command_history: CommandHistory::new_with_data_dir(data_dir),
@@ -851,6 +861,8 @@ fn build_recording_app_with_history() -> (App, RecordedWrites) {
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
+        ime: crate::config::ImeConfig::default(),
+        prefix_input_source_switched: false,
         editor_pane_close_targets: Vec::new(),
         store: DataStore::from_base_dir_for_tests(data_dir.clone()),
         command_history: CommandHistory::new_with_data_dir(data_dir),
@@ -926,6 +938,8 @@ fn build_recording_app_with_output(output: Vec<Vec<u8>>) -> (App, RecordedWrites
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
+        ime: crate::config::ImeConfig::default(),
+        prefix_input_source_switched: false,
         editor_pane_close_targets: Vec::new(),
         store: DataStore::from_base_dir_for_tests(data_dir.clone()),
         command_history: CommandHistory::new_with_data_dir(data_dir),
@@ -1023,6 +1037,8 @@ fn build_recording_app_multi_session() -> (App, RecordedWrites) {
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
+        ime: crate::config::ImeConfig::default(),
+        prefix_input_source_switched: false,
         editor_pane_close_targets: Vec::new(),
         store: DataStore::from_base_dir_for_tests(data_dir.clone()),
         command_history: CommandHistory::new_with_data_dir(data_dir),
@@ -1172,6 +1188,8 @@ fn build_editor_command_app() -> (App, RecordedSpawnConfigs, BackendClosedFlags)
         hooks: crate::config::HooksConfig::default(),
         editor_command: Some("vim".to_string()),
         agent_notify: crate::config::AgentNotifyMode::default(),
+        ime: crate::config::ImeConfig::default(),
+        prefix_input_source_switched: false,
         editor_pane_close_targets: Vec::new(),
         store: DataStore::from_base_dir_for_tests(data_dir.clone()),
         command_history: CommandHistory::new_with_data_dir(data_dir),
@@ -1284,6 +1302,7 @@ fn restore_from_runtime_state_recovers_multi_session_layout_and_focus() {
             editor_command: app.editor_command.clone(),
             agent_notify: app.agent_notify,
             sidebar_default_open: app.side_window_tree_is_open(),
+            ime: app.ime.clone(),
         },
         app.view.cols,
         app.view.rows,
@@ -1370,6 +1389,7 @@ fn restore_from_runtime_state_returns_none_on_corrupt_json() {
             editor_command: app.editor_command.clone(),
             agent_notify: app.agent_notify,
             sidebar_default_open: app.side_window_tree_is_open(),
+            ime: app.ime.clone(),
         },
         app.view.cols,
         app.view.rows,
@@ -1402,6 +1422,7 @@ fn restore_from_runtime_state_honors_sidebar_default_open() {
             editor_command: app.editor_command.clone(),
             agent_notify: app.agent_notify,
             sidebar_default_open: true,
+            ime: app.ime.clone(),
         },
         app.view.cols,
         app.view.rows,
@@ -1439,6 +1460,7 @@ fn restore_from_runtime_state_returns_none_on_invalid_snapshot() {
             editor_command: app.editor_command.clone(),
             agent_notify: app.agent_notify,
             sidebar_default_open: app.side_window_tree_is_open(),
+            ime: app.ime.clone(),
         },
         app.view.cols,
         app.view.rows,
@@ -1818,6 +1840,7 @@ fn restore_from_runtime_state_restores_client_focus_profiles() {
             editor_command: app.editor_command.clone(),
             agent_notify: app.agent_notify,
             sidebar_default_open: app.side_window_tree_is_open(),
+            ime: app.ime.clone(),
         },
         app.view.cols,
         app.view.rows,
@@ -1858,6 +1881,7 @@ fn attach_target_overrides_restored_profile_for_client() {
             editor_command: app.editor_command.clone(),
             agent_notify: app.agent_notify,
             sidebar_default_open: app.side_window_tree_is_open(),
+            ime: app.ime.clone(),
         },
         app.view.cols,
         app.view.rows,
@@ -8800,4 +8824,350 @@ fn api_layout_apply_rejects_bad_layout() {
         r#"{"id":53,"method":"layout.apply","params":{"layout":{"type":"nope"}}}"#,
     );
     assert_eq!(response["error"]["code"], crate::api::INVALID_PARAMS);
+}
+
+// ---- CJK / IME support ----
+
+fn build_app_with_pane_output(chunks: Vec<Vec<u8>>) -> App {
+    let mut app = build_app_for_resize_test();
+    let writes: RecordedWrites = Arc::new(Mutex::new(Vec::new()));
+    let session = SessionManager::with_factory(
+        app.session_template.clone(),
+        Arc::new(RecordingFactory::with_output(writes, chunks)),
+        80,
+        24,
+    )
+    .expect("create ime session");
+    app.sessions[0].session = session;
+    app
+}
+
+#[test]
+fn guest_hidden_cursor_marks_frame_cursor_hidden() {
+    let mut app = build_app_with_pane_output(vec![b"prompt \x1b[?25l".to_vec()]);
+    app.tick();
+    assert!(app.has_pending_render());
+    let snapshot = app.take_render_snapshot().expect("snapshot");
+    assert!(
+        snapshot.frame.focused_cursor_hidden,
+        "guest DECTCEM hide must reach the frame"
+    );
+    assert!(snapshot.frame.focused_cursor.is_some());
+}
+
+#[test]
+fn ime_reveal_hidden_cursor_reshows_cursor_with_configured_shape() {
+    let mut app = build_app_with_pane_output(vec![b"prompt \x1b[?25l".to_vec()]);
+    app.ime.reveal_hidden_cursor = true;
+    app.ime.cursor_shape = Some(crate::config::ImeCursorShape::Bar);
+    app.tick();
+    let snapshot = app.take_render_snapshot().expect("snapshot");
+    assert!(
+        !snapshot.frame.focused_cursor_hidden,
+        "reveal_hidden_cursor must re-show the guest-hidden cursor"
+    );
+    assert_eq!(
+        snapshot.frame.cursor_style,
+        crossterm::cursor::SetCursorStyle::SteadyBar
+    );
+}
+
+#[test]
+fn ime_reveal_is_gated_by_agent_kinds() {
+    let mut app = build_app_with_pane_output(vec![b"prompt \x1b[?25l".to_vec()]);
+    app.ime.reveal_hidden_cursor = true;
+    app.ime.agents = vec!["claude".to_string()];
+    app.tick();
+
+    // No agent detected on the pane: the reveal must not apply.
+    let snapshot = app.take_render_snapshot().expect("snapshot");
+    assert!(
+        snapshot.frame.focused_cursor_hidden,
+        "reveal must be gated when no listed agent runs in the pane"
+    );
+
+    // A detected agent of a listed kind unlocks the reveal.
+    let pane_id = app.sessions[0]
+        .session
+        .focused_pane_id()
+        .expect("focused pane");
+    app.sessions[0].agents.statuses.insert(
+        pane_id,
+        crate::agent::AgentStatus {
+            kind: "claude".to_string(),
+            state: crate::agent::AgentState::Idle,
+            since: Instant::now(),
+        },
+    );
+    app.request_render(false);
+    let snapshot = app.take_render_snapshot().expect("snapshot");
+    assert!(
+        !snapshot.frame.focused_cursor_hidden,
+        "reveal must apply once a listed agent is detected"
+    );
+}
+
+#[test]
+fn prefix_pending_runs_ime_input_source_commands() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let ascii_marker = tempdir.path().join("ascii");
+    let restore_marker = tempdir.path().join("restore");
+
+    let mut app = build_app_for_resize_test();
+    app.ime.prefix_ascii_command = Some(format!("touch {}", ascii_marker.display()));
+    app.ime.prefix_restore_command = Some(format!("touch {}", restore_marker.display()));
+
+    let wait_for = |path: &std::path::Path| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !path.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {}",
+                path.display()
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    };
+
+    // Arming the prefix runs the ascii command, not the restore command.
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
+        .expect("arm prefix");
+    assert!(app.view.keys.prefix_active());
+    wait_for(&ascii_marker);
+    assert!(!restore_marker.exists());
+
+    // Leaving the pending prefix (Esc) runs the restore command.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .expect("cancel prefix");
+    assert!(!app.view.keys.prefix_active());
+    wait_for(&restore_marker);
+}
+
+#[test]
+fn prefix_bound_command_also_restores_input_source() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let restore_marker = tempdir.path().join("restore");
+
+    let mut app = build_app_for_resize_test();
+    app.ime.prefix_restore_command = Some(format!("touch {}", restore_marker.display()));
+    // Non-sticky prefix: a bound key exits the pending prefix inside the
+    // command branch, which must still trigger the restore command.
+    app.view.keys = KeyMapper::with_config(None, false, &HashMap::new(), &HashMap::new());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
+        .expect("arm prefix");
+    assert!(app.view.keys.prefix_active());
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
+        .expect("run bound command");
+    assert!(!app.view.keys.prefix_active());
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !restore_marker.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for restore command after bound prefix command"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+// ---- CJK wide-char handling ----
+
+#[test]
+fn cursor_mode_word_navigation_over_japanese_text_stops_at_class_transitions() {
+    let mut app = build_app_for_resize_test();
+    // 吾輩(kanji) は(hiragana) 猫(kanji) である(hiragana) 。(punct)
+    // 名前(kanji) はまだ(hiragana) 無(kanji) い(hiragana)
+    app.view.input_mode = InputMode::CursorMode {
+        state: super::CursorModeState {
+            pane_id: 1,
+            lines: vec!["吾輩は猫である。名前はまだ無い".to_string()],
+            styled_lines: Vec::new(),
+            cursor: super::CursorModePoint { line: 0, col: 0 },
+            selection_anchor: None,
+            visual: false,
+            viewport_top: 0,
+            pending_goto: false,
+        },
+    };
+
+    let mut stops = Vec::new();
+    for _ in 0..8 {
+        app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE))
+            .expect("w over CJK");
+        let InputMode::CursorMode { state } = &app.view.input_mode else {
+            panic!("expected cursor mode");
+        };
+        stops.push(state.cursor.col);
+    }
+    assert_eq!(
+        stops,
+        vec![2, 3, 4, 7, 8, 10, 13, 14],
+        "w must stop at kanji/kana/punctuation transitions"
+    );
+
+    let mut stops = Vec::new();
+    for _ in 0..8 {
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE))
+            .expect("b over CJK");
+        let InputMode::CursorMode { state } = &app.view.input_mode else {
+            panic!("expected cursor mode");
+        };
+        stops.push(state.cursor.col);
+    }
+    assert_eq!(
+        stops,
+        vec![13, 10, 8, 7, 4, 3, 2, 0],
+        "b must stop at the same class transitions in reverse"
+    );
+}
+
+#[test]
+fn cursor_mode_word_end_over_mixed_ascii_and_cjk() {
+    let mut app = build_app_for_resize_test();
+    // hello(ascii word) 世界(kanji) です(hiragana)
+    app.view.input_mode = InputMode::CursorMode {
+        state: super::CursorModeState {
+            pane_id: 1,
+            lines: vec!["hello世界です".to_string()],
+            styled_lines: Vec::new(),
+            cursor: super::CursorModePoint { line: 0, col: 0 },
+            selection_anchor: None,
+            visual: false,
+            viewport_top: 0,
+            pending_goto: false,
+        },
+    };
+
+    let mut stops = Vec::new();
+    for _ in 0..2 {
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
+            .expect("e over mixed text");
+        let InputMode::CursorMode { state } = &app.view.input_mode else {
+            panic!("expected cursor mode");
+        };
+        stops.push(state.cursor.col);
+    }
+    assert_eq!(
+        stops,
+        vec![4, 6],
+        "e must stop at hello's 'o' then 世界's 界"
+    );
+
+    let mut stops = Vec::new();
+    for _ in 0..2 {
+        app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE))
+            .expect("w over mixed text");
+        let InputMode::CursorMode { state } = &app.view.input_mode else {
+            panic!("expected cursor mode");
+        };
+        stops.push(state.cursor.col);
+    }
+    assert_eq!(
+        stops,
+        vec![7, 8],
+        "w from 界 lands on です, then advances to the line's last char"
+    );
+}
+
+#[test]
+fn cursor_mode_treats_katakana_with_prolonged_sound_mark_as_one_word() {
+    let mut app = build_app_for_resize_test();
+    // ラーメン(katakana+ー) を(hiragana) 食(kanji) べる(hiragana)
+    app.view.input_mode = InputMode::CursorMode {
+        state: super::CursorModeState {
+            pane_id: 1,
+            lines: vec!["ラーメンを食べる".to_string()],
+            styled_lines: Vec::new(),
+            cursor: super::CursorModePoint { line: 0, col: 0 },
+            selection_anchor: None,
+            visual: false,
+            viewport_top: 0,
+            pending_goto: false,
+        },
+    };
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE))
+        .expect("w over katakana");
+    let InputMode::CursorMode { state } = &app.view.input_mode else {
+        panic!("expected cursor mode");
+    };
+    assert_eq!(
+        state.cursor.col, 4,
+        "ラーメン (including ー) must be one katakana word"
+    );
+}
+
+#[test]
+fn open_cursor_mode_converts_pane_cell_column_to_char_index() {
+    let (mut app, _writes) = build_recording_app_with_output(vec![
+        b"\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9eabc\x1b[1;7H".to_vec(),
+    ]);
+    app.tick();
+
+    // Pane cursor cell column 6 sits on 'a' (after 3 double-width chars),
+    // which is char index 3 of "日本語abc".
+    app.open_cursor_mode();
+    let InputMode::CursorMode { state } = &app.view.input_mode else {
+        panic!("expected cursor mode");
+    };
+    assert_eq!(
+        state.cursor.col, 3,
+        "cell column 6 after 日本語 must map to char index 3, not 6"
+    );
+    assert_eq!(
+        state.lines[state.cursor.line].chars().nth(state.cursor.col),
+        Some('a')
+    );
+}
+
+#[test]
+fn mouse_selection_starting_on_wide_char_continuation_copies_whole_char() {
+    let (mut app, _writes) = build_recording_app_with_output(vec!["日本語abc".as_bytes().to_vec()]);
+    app.mouse_enabled = true;
+    app.register_client(7, 80, 24);
+    app.tick();
+
+    // Column 1 is the continuation cell of 日; the selection must still copy
+    // the full char.
+    app.handle_mouse_event_for_client(
+        7,
+        mouse_event_with_modifiers(
+            MouseEventKind::Down(MouseButton::Left),
+            1,
+            0,
+            KeyModifiers::NONE,
+        ),
+    )
+    .expect("mouse down");
+    app.handle_mouse_event_for_client(
+        7,
+        mouse_event_with_modifiers(
+            MouseEventKind::Drag(MouseButton::Left),
+            8,
+            0,
+            KeyModifiers::NONE,
+        ),
+    )
+    .expect("mouse drag");
+    app.handle_mouse_event_for_client(
+        7,
+        mouse_event_with_modifiers(
+            MouseEventKind::Up(MouseButton::Left),
+            8,
+            0,
+            KeyModifiers::NONE,
+        ),
+    )
+    .expect("mouse up");
+
+    app.handle_action_for_client(7, CommandAction::CopySelection);
+
+    let ansi = app.take_pending_clipboard_ansi_for_client(7);
+    assert_eq!(ansi.len(), 1);
+    assert_eq!(
+        ansi[0],
+        crate::clipboard::osc52_sequence("日本語abc"),
+        "a selection starting on a continuation cell must include the owner char"
+    );
 }
