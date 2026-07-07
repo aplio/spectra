@@ -217,7 +217,11 @@ impl TerminalGrid {
     /// `row0`).
     fn phys_row(&self, y: usize) -> usize {
         let row = self.row0 + y;
-        if row >= self.height { row - self.height } else { row }
+        if row >= self.height {
+            row - self.height
+        } else {
+            row
+        }
     }
 
     /// Index of the first cell of visual row `y` within `cells`.

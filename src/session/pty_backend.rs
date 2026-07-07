@@ -294,9 +294,18 @@ impl OutputPipe {
         })
     }
 
+    /// Recover the guard from a poisoned lock: the state is plain bytes and
+    /// flags, still safe to use after a panic elsewhere, and panicking here
+    /// would take down whichever of the two threads survived.
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, PipeState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Consumer side: take everything gathered since the last poll.
     pub(crate) fn poll(&self) -> PipePoll {
-        let mut state = self.state.lock().expect("output pipe poisoned");
+        let mut state = self.lock_state();
         if state.pending.is_empty() {
             return if state.producer_done {
                 PipePoll::Closed
@@ -314,17 +323,14 @@ impl OutputPipe {
     /// Consumer side: called when the backend drops so a producer blocked
     /// on the byte cap exits instead of waiting forever.
     pub(crate) fn close_consumer(&self) {
-        self.state
-            .lock()
-            .expect("output pipe poisoned")
-            .consumer_gone = true;
+        self.lock_state().consumer_gone = true;
         self.drained.notify_one();
     }
 
     /// Producer side: append one read's bytes, blocking on the byte cap.
     /// Returns false when the consumer is gone and the reader should exit.
     fn push(&self, bytes: &[u8]) -> bool {
-        let mut state = self.state.lock().expect("output pipe poisoned");
+        let mut state = self.lock_state();
         while state.pending.len() >= PENDING_CAP_BYTES {
             if state.consumer_gone {
                 return false;
@@ -332,7 +338,7 @@ impl OutputPipe {
             state = self
                 .drained
                 .wait(state)
-                .expect("output pipe poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         if state.consumer_gone {
             return false;
@@ -353,10 +359,7 @@ impl OutputPipe {
     }
 
     fn finish_producer(&self) {
-        self.state
-            .lock()
-            .expect("output pipe poisoned")
-            .producer_done = true;
+        self.lock_state().producer_done = true;
         // EOF or read error: wake the loop so pane cleanup runs promptly.
         notify_server_loop();
     }
