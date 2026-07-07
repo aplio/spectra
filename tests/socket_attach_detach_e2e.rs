@@ -248,9 +248,16 @@ impl TestClient {
     }
 
     fn send_quit(&mut self) -> io::Result<()> {
+        // `prefix q` now arms a quit confirmation; a second `q` confirms it.
+        // The default prefix is sticky, so it stays active between the two.
         self.send_key(KeyEvent::new_with_kind(
             KeyCode::Char('j'),
             KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        ))?;
+        self.send_key(KeyEvent::new_with_kind(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
             KeyEventKind::Press,
         ))?;
         self.send_key(KeyEvent::new_with_kind(

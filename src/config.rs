@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
     pub prefix: Option<String>,
     #[serde(default = "default_true")]
@@ -32,6 +32,31 @@ pub struct AppConfig {
     pub prefix_bindings: HashMap<String, String>,
     #[serde(default)]
     pub global_bindings: HashMap<String, String>,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        // Mirrors the serde field defaults so a missing config file and a
+        // config that omits fields behave identically. In particular
+        // `prefix_sticky` defaults to true (see `default_true`), which a
+        // derived `Default` would get wrong.
+        Self {
+            prefix: None,
+            prefix_sticky: default_true(),
+            session_name: None,
+            initial_command: None,
+            editor: None,
+            shell: ShellConfig::default(),
+            mouse: MouseConfig::default(),
+            terminal: TerminalConfig::default(),
+            status: StatusConfig::default(),
+            agent: AgentConfig::default(),
+            sidebar: SidebarConfig::default(),
+            hooks: HooksConfig::default(),
+            prefix_bindings: HashMap::new(),
+            global_bindings: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -175,6 +200,7 @@ mod tests {
         let path = dir.path().join("missing.toml");
         let config = load_from_path(&path).expect("load missing");
         assert!(config.prefix.is_none());
+        assert!(config.prefix_sticky);
         assert!(config.initial_command.is_none());
         assert!(config.editor.is_none());
         assert!(config.session_name.is_none());

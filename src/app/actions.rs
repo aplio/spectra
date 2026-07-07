@@ -1,5 +1,8 @@
 use super::*;
 
+/// How long a `prefix q` quit confirmation stays armed before it lapses.
+const QUIT_CONFIRM_TTL: Duration = Duration::from_secs(3);
+
 impl App {
     pub(super) fn kill_session_by_index(&mut self, session_index: usize) -> Result<bool, String> {
         if session_index >= self.sessions.len() {
@@ -60,6 +63,51 @@ impl App {
         Ok(false)
     }
 
+    /// Handle a `prefix q` press. The first press arms a confirmation shown
+    /// in the status bar; a second press within [`QUIT_CONFIRM_TTL`] actually
+    /// quits. Any other key, or letting the timeout lapse, cancels it.
+    pub(super) fn request_quit(&mut self) {
+        let now = Instant::now();
+        match self.quit_confirm_deadline {
+            Some(deadline) if now <= deadline => {
+                self.quit_confirm_deadline = None;
+                self.should_quit = true;
+            }
+            _ => {
+                // With a sticky prefix the mode is still active, so the
+                // confirmation is just `q`; otherwise the whole chord repeats.
+                let confirm_keys = if self.view.keys.prefix_sticky() {
+                    "q".to_string()
+                } else {
+                    format!("{} q", self.view.keys.prefix_key_display())
+                };
+                self.quit_confirm_deadline = Some(now + QUIT_CONFIRM_TTL);
+                self.set_message(
+                    &format!("press {confirm_keys} again to quit"),
+                    QUIT_CONFIRM_TTL,
+                );
+            }
+        }
+    }
+
+    /// Clear a pending quit confirmation and its status-bar prompt.
+    pub(super) fn cancel_quit_confirm(&mut self) {
+        if self.quit_confirm_deadline.take().is_none() {
+            return;
+        }
+        // Drop the lingering prompt so a cancelling action that sets no
+        // message of its own doesn't leave "… again to quit" on screen.
+        let is_prompt = self
+            .view
+            .status_message
+            .as_ref()
+            .is_some_and(|message| message.text.ends_with("q again to quit"));
+        if is_prompt {
+            self.view.status_message = None;
+            self.needs_render = true;
+        }
+    }
+
     pub(super) fn close_focused_or_quit(&mut self, reason: &str) {
         let (cols, rows) = self.current_effective_pane_dims();
 
@@ -95,10 +143,10 @@ impl App {
         }
 
         if self.current_session_mut().close_focused(cols, rows).is_ok() {
-            self.sync_tree_names();
-            self.needs_full_clear = true;
-            self.persist_active_session_info();
-            self.emit_hook(HookEvent::PaneClosed, self.current_hook_context());
+            self.apply_action_effects(ActionEffects {
+                hook: Some(HookEvent::PaneClosed),
+                ..ActionEffects::reorder()
+            });
             self.write_log(&format!("{reason}: closed focused pane"));
             self.set_message("pane closed", Duration::from_secs(2));
         } else {
@@ -180,6 +228,12 @@ impl App {
     pub(super) fn handle_action(&mut self, action: CommandAction) -> AppSignal {
         let (cols, rows) = self.current_effective_pane_dims();
 
+        // Any action other than a repeated quit cancels a pending
+        // quit confirmation.
+        if !matches!(action, CommandAction::Quit) {
+            self.cancel_quit_confirm();
+        }
+
         match action {
             CommandAction::Split(axis) => {
                 if self
@@ -220,15 +274,8 @@ impl App {
                     self.apply_action_effects(ActionEffects::layout());
                 }
             }
-            CommandAction::ClosePane => {
-                if self.current_session_mut().close_focused(cols, rows).is_ok() {
-                    self.apply_action_effects(ActionEffects {
-                        hook: Some(HookEvent::PaneClosed),
-                        ..ActionEffects::reorder()
-                    });
-                }
-            }
-            CommandAction::Quit => self.should_quit = true,
+            CommandAction::ClosePane => self.close_focused_or_quit("close pane"),
+            CommandAction::Quit => self.request_quit(),
             CommandAction::DetachClient => return AppSignal::DetachClient,
 
             CommandAction::SystemTree => self.open_system_tree(),

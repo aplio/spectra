@@ -143,6 +143,9 @@ pub struct App {
     active_client_id: ClientId,
     inactive_client_states: HashMap<ClientId, ClientViewState>,
     should_quit: bool,
+    /// When `Some`, a `prefix q` quit confirmation is armed until this
+    /// instant; a second `prefix q` within the window quits.
+    quit_confirm_deadline: Option<Instant>,
     needs_render: bool,
     needs_full_clear: bool,
     /// API events awaiting fan-out to subscribed API connections
@@ -246,6 +249,7 @@ impl App {
             active_client_id: LOCAL_CLIENT_ID,
             inactive_client_states: HashMap::new(),
             should_quit: false,
+            quit_confirm_deadline: None,
             needs_render: true,
             needs_full_clear: true,
             pending_api_events: Vec::new(),
@@ -441,6 +445,7 @@ impl App {
             active_client_id: LOCAL_CLIENT_ID,
             inactive_client_states: HashMap::new(),
             should_quit: false,
+            quit_confirm_deadline: None,
             needs_render: true,
             needs_full_clear: true,
             pending_api_events: Vec::new(),

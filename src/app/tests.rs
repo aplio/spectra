@@ -329,6 +329,7 @@ fn build_app_for_resize_test() -> App {
         active_client_id: super::LOCAL_CLIENT_ID,
         inactive_client_states: HashMap::new(),
         should_quit: false,
+        quit_confirm_deadline: None,
         needs_render: false,
         needs_full_clear: false,
         pending_api_events: Vec::new(),
@@ -453,6 +454,7 @@ fn build_app_with_history() -> App {
         active_client_id: super::LOCAL_CLIENT_ID,
         inactive_client_states: HashMap::new(),
         should_quit: false,
+        quit_confirm_deadline: None,
         needs_render: false,
         needs_full_clear: false,
         pending_api_events: Vec::new(),
@@ -570,6 +572,7 @@ fn build_app_with_write_behavior(behavior: WriteBehavior) -> App {
         active_client_id: super::LOCAL_CLIENT_ID,
         inactive_client_states: HashMap::new(),
         should_quit: false,
+        quit_confirm_deadline: None,
         needs_render: false,
         needs_full_clear: false,
         pending_api_events: Vec::new(),
@@ -644,6 +647,7 @@ fn build_app_with_close_on_write_behavior(behavior: CloseOnWriteBehavior) -> App
         active_client_id: super::LOCAL_CLIENT_ID,
         inactive_client_states: HashMap::new(),
         should_quit: false,
+        quit_confirm_deadline: None,
         needs_render: false,
         needs_full_clear: false,
         pending_api_events: Vec::new(),
@@ -757,6 +761,7 @@ fn build_recording_app_one_session() -> (App, RecordedWrites) {
         active_client_id: super::LOCAL_CLIENT_ID,
         inactive_client_states: HashMap::new(),
         should_quit: false,
+        quit_confirm_deadline: None,
         needs_render: false,
         needs_full_clear: false,
         pending_api_events: Vec::new(),
@@ -852,6 +857,7 @@ fn build_recording_app_with_history() -> (App, RecordedWrites) {
         active_client_id: super::LOCAL_CLIENT_ID,
         inactive_client_states: HashMap::new(),
         should_quit: false,
+        quit_confirm_deadline: None,
         needs_render: false,
         needs_full_clear: false,
         pending_api_events: Vec::new(),
@@ -925,6 +931,7 @@ fn build_recording_app_with_output(output: Vec<Vec<u8>>) -> (App, RecordedWrites
         active_client_id: super::LOCAL_CLIENT_ID,
         inactive_client_states: HashMap::new(),
         should_quit: false,
+        quit_confirm_deadline: None,
         needs_render: false,
         needs_full_clear: false,
         pending_api_events: Vec::new(),
@@ -1020,6 +1027,7 @@ fn build_recording_app_multi_session() -> (App, RecordedWrites) {
         active_client_id: super::LOCAL_CLIENT_ID,
         inactive_client_states: HashMap::new(),
         should_quit: false,
+        quit_confirm_deadline: None,
         needs_render: false,
         needs_full_clear: false,
         pending_api_events: Vec::new(),
@@ -1131,6 +1139,7 @@ fn build_editor_command_app() -> (App, RecordedSpawnConfigs, BackendClosedFlags)
         active_client_id: super::LOCAL_CLIENT_ID,
         inactive_client_states: HashMap::new(),
         should_quit: false,
+        quit_confirm_deadline: None,
         needs_render: false,
         needs_full_clear: false,
         pending_api_events: Vec::new(),
@@ -1963,6 +1972,63 @@ fn attach_target_supports_window_local_pane_index() {
     assert_eq!(app.view.active_session, 0);
     assert_eq!(app.sessions[0].session.focused_window_number(), Some(1));
     assert_eq!(app.sessions[0].session.focused_pane_id(), Some(target_pane));
+}
+
+#[test]
+fn close_pane_on_last_pane_of_last_session_quits() {
+    let mut app = build_app_for_resize_test();
+    assert_eq!(app.sessions.len(), 1);
+    assert_eq!(app.current_session().pane_count(), 1);
+
+    let _ = app.handle_action(CommandAction::ClosePane);
+
+    assert!(app.should_quit);
+}
+
+#[test]
+fn close_pane_on_last_pane_of_session_closes_only_that_session() {
+    let mut app = build_app_for_resize_test();
+    app.create_session();
+    assert_eq!(app.sessions.len(), 2);
+    assert_eq!(app.view.active_session, 1);
+    assert_eq!(app.current_session().pane_count(), 1);
+
+    let _ = app.handle_action(CommandAction::ClosePane);
+
+    assert_eq!(app.sessions.len(), 1);
+    assert!(!app.should_quit);
+}
+
+#[test]
+fn quit_requires_two_presses_to_confirm() {
+    let mut app = build_app_for_resize_test();
+
+    let _ = app.handle_action(CommandAction::Quit);
+    assert!(!app.should_quit, "first quit press only arms confirmation");
+    let message = app
+        .view
+        .status_message
+        .as_ref()
+        .map(|m| m.text.clone())
+        .expect("confirmation prompt shown");
+    assert!(message.ends_with("q again to quit"), "prompt: {message}");
+
+    let _ = app.handle_action(CommandAction::Quit);
+    assert!(app.should_quit, "second quit press confirms");
+}
+
+#[test]
+fn quit_confirmation_is_cancelled_by_another_action() {
+    let mut app = build_app_for_resize_test();
+
+    let _ = app.handle_action(CommandAction::Quit);
+    // Any other action cancels the pending confirmation and clears the prompt.
+    let _ = app.handle_action(CommandAction::FocusNextPane);
+    assert!(app.quit_confirm_deadline.is_none());
+
+    // A subsequent quit press must re-arm rather than quit immediately.
+    let _ = app.handle_action(CommandAction::Quit);
+    assert!(!app.should_quit, "quit re-arms after cancellation");
 }
 
 #[test]
@@ -5346,8 +5412,14 @@ fn detach_does_not_trigger_while_renaming() {
 fn prefix_q_still_quits_without_detach_signal() {
     let mut app = build_app_for_resize_test();
 
+    // The prefix is sticky, so it stays active across the confirmation:
+    // the first q arms it, the second q confirms.
     app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
         .expect("enter prefix");
+    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE))
+        .expect("arm quit");
+    assert!(!app.should_quit);
+
     let signal = app
         .handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE))
         .expect("quit");
@@ -5386,8 +5458,12 @@ fn lock_mode_forwards_keys_and_blocks_prefix_commands() {
     );
 
     app.handle_action(CommandAction::LeaveLockMode);
+    // prefix+q now needs a confirmation: q arms, q confirms (sticky prefix).
     app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
         .expect("prefix");
+    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE))
+        .expect("arm quit");
+    assert!(!app.should_quit);
     app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE))
         .expect("quit");
     assert!(app.should_quit);

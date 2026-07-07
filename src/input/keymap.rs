@@ -233,6 +233,13 @@ impl KeyMapper {
         &self.bindings.prefix_key
     }
 
+    /// Whether prefix mode stays active after a bound key runs. When sticky,
+    /// a follow-up chord key (e.g. a quit confirmation) needs only the key,
+    /// not the prefix again.
+    pub fn prefix_sticky(&self) -> bool {
+        self.bindings.prefix_sticky
+    }
+
     /// All active bindings as `(key display, description)` pairs for the
     /// keyboard-shortcut cheat sheet. Prefix bindings are prefixed with the
     /// prefix key; global bindings are shown as-is. Sorted by description so

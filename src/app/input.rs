@@ -61,6 +61,9 @@ impl App {
                 if self.view.keys.prefix_active() != prefix_active_before {
                     self.needs_render = true;
                 }
+                // Typing into the pane counts as "anything else": cancel a
+                // pending quit confirmation rather than let it linger.
+                self.cancel_quit_confirm();
                 // Typing invalidates a lingering mouse selection: the pane
                 // content is about to change under the highlight.
                 if self.view.text_selection.take().is_some() {
