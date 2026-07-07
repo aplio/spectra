@@ -375,6 +375,33 @@ impl TerminalGrid {
     }
 
     fn put_char(&mut self, ch: char) {
+        // Fast path for printable ASCII overwriting a narrow ASCII cell in
+        // the common state (no pending wrap, no insert mode): width is
+        // exactly 1 and none of the wide-char fixups below can apply, so
+        // skip the width lookup and the continuation checks. Bulk text is
+        // almost entirely this case.
+        if matches!(ch, ' '..='~')
+            && !self.insert_mode
+            && self.cursor_x < self.width
+            && self.cursor_y < self.height
+        {
+            let idx = self.idx(self.cursor_x, self.cursor_y);
+            let old_ch = self.cells[idx].ch;
+            // ASCII old cell means it is neither a wide char nor a '\0'
+            // continuation cell, so no neighbor needs repair.
+            if old_ch != '\0' && old_ch.is_ascii() {
+                self.cells[idx] = StyledCell {
+                    ch,
+                    style: self.active_style,
+                    link: self.active_link.clone(),
+                };
+                // May reach self.width — the same "pending wrap" state the
+                // slow path leaves behind.
+                self.cursor_x += 1;
+                return;
+            }
+        }
+
         let ch_width = UnicodeWidthChar::width(ch).unwrap_or(1);
 
         // Wide char doesn't fit at end of line — pad remainder and wrap
@@ -492,11 +519,7 @@ impl TerminalGrid {
         if top == 0 && bottom == self.height - 1 {
             for _ in 0..count {
                 if record_scrollback {
-                    self.push_scrollback_line(
-                        self.trimmed_row_text(0),
-                        self.row_cells(0),
-                        self.row_boundary_to_next(0),
-                    );
+                    self.push_row_to_scrollback(0);
                 }
                 let start = self.row_start(0);
                 self.cells[start..start + self.width].fill(StyledCell::default());
@@ -514,11 +537,7 @@ impl TerminalGrid {
 
         if record_scrollback && top == 0 {
             for y in top..(top + count) {
-                self.push_scrollback_line(
-                    self.trimmed_row_text(y),
-                    self.row_cells(y),
-                    self.row_boundary_to_next(y),
-                );
+                self.push_row_to_scrollback(y);
             }
         }
 
@@ -584,20 +603,45 @@ impl TerminalGrid {
             .unwrap_or(RowBoundary::None)
     }
 
-    fn push_scrollback_line(
-        &mut self,
-        text: String,
-        cells: Vec<StyledCell>,
-        boundary_to_next: RowBoundary,
-    ) {
-        self.scrollback.push_back(HistoryLine {
-            text,
-            cells,
-            boundary_to_next,
-        });
-        while self.scrollback.len() > MAX_SCROLLBACK_LINES {
-            self.scrollback.pop_front();
+    /// Append visual row `row` to scrollback. Once the history is at
+    /// capacity, the evicted line's String and Vec allocations are reused
+    /// for the new one, so steady-state bulk output pushes history lines
+    /// with zero allocation.
+    fn push_row_to_scrollback(&mut self, row: usize) {
+        let boundary_to_next = self.row_boundary_to_next(row);
+        let mut line = if self.scrollback.len() >= MAX_SCROLLBACK_LINES {
+            self.scrollback.pop_front()
+        } else {
+            None
         }
+        .unwrap_or_else(|| HistoryLine {
+            text: String::new(),
+            cells: Vec::new(),
+            boundary_to_next: RowBoundary::None,
+        });
+
+        let start = self.row_start(row);
+        let row_cells = &mut self.cells[start..start + self.width];
+        if line.cells.len() == row_cells.len() {
+            // Recycled line of the same width: move the row out by swapping
+            // instead of cloning cell by cell. The evicted line's stale
+            // cells land in the grid row, which the caller clears anyway.
+            line.cells.swap_with_slice(row_cells);
+        } else {
+            line.cells.clear();
+            line.cells.extend_from_slice(row_cells);
+        }
+        // Same shape as trimmed_row_text: skip wide-char continuation
+        // cells, trim trailing spaces — but built into the reused buffer.
+        line.text.clear();
+        for cell in &line.cells {
+            if cell.ch != '\0' {
+                line.text.push(cell.ch);
+            }
+        }
+        line.text.truncate(line.text.trim_end_matches(' ').len());
+        line.boundary_to_next = boundary_to_next;
+        self.scrollback.push_back(line);
     }
 
     fn csi_param(params: &Params, index: usize, default: usize) -> usize {
