@@ -7,6 +7,9 @@ pub type WindowId = engine::WindowId;
 
 pub use engine::{Direction, Divider, DividerOrientation, PaneRect, SplitAxis};
 
+/// Portable split-tree shape of one window with pane ids at the leaves.
+pub type LayoutTree = engine::LayoutTree<PaneId>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneLayout {
     pub window_id: WindowId,
@@ -118,6 +121,31 @@ impl WindowManager {
 
     pub fn resize_focused(&mut self, direction: Direction, amount: u16) -> Result<(), String> {
         self.core.resize_focused(direction, amount)
+    }
+
+    /// Swap the focused pane with its nearest neighbor in `direction`,
+    /// keeping the split shape intact. Focus follows the pane.
+    pub fn swap_focused_in_direction(
+        &mut self,
+        direction: Direction,
+        area: PaneRect,
+    ) -> Result<(), String> {
+        self.core.swap_focused_in_direction(direction, area)
+    }
+
+    /// Export this window's split tree as a portable layout.
+    pub fn export_tree(&self) -> Result<LayoutTree, String> {
+        self.core.export_tree()
+    }
+
+    /// Rearrange this window's panes into `tree` (same pane set required).
+    pub fn apply_tree(&mut self, tree: &LayoutTree) -> Result<(), String> {
+        self.core.apply_tree(tree)
+    }
+
+    /// Set the first-child share of the split directly containing `pane_id`.
+    pub fn set_split_ratio(&mut self, pane_id: PaneId, ratio_percent: u8) -> Result<(), String> {
+        self.core.set_ratio_for_item(pane_id, ratio_percent)
     }
 
     pub fn close_others(&mut self) {

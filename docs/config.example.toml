@@ -10,6 +10,12 @@ editor = "vim"
 
 [shell]
 suppress_prompt_eol_marker = true
+# Working directory for new panes and windows:
+#   "follow"  - inherit the focused pane's cwd (default)
+#   "home"    - the user's home directory
+#   "current" - the session's startup directory
+#   any other value is used as a fixed path, e.g. "/srv/projects"
+new_cwd = "follow"
 
 [mouse]
 enabled = false
@@ -73,8 +79,19 @@ O = "focus-prev-pane"
 "C-Down" = "resize-down"
 "C-Up" = "resize-up"
 "C-Right" = "resize-right"
+# Sticky resize mode: arrows/hjkl keep resizing until Esc/Enter/q.
+R = "resize-mode"
 "{" = "swap-prev-window"
 "}" = "swap-next-window"
+# Directional pane swap (shape-preserving); Shift+arrows are bound too.
+H = "swap-pane-left"
+J = "swap-pane-down"
+K = "swap-pane-up"
+L = "swap-pane-right"
+# Move the focused pane out into a new window (tmux break-pane).
+"!" = "break-pane"
+# Graft the focused pane into window N: "move-pane-to-window-<n>" (unbound
+# by default).
 "$" = "rename-session"
 "C-s" = "save-layout"
 l = "write-log"

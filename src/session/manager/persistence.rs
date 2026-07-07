@@ -77,13 +77,32 @@ impl SessionManager {
 
         let mut panes = HashMap::new();
         for pane_id in pane_ids.iter().copied() {
-            let pane = spawn_pane(
-                &options,
-                &*pane_factory,
-                pane_id,
-                area.width.max(1),
-                area.height.max(1),
-            )?;
+            // Respawn each shell in the cwd it was in at snapshot time,
+            // skipping paths that no longer resolve to a directory.
+            let saved_cwd = snapshot
+                .pane_cwds
+                .get(&pane_id)
+                .filter(|cwd| cwd.is_dir())
+                .cloned();
+            let pane = if let Some(cwd) = saved_cwd {
+                let mut pane_options = options.clone();
+                pane_options.cwd = Some(cwd);
+                spawn_pane(
+                    &pane_options,
+                    &*pane_factory,
+                    pane_id,
+                    area.width.max(1),
+                    area.height.max(1),
+                )?
+            } else {
+                spawn_pane(
+                    &options,
+                    &*pane_factory,
+                    pane_id,
+                    area.width.max(1),
+                    area.height.max(1),
+                )?
+            };
             panes.insert(pane_id, pane);
         }
 
@@ -128,6 +147,11 @@ impl SessionManager {
                     synchronize_panes: window.synchronize_panes,
                     zoom_snapshot: window.zoom_snapshot.clone(),
                 })
+                .collect(),
+            pane_cwds: self
+                .panes
+                .iter()
+                .filter_map(|(pane_id, pane)| pane.cwd().map(|cwd| (*pane_id, cwd.to_path_buf())))
                 .collect(),
         }
     }

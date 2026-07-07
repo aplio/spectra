@@ -66,12 +66,56 @@ impl Default for AppConfig {
 pub struct ShellConfig {
     #[serde(default = "default_true")]
     pub suppress_prompt_eol_marker: bool,
+    /// Working directory for new panes and windows:
+    /// `"follow"` (default) inherits the focused pane's cwd, `"home"` uses
+    /// the user's home directory, `"current"` uses the session's startup
+    /// directory, and any other value is a fixed path.
+    #[serde(default)]
+    pub new_cwd: NewCwdPolicy,
 }
 
 impl Default for ShellConfig {
     fn default() -> Self {
         Self {
             suppress_prompt_eol_marker: true,
+            new_cwd: NewCwdPolicy::default(),
+        }
+    }
+}
+
+/// Working-directory policy for new panes and windows (`[shell] new_cwd`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(from = "String", into = "String")]
+pub enum NewCwdPolicy {
+    /// Inherit the focused pane's tracked cwd (OSC 7 / spawn cwd).
+    #[default]
+    Follow,
+    /// The user's home directory.
+    Home,
+    /// The session's startup directory.
+    Current,
+    /// A fixed path.
+    Path(PathBuf),
+}
+
+impl From<String> for NewCwdPolicy {
+    fn from(value: String) -> Self {
+        match value.trim() {
+            "" | "follow" => Self::Follow,
+            "home" => Self::Home,
+            "current" => Self::Current,
+            path => Self::Path(PathBuf::from(path)),
+        }
+    }
+}
+
+impl From<NewCwdPolicy> for String {
+    fn from(value: NewCwdPolicy) -> Self {
+        match value {
+            NewCwdPolicy::Follow => "follow".to_string(),
+            NewCwdPolicy::Home => "home".to_string(),
+            NewCwdPolicy::Current => "current".to_string(),
+            NewCwdPolicy::Path(path) => path.to_string_lossy().into_owned(),
         }
     }
 }
@@ -229,6 +273,7 @@ mod tests {
         assert!(config.editor.is_none());
         assert!(config.session_name.is_none());
         assert!(config.shell.suppress_prompt_eol_marker);
+        assert_eq!(config.shell.new_cwd, super::NewCwdPolicy::Follow);
         assert!(!config.mouse.enabled);
         assert!(config.terminal.allow_passthrough);
         assert!(config.status.format.is_none());
@@ -241,6 +286,35 @@ mod tests {
         assert!(config.hooks.session_created.is_none());
         assert!(config.prefix_bindings.is_empty());
         assert!(config.global_bindings.is_empty());
+    }
+
+    #[test]
+    fn parses_new_cwd_policy_values() {
+        use super::NewCwdPolicy;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        for (value, expected) in [
+            ("follow", NewCwdPolicy::Follow),
+            ("home", NewCwdPolicy::Home),
+            ("current", NewCwdPolicy::Current),
+            ("/tmp/projects", NewCwdPolicy::Path("/tmp/projects".into())),
+        ] {
+            fs::write(&path, format!("[shell]\nnew_cwd = \"{value}\"\n")).expect("write config");
+            let config = load_from_path(&path).expect("load config");
+            assert_eq!(config.shell.new_cwd, expected, "value {value:?}");
+        }
+    }
+
+    #[test]
+    fn new_cwd_policy_roundtrips_through_toml() {
+        use super::NewCwdPolicy;
+
+        let mut config = super::AppConfig::default();
+        config.shell.new_cwd = NewCwdPolicy::Path("/srv/work".into());
+        let serialized = toml::to_string_pretty(&config).expect("serialize");
+        let parsed: super::AppConfig = toml::from_str(&serialized).expect("parse");
+        assert_eq!(parsed.shell.new_cwd, NewCwdPolicy::Path("/srv/work".into()));
     }
 
     #[test]

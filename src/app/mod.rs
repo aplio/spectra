@@ -285,6 +285,7 @@ impl App {
         options.suppress_prompt_eol_marker = app_config.shell.suppress_prompt_eol_marker;
         options.allow_passthrough = app_config.terminal.allow_passthrough;
         options.undo_close_timeout = Duration::from_secs(app_config.pane.undo_close_seconds);
+        options.new_cwd = app_config.shell.new_cwd.clone();
 
         let store = DataStore::from_xdg()?;
         let started_unix = unix_time_now();

@@ -25,6 +25,15 @@ pub enum CommandAction {
     PrevWindow,
     SelectWindow(usize),
     Resize(Direction),
+    /// Enter sticky resize mode: arrows/hjkl keep resizing until Esc.
+    EnterResizeMode,
+    /// Swap the focused pane with its neighbor in a direction, keeping the
+    /// split shape (herdr-style directional pane swap).
+    SwapPane(Direction),
+    /// Break the focused pane out into a new window (tmux break-pane).
+    BreakPane,
+    /// Move the focused pane into window N as a split (tmux join-pane).
+    MovePaneToWindow(usize),
     SwapPrevWindow,
     SwapNextWindow,
     SaveLayout,
@@ -87,6 +96,10 @@ impl CommandAction {
             Self::PrevWindow => "Previous window".to_string(),
             Self::SelectWindow(number) => format!("Select window {number}"),
             Self::Resize(direction) => format!("Resize pane {}", direction_word(*direction)),
+            Self::EnterResizeMode => "Enter resize mode".to_string(),
+            Self::SwapPane(direction) => format!("Swap pane {}", direction_word(*direction)),
+            Self::BreakPane => "Break pane into new window".to_string(),
+            Self::MovePaneToWindow(number) => format!("Move pane to window {number}"),
             Self::SwapPrevWindow => "Swap with previous window".to_string(),
             Self::SwapNextWindow => "Swap with next window".to_string(),
             Self::SaveLayout => "Save layout".to_string(),
@@ -280,7 +293,7 @@ impl KeyMapper {
 impl CommandAction {
     fn should_exit_prefix_mode(&self, prefix_sticky: bool) -> bool {
         match self {
-            Self::SystemTree | Self::SideWindowTree => true,
+            Self::SystemTree | Self::SideWindowTree | Self::EnterResizeMode => true,
             _ => !prefix_sticky,
         }
     }
@@ -320,6 +333,25 @@ fn default_prefix_bindings() -> HashMap<String, CommandAction> {
 
     map.insert("{".to_string(), CommandAction::SwapPrevWindow);
     map.insert("}".to_string(), CommandAction::SwapNextWindow);
+    map.insert("H".to_string(), CommandAction::SwapPane(Direction::Left));
+    map.insert("J".to_string(), CommandAction::SwapPane(Direction::Down));
+    map.insert("K".to_string(), CommandAction::SwapPane(Direction::Up));
+    map.insert("L".to_string(), CommandAction::SwapPane(Direction::Right));
+    map.insert(
+        "S-Left".to_string(),
+        CommandAction::SwapPane(Direction::Left),
+    );
+    map.insert(
+        "S-Down".to_string(),
+        CommandAction::SwapPane(Direction::Down),
+    );
+    map.insert("S-Up".to_string(), CommandAction::SwapPane(Direction::Up));
+    map.insert(
+        "S-Right".to_string(),
+        CommandAction::SwapPane(Direction::Right),
+    );
+    map.insert("!".to_string(), CommandAction::BreakPane);
+    map.insert("R".to_string(), CommandAction::EnterResizeMode);
     map.insert("C-Left".to_string(), CommandAction::Resize(Direction::Left));
     map.insert("C-Down".to_string(), CommandAction::Resize(Direction::Down));
     map.insert("C-Up".to_string(), CommandAction::Resize(Direction::Up));
@@ -429,6 +461,13 @@ fn parse_action(spec: &str) -> Option<CommandAction> {
         "resize-down" => Some(CommandAction::Resize(Direction::Down)),
         "resize-up" => Some(CommandAction::Resize(Direction::Up)),
         "resize-right" => Some(CommandAction::Resize(Direction::Right)),
+        "resize-mode" | "enter-resize-mode" => Some(CommandAction::EnterResizeMode),
+
+        "swap-pane-left" => Some(CommandAction::SwapPane(Direction::Left)),
+        "swap-pane-down" => Some(CommandAction::SwapPane(Direction::Down)),
+        "swap-pane-up" => Some(CommandAction::SwapPane(Direction::Up)),
+        "swap-pane-right" => Some(CommandAction::SwapPane(Direction::Right)),
+        "break-pane" | "move-pane-to-new-window" => Some(CommandAction::BreakPane),
 
         "swap-prev-window" => Some(CommandAction::SwapPrevWindow),
         "swap-next-window" => Some(CommandAction::SwapNextWindow),
@@ -469,7 +508,7 @@ fn parse_action(spec: &str) -> Option<CommandAction> {
             Some(CommandAction::ShowKeybindings)
         }
 
-        _ => parse_select_window(&normalized),
+        _ => parse_select_window(&normalized).or_else(|| parse_move_pane_to_window(&normalized)),
     }
 }
 
@@ -479,6 +518,17 @@ fn parse_select_window(spec: &str) -> Option<CommandAction> {
         return None;
     }
     Some(CommandAction::SelectWindow(number))
+}
+
+fn parse_move_pane_to_window(spec: &str) -> Option<CommandAction> {
+    let number = spec
+        .strip_prefix("move-pane-to-window-")?
+        .parse::<usize>()
+        .ok()?;
+    if number == 0 {
+        return None;
+    }
+    Some(CommandAction::MovePaneToWindow(number))
 }
 
 fn normalize_binding_key(spec: &str) -> Option<String> {
@@ -1050,6 +1100,76 @@ mod tests {
         mapper.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
         let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         assert_eq!(action, InputAction::Command(CommandAction::DetachClient));
+    }
+
+    #[test]
+    fn prefix_upper_hjkl_and_shift_arrows_swap_panes() {
+        for (key, direction) in [
+            (KeyCode::Char('H'), Direction::Left),
+            (KeyCode::Char('J'), Direction::Down),
+            (KeyCode::Char('K'), Direction::Up),
+            (KeyCode::Char('L'), Direction::Right),
+            (KeyCode::Left, Direction::Left),
+            (KeyCode::Down, Direction::Down),
+            (KeyCode::Up, Direction::Up),
+            (KeyCode::Right, Direction::Right),
+        ] {
+            let mut mapper = KeyMapper::new();
+            mapper.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+            let action = mapper.handle_key(KeyEvent::new(key, KeyModifiers::SHIFT));
+            assert_eq!(
+                action,
+                InputAction::Command(CommandAction::SwapPane(direction)),
+                "key {key:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn prefix_bang_breaks_pane_to_new_window() {
+        let mut mapper = KeyMapper::new();
+        mapper.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::SHIFT));
+        assert_eq!(action, InputAction::Command(CommandAction::BreakPane));
+    }
+
+    #[test]
+    fn prefix_upper_r_enters_resize_mode_and_exits_prefix() {
+        let mut mapper = KeyMapper::new();
+        mapper.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT));
+        assert_eq!(action, InputAction::Command(CommandAction::EnterResizeMode));
+        assert!(!mapper.prefix_active());
+    }
+
+    #[test]
+    fn pane_operation_action_names_parse() {
+        assert_eq!(
+            parse_action("swap-pane-left"),
+            Some(CommandAction::SwapPane(Direction::Left))
+        );
+        assert_eq!(
+            parse_action("swap-pane-right"),
+            Some(CommandAction::SwapPane(Direction::Right))
+        );
+        assert_eq!(parse_action("break-pane"), Some(CommandAction::BreakPane));
+        assert_eq!(
+            parse_action("move-pane-to-new-window"),
+            Some(CommandAction::BreakPane)
+        );
+        assert_eq!(
+            parse_action("move-pane-to-window-3"),
+            Some(CommandAction::MovePaneToWindow(3))
+        );
+        assert_eq!(parse_action("move-pane-to-window-0"), None);
+        assert_eq!(
+            parse_action("resize-mode"),
+            Some(CommandAction::EnterResizeMode)
+        );
+        assert_eq!(
+            parse_action("enter-resize-mode"),
+            Some(CommandAction::EnterResizeMode)
+        );
     }
 
     #[test]

@@ -397,6 +397,57 @@ impl App {
         );
         Self::push_command_palette_entry(
             &mut entries,
+            "pane.resize.mode",
+            CommandAction::EnterResizeMode,
+            "Enter resize mode",
+            "resize mode sticky modal pane",
+            &[
+                "action: enter sticky resize mode",
+                "keys: arrows/hjkl resize, Shift fine step, Esc exit",
+            ],
+        );
+        Self::push_command_palette_entry(
+            &mut entries,
+            "pane.swap.left",
+            CommandAction::SwapPane(crate::ui::window_manager::Direction::Left),
+            "Swap pane left",
+            "swap pane left",
+            &["action: swap focused pane", "direction: left"],
+        );
+        Self::push_command_palette_entry(
+            &mut entries,
+            "pane.swap.down",
+            CommandAction::SwapPane(crate::ui::window_manager::Direction::Down),
+            "Swap pane down",
+            "swap pane down",
+            &["action: swap focused pane", "direction: down"],
+        );
+        Self::push_command_palette_entry(
+            &mut entries,
+            "pane.swap.up",
+            CommandAction::SwapPane(crate::ui::window_manager::Direction::Up),
+            "Swap pane up",
+            "swap pane up",
+            &["action: swap focused pane", "direction: up"],
+        );
+        Self::push_command_palette_entry(
+            &mut entries,
+            "pane.swap.right",
+            CommandAction::SwapPane(crate::ui::window_manager::Direction::Right),
+            "Swap pane right",
+            "swap pane right",
+            &["action: swap focused pane", "direction: right"],
+        );
+        Self::push_command_palette_entry(
+            &mut entries,
+            "pane.break",
+            CommandAction::BreakPane,
+            "Break pane into new window",
+            "break pane move pane to new window",
+            &["action: move focused pane into a new window (PTY intact)"],
+        );
+        Self::push_command_palette_entry(
+            &mut entries,
             "window.swap.prev",
             CommandAction::SwapPrevWindow,
             "Swap window with previous",

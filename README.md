@@ -54,6 +54,9 @@ The prefix is `Ctrl+j`. Press `prefix ?` for the full searchable cheat sheet.
 | `prefix e` | toggle the window-tree sidebar |
 | `prefix p` | command palette |
 | `prefix z` | zoom active pane |
+| `prefix H/J/K/L` (or `Shift+Arrow`) | swap pane in direction (split shape stays) |
+| `prefix !` | break the focused pane out into a new window |
+| `prefix R` | sticky resize mode (arrows/hjkl resize, Esc exits) |
 | `prefix [` | cursor mode (vi-style movement, `g` chords `gg`/`ge`/`gh`/`gl`, `v`/`y` select and copy) |
 | `prefix y` | copy the mouse drag selection |
 | `prefix d` | detach (server keeps running) |
@@ -95,6 +98,11 @@ sends one request and prints the result:
 spectra api session.list
 spectra api pane.read '{"pane_id":1,"lines":50}'
 spectra api pane.send_keys '{"pane_id":1,"text":"ls\n"}'
+spectra api pane.swap '{"direction":"left"}'
+spectra api pane.move '{"pane_id":2,"to_window":1}'   # or new_window / to_session
+spectra api layout.export
+spectra api layout.apply '{"layout":{"type":"split","axis":"vertical","ratio_percent":70,"first":{"type":"leaf","pane_id":1},"second":{"type":"leaf","pane_id":2}}}'
+spectra api layout.set_split_ratio '{"pane_id":1,"ratio":70}'
 spectra api --follow events.subscribe '{"events":["agent.changed"]}'
 ```
 

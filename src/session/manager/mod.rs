@@ -6,13 +6,14 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::NewCwdPolicy;
 use crate::io::host_colors::HostColors;
 use crate::session::pane::Pane;
 use crate::session::pty_backend::{PaneFactory, PaneSpawnConfig, PtyPaneFactory};
 use crate::session::terminal_state::{StyledCell, TerminalEvent};
 use crate::ui::window_manager::{
-    Direction, Divider, Layout, PaneId, PaneLayout, PaneRect, SplitAxis, WindowId, WindowManager,
-    WindowManagerSnapshot,
+    Direction, Divider, Layout, LayoutTree, PaneId, PaneLayout, PaneRect, SplitAxis, WindowId,
+    WindowManager, WindowManagerSnapshot,
 };
 
 mod persistence;
@@ -40,6 +41,9 @@ pub struct SessionOptions {
     /// so it can be restored, ghostty-style undo close. Zero disables
     /// retention.
     pub undo_close_timeout: Duration,
+    /// Working-directory policy for new panes and windows
+    /// (`[shell] new_cwd`).
+    pub new_cwd: NewCwdPolicy,
 }
 
 /// Default grace period during which a closed pane can be restored.
@@ -57,6 +61,7 @@ impl SessionOptions {
             allow_passthrough: true,
             host_colors: HostColors::default(),
             undo_close_timeout: DEFAULT_UNDO_CLOSE_TIMEOUT,
+            new_cwd: NewCwdPolicy::default(),
         }
     }
 
@@ -151,6 +156,10 @@ pub struct SessionRuntimeSnapshot {
     pub next_window_id: WindowId,
     pub active_window: usize,
     pub windows: Vec<SessionWindowSnapshot>,
+    /// Tracked cwd per pane at snapshot time, so a disk restore respawns
+    /// each shell in the directory it was in (missing for older snapshots).
+    #[serde(default)]
+    pub pane_cwds: HashMap<PaneId, PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,6 +344,10 @@ impl SessionManager {
 
     pub fn set_undo_close_timeout(&mut self, timeout: Duration) {
         self.options.undo_close_timeout = timeout;
+    }
+
+    pub fn set_new_cwd_policy(&mut self, policy: NewCwdPolicy) {
+        self.options.new_cwd = policy;
     }
 
     /// Whether an undo close is currently possible: a retained pane whose

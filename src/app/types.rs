@@ -174,6 +174,9 @@ pub(super) enum InputMode {
     CommandPalette {
         state: CommandPaletteState,
     },
+    /// Sticky resize mode: arrows/hjkl keep resizing the focused pane until
+    /// Esc/Enter/q leaves the mode.
+    ResizeMode,
     PeekAllWindows {
         state: PeekAllWindowsState,
     },
