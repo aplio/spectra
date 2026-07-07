@@ -9,6 +9,7 @@ impl TerminalGrid {
             width,
             height,
             cells: vec![StyledCell::default(); width * height],
+            row0: 0,
             scrollback: VecDeque::new(),
             row_boundaries: vec![RowBoundary::None; height],
             scroll_top: 0,
@@ -54,7 +55,7 @@ impl TerminalGrid {
         if row >= self.height {
             return String::new();
         }
-        let start = row * self.width;
+        let start = self.row_start(row);
         let end = start + self.width;
         self.cells[start..end]
             .iter()
@@ -67,7 +68,7 @@ impl TerminalGrid {
         if row >= self.height {
             return Vec::new();
         }
-        let start = row * self.width;
+        let start = self.row_start(row);
         let end = start + self.width;
         self.cells[start..end].to_vec()
     }
@@ -212,15 +213,39 @@ impl TerminalGrid {
         out
     }
 
+    /// Physical row backing visual row `y` (the screen is a ring, see
+    /// `row0`).
+    fn phys_row(&self, y: usize) -> usize {
+        let row = self.row0 + y;
+        if row >= self.height { row - self.height } else { row }
+    }
+
+    /// Index of the first cell of visual row `y` within `cells`.
+    fn row_start(&self, y: usize) -> usize {
+        self.phys_row(y) * self.width
+    }
+
     fn idx(&self, x: usize, y: usize) -> usize {
-        y * self.width + x
+        self.row_start(y) + x
+    }
+
+    /// Rotate `cells` so visual row 0 is physical row 0 again. Required
+    /// before any operation that treats `cells` as a linear top-to-bottom
+    /// buffer (reflow, alt-screen save). O(cells), amortized rarely.
+    pub(super) fn normalize_ring(&mut self) {
+        if self.row0 == 0 {
+            return;
+        }
+        let offset = self.row0 * self.width;
+        self.cells.rotate_left(offset);
+        self.row0 = 0;
     }
 
     fn clear_row(&mut self, row: usize) {
         if row >= self.height {
             return;
         }
-        let row_start = row * self.width;
+        let row_start = self.row_start(row);
         self.cells[row_start..row_start + self.width].fill(StyledCell::default());
         self.row_boundaries[row] = RowBoundary::None;
     }
@@ -229,8 +254,8 @@ impl TerminalGrid {
         if dst >= self.height || src >= self.height {
             return;
         }
-        let src_start = src * self.width;
-        let dst_start = dst * self.width;
+        let src_start = self.row_start(src);
+        let dst_start = self.row_start(dst);
         for x in 0..self.width {
             self.cells[dst_start + x] = self.cells[src_start + x].clone();
         }
@@ -253,6 +278,7 @@ impl TerminalGrid {
 
     fn clear_all(&mut self) {
         self.cells.fill(StyledCell::default());
+        self.row0 = 0;
         self.row_boundaries.fill(RowBoundary::None);
         self.cursor_x = 0;
         self.cursor_y = 0;
@@ -263,14 +289,14 @@ impl TerminalGrid {
     }
 
     fn clear_line_from_cursor(&mut self) {
-        let row_start = self.cursor_y * self.width;
+        let row_start = self.row_start(self.cursor_y);
         for x in self.cursor_x..self.width {
             self.cells[row_start + x] = StyledCell::default();
         }
     }
 
     fn clear_line_to_cursor(&mut self) {
-        let row_start = self.cursor_y * self.width;
+        let row_start = self.row_start(self.cursor_y);
         for x in 0..=self.cursor_x.min(self.width.saturating_sub(1)) {
             self.cells[row_start + x] = StyledCell::default();
         }
@@ -368,7 +394,7 @@ impl TerminalGrid {
 
         // IRM: shift cells right before placing the new character
         if self.insert_mode {
-            let row_start = self.cursor_y * self.width;
+            let row_start = self.row_start(self.cursor_y);
             let end = self.width;
             for x in (self.cursor_x..end).rev() {
                 let dst = x + ch_width;
@@ -451,6 +477,33 @@ impl TerminalGrid {
         let region_height = bottom - top + 1;
         let count = count.min(region_height);
         if count == 0 {
+            return;
+        }
+
+        // Full-screen scrolls advance the ring origin instead of shifting
+        // every surviving row: O(width) per scrolled line instead of
+        // O(width * height). This is the bulk-output hot path (every
+        // newline at the bottom of an unrestricted screen lands here).
+        if top == 0 && bottom == self.height - 1 {
+            for _ in 0..count {
+                if record_scrollback {
+                    self.push_scrollback_line(
+                        self.trimmed_row_text(0),
+                        self.row_cells(0),
+                        self.row_boundary_to_next(0),
+                    );
+                }
+                let start = self.row_start(0);
+                self.cells[start..start + self.width].fill(StyledCell::default());
+                self.row0 += 1;
+                if self.row0 == self.height {
+                    self.row0 = 0;
+                }
+                self.row_boundaries.rotate_left(1);
+                if let Some(last) = self.row_boundaries.last_mut() {
+                    *last = RowBoundary::None;
+                }
+            }
             return;
         }
 
@@ -1324,7 +1377,7 @@ impl Perform for TerminalGrid {
             'X' => {
                 // ECH — Erase Character
                 let count = Self::csi_param(params, 0, 1);
-                let row_start = self.cursor_y * self.width;
+                let row_start = self.row_start(self.cursor_y);
                 for i in 0..count {
                     let x = self.cursor_x + i;
                     if x >= self.width {
@@ -1336,7 +1389,7 @@ impl Perform for TerminalGrid {
             'P' => {
                 // DCH — Delete Character
                 let count = Self::csi_param(params, 0, 1);
-                let row_start = self.cursor_y * self.width;
+                let row_start = self.row_start(self.cursor_y);
                 let end = self.width;
                 for x in self.cursor_x..end {
                     let src = x + count;
@@ -1350,7 +1403,7 @@ impl Perform for TerminalGrid {
             '@' => {
                 // ICH — Insert Character
                 let count = Self::csi_param(params, 0, 1);
-                let row_start = self.cursor_y * self.width;
+                let row_start = self.row_start(self.cursor_y);
                 let end = self.width;
                 for x in (self.cursor_x..end).rev() {
                     let dst = x + count;

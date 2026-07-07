@@ -337,6 +337,13 @@ struct TerminalGrid {
     width: usize,
     height: usize,
     cells: Vec<StyledCell>,
+    /// Physical row (within `cells`) that visual row 0 maps to. The visible
+    /// screen is a ring: full-screen scrolls advance this origin instead of
+    /// shifting every cell, so bulk output scrolls in O(width) per line
+    /// rather than O(width * height). Row helpers translate visual rows
+    /// through it; whole-buffer operations call `normalize_ring` first.
+    /// `row_boundaries` stays visually indexed (rotated on scroll).
+    row0: usize,
     /// Scrollback is a deque because the hot path once it is full is
     /// push-one-line + evict-one-line per scrolled row: with a Vec the
     /// eviction (`drain(0..1)`) memmoves the entire history on every
