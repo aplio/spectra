@@ -722,6 +722,10 @@ pub(super) struct ClientViewState {
     pub click_chain: Option<ClickChainState>,
     pub pending_clipboard_ansi: Vec<String>,
     pub pending_passthrough_ansi: Vec<String>,
+    /// Set when a paste-image action ran for this client; the server loop
+    /// turns it into a `PasteImageRequest` asking the client to read its
+    /// local OS clipboard.
+    pub pending_image_paste_request: bool,
     pub cols: u16,
     pub rows: u16,
     pub active_session: usize,

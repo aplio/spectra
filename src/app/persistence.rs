@@ -1,10 +1,11 @@
+use std::io;
 use std::time::Duration;
 
 use crate::config;
 use crate::storage::{SessionInfo, unix_time_now};
 
-use super::App;
 use super::types::*;
+use super::{App, AppSignal};
 
 fn resolve_editor_command(configured: Option<&str>) -> Option<String> {
     configured
@@ -152,6 +153,48 @@ impl App {
             &format!("opened pane buffer in editor: {}", path.display()),
             Duration::from_secs(3),
         );
+    }
+
+    /// Ask the active client to read an image from its OS clipboard. The
+    /// clipboard lives on the client's machine (which is not the server's
+    /// when attached over `--remote`), so the read round-trips through the
+    /// client: the server loop turns this flag into a `PasteImageRequest`
+    /// and the client answers with `ClientMessage::PasteImage`.
+    pub(super) fn request_image_paste(&mut self) {
+        self.view.pending_image_paste_request = true;
+    }
+
+    /// Stage clipboard image bytes bridged from a client to a temp file and
+    /// paste the quoted path into the focused pane, so terminal programs
+    /// (agents, editors) can open the image by path.
+    pub(super) fn paste_clipboard_image(
+        &mut self,
+        image: Option<(String, Vec<u8>)>,
+    ) -> io::Result<AppSignal> {
+        self.needs_render = true;
+        let Some((format, bytes)) = image else {
+            self.set_message("no image on clipboard", Duration::from_secs(3));
+            return Ok(AppSignal::None);
+        };
+
+        let path = match crate::clipboard::stage_image(&format, &bytes) {
+            Ok(path) => path,
+            Err(err) => {
+                self.set_message(
+                    &format!("clipboard image staging failed: {err}"),
+                    Duration::from_secs(3),
+                );
+                return Ok(AppSignal::None);
+            }
+        };
+
+        let signal = self.handle_paste(shell_quote(path.to_string_lossy().as_ref()))?;
+        self.write_log("pasted clipboard image path");
+        self.set_message(
+            &format!("pasted clipboard image: {}", path.display()),
+            Duration::from_secs(3),
+        );
+        Ok(signal)
     }
 
     pub(super) fn open_config_in_editor(&mut self) {

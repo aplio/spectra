@@ -9,7 +9,14 @@ use crate::io::host_colors::HostColors;
 /// Version of the newline-delimited-JSON client protocol. Bumped on
 /// incompatible changes; checked during the `Hello` handshake so mismatched
 /// binaries (for example over a remote ssh bridge) fail with a clear error.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// v2: `ServerMessage::PasteImageRequest` / `ClientMessage::PasteImage`
+/// (clipboard image paste bridging).
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// Upper bound for a bridged clipboard image (raw bytes, before base64).
+/// Larger images are treated as "no image on the clipboard".
+pub const MAX_PASTE_IMAGE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -107,18 +114,51 @@ pub enum ClientMessage {
     Command {
         request: CommandRequest,
     },
+    /// Reply to [`ServerMessage::PasteImageRequest`] carrying the image the
+    /// client found on its local OS clipboard, or `None` when there was no
+    /// (usable) image.
+    PasteImage {
+        image: Option<PasteImagePayload>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PasteImagePayload {
+    /// Sanitized lowercase file extension for the image data, e.g. `png`.
+    pub format: String,
+    /// Base64-encoded raw image bytes (standard alphabet, padded).
+    pub data_base64: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
-    Render { ansi: String },
-    Clipboard { ansi: String },
-    Passthrough { ansi: String },
-    Detached { reason: String },
-    Shutdown { reason: String },
-    Error { message: String },
-    CommandResult { result: CommandResult },
+    Render {
+        ansi: String,
+    },
+    Clipboard {
+        ansi: String,
+    },
+    Passthrough {
+        ansi: String,
+    },
+    Detached {
+        reason: String,
+    },
+    Shutdown {
+        reason: String,
+    },
+    Error {
+        message: String,
+    },
+    CommandResult {
+        result: CommandResult,
+    },
+    /// Ask the client to read an image from its local OS clipboard and
+    /// answer with [`ClientMessage::PasteImage`]. Sent when a paste-image
+    /// action runs for this client; the clipboard lives on the client's
+    /// machine, which may not be the server's (`--remote`).
+    PasteImageRequest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -379,7 +419,7 @@ mod tests {
 
     use super::{
         ClientMessage, CommandRequest, CommandResult, CommandSplitAxis, NetKeyEvent, NetMouseEvent,
-        PROTOCOL_VERSION, ServerMessage, SessionListEntry,
+        PROTOCOL_VERSION, PasteImagePayload, ServerMessage, SessionListEntry,
     };
 
     #[test]
@@ -520,6 +560,34 @@ mod tests {
         };
         let json = serde_json::to_string(&message).expect("encode server clipboard");
         let decoded: ServerMessage = serde_json::from_str(&json).expect("decode server clipboard");
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn paste_image_message_roundtrips_json() {
+        let message = ClientMessage::PasteImage {
+            image: Some(PasteImagePayload {
+                format: "png".to_string(),
+                data_base64: "iVBORw0KGgo=".to_string(),
+            }),
+        };
+        let json = serde_json::to_string(&message).expect("encode paste image");
+        let decoded: ClientMessage = serde_json::from_str(&json).expect("decode paste image");
+        assert_eq!(decoded, message);
+
+        let empty = ClientMessage::PasteImage { image: None };
+        let json = serde_json::to_string(&empty).expect("encode empty paste image");
+        let decoded: ClientMessage = serde_json::from_str(&json).expect("decode empty paste image");
+        assert_eq!(decoded, empty);
+    }
+
+    #[test]
+    fn paste_image_request_roundtrips_json() {
+        let message = ServerMessage::PasteImageRequest;
+        let json = serde_json::to_string(&message).expect("encode paste image request");
+        assert_eq!(json, r#"{"type":"paste_image_request"}"#);
+        let decoded: ServerMessage =
+            serde_json::from_str(&json).expect("decode paste image request");
         assert_eq!(decoded, message);
     }
 

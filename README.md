@@ -56,6 +56,7 @@ The prefix is `Ctrl+j`. Press `prefix ?` for the full searchable cheat sheet.
 | `prefix z` | zoom active pane |
 | `prefix [` | cursor mode (vi-style movement, `g` chords `gg`/`ge`/`gh`/`gl`, `v`/`y` select and copy) |
 | `prefix y` | copy the mouse drag selection |
+| `prefix v` | paste the clipboard image as a temp-file path (bridged from the local clipboard over `--remote` too) |
 | `prefix d` | detach (server keeps running) |
 | `prefix x` | close focused pane (closes the window, then the session, when it's the last one) |
 | `prefix q` | quit (press again within 3s to confirm) |

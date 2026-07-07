@@ -17,7 +17,7 @@ use crate::app::{App, AppSignal, ClientId, LOCAL_CLIENT_ID};
 use crate::cli::Cli;
 use crate::io::terminal;
 use crate::ipc::codec::{DecodeResult, decode_messages, encode_message};
-use crate::ipc::protocol::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
+use crate::ipc::protocol::{ClientMessage, MAX_PASTE_IMAGE_BYTES, PROTOCOL_VERSION, ServerMessage};
 use crate::ipc::socket_path;
 use crate::ui::render::FrameRenderer;
 
@@ -219,6 +219,7 @@ fn serve(cli: Cli, takeover: Option<crate::runtime::handoff::HandoffTakeover>) -
         }
 
         did_work |= queue_pending_passthrough_messages(&mut clients, &mut app)?;
+        did_work |= queue_pending_image_paste_requests(&mut clients, &mut app)?;
         did_work |= fan_out_api_events(&mut api_connections, &mut app);
 
         // A synchronized-output hold (DECSET 2026) defers frame delivery
@@ -668,9 +669,58 @@ fn handle_client_message(
             client.renders_enabled = false;
             client.close_after_flush = true;
         }
+        ClientMessage::PasteImage { image } => {
+            let image = image.and_then(|payload| decode_paste_image_payload(&payload));
+            if let Err(err) = app.handle_paste_image_for_client(client.id, image) {
+                client.queue_control_message(&ServerMessage::Error {
+                    message: format!("image paste failed: {err}"),
+                })?;
+            }
+        }
     }
     queue_pending_clipboard_messages(client, app)?;
     Ok(())
+}
+
+/// Decode and bound a bridged clipboard image; `None` (treated as "no image
+/// on the clipboard") when the payload is malformed or oversized.
+fn decode_paste_image_payload(
+    payload: &crate::ipc::protocol::PasteImagePayload,
+) -> Option<(String, Vec<u8>)> {
+    use base64::Engine as _;
+
+    // Bound before decoding: 4 base64 chars encode 3 bytes.
+    if payload.data_base64.len() > MAX_PASTE_IMAGE_BYTES / 3 * 4 + 4 {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&payload.data_base64)
+        .ok()?;
+    if bytes.is_empty() || bytes.len() > MAX_PASTE_IMAGE_BYTES {
+        return None;
+    }
+    Some((payload.format.clone(), bytes))
+}
+
+/// Turn each client's pending paste-image flag into a `PasteImageRequest`
+/// frame, mirroring the passthrough drain. The local (in-process) client
+/// has no socket to answer on, so its flag is dropped.
+fn queue_pending_image_paste_requests(
+    clients: &mut [ClientConnection],
+    app: &mut App,
+) -> io::Result<bool> {
+    let mut queued = false;
+    for client in clients {
+        if client.disconnected || !client.renders_enabled {
+            continue;
+        }
+        if app.take_pending_image_paste_request_for_client(client.id) {
+            client.queue_control_message(&ServerMessage::PasteImageRequest)?;
+            queued = true;
+        }
+    }
+    let _ = app.take_pending_image_paste_request_for_client(LOCAL_CLIENT_ID);
+    Ok(queued)
 }
 
 fn queue_pending_clipboard_messages(

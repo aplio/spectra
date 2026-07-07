@@ -510,6 +510,17 @@ impl App {
         );
         Self::push_command_palette_entry(
             &mut entries,
+            "clipboard.paste_image",
+            CommandAction::PasteImage,
+            "Paste clipboard image as file path",
+            "paste clipboard image file path screenshot",
+            &[
+                "action: stage the clipboard image to a temp file",
+                "paste: quoted file path into the focused pane",
+            ],
+        );
+        Self::push_command_palette_entry(
+            &mut entries,
             "layout.save",
             CommandAction::SaveLayout,
             "Save layout snapshot",

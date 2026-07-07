@@ -63,6 +63,10 @@ o = "focus-next-pane"
 p = "command-palette"
 O = "focus-prev-pane"
 "[" = "enter-cursor-mode"
+# Stage the OS clipboard image to a temp file and paste the quoted path
+# into the focused pane (works over --remote; the image is read on the
+# client machine and staged server-side).
+v = "paste-image"
 "C-Left" = "resize-left"
 "C-Down" = "resize-down"
 "C-Up" = "resize-up"

@@ -265,6 +265,7 @@ impl App {
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
+            pending_image_paste_request: false,
             cols,
             rows,
             active_session: self.view.active_session,
@@ -290,6 +291,7 @@ impl App {
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
+            pending_image_paste_request: false,
             cols: self.view.cols,
             rows: self.view.rows,
             active_session: 0,
@@ -443,6 +445,28 @@ impl App {
             app.handle_mouse(mouse);
             Ok(())
         })
+    }
+
+    /// Handle a `ClientMessage::PasteImage` reply: `image` is
+    /// `Some((format, bytes))` when the client's clipboard held an image.
+    pub fn handle_paste_image_for_client(
+        &mut self,
+        client_id: ClientId,
+        image: Option<(String, Vec<u8>)>,
+    ) -> io::Result<AppSignal> {
+        self.with_client_context(client_id, move |app| app.paste_clipboard_image(image))
+    }
+
+    /// Take (and clear) the client's pending paste-image request flag; the
+    /// server loop sends one `PasteImageRequest` per taken flag.
+    pub fn take_pending_image_paste_request_for_client(&mut self, client_id: ClientId) -> bool {
+        if self.active_client_id == client_id {
+            return std::mem::take(&mut self.view.pending_image_paste_request);
+        }
+        self.inactive_client_states
+            .get_mut(&client_id)
+            .map(|state| std::mem::take(&mut state.pending_image_paste_request))
+            .unwrap_or(false)
     }
 
     pub fn take_pending_clipboard_ansi_for_client(&mut self, client_id: ClientId) -> Vec<String> {

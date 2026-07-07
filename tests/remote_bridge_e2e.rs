@@ -8,8 +8,13 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use spectra::ipc::codec::{decode_messages, encode_message};
-use spectra::ipc::protocol::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
+use spectra::ipc::protocol::{
+    ClientMessage, NetKeyEvent, PROTOCOL_VERSION, PasteImagePayload, ServerMessage,
+};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(6);
 const WAIT_TIMEOUT: Duration = Duration::from_secs(6);
@@ -355,6 +360,128 @@ fn bridge_subcommand_relays_ndjson_between_stdio_and_server() {
         thread::sleep(Duration::from_millis(20));
     };
     assert!(status.success(), "bridge exited unsuccessfully: {status}");
+    reader_thread.join().expect("join reader thread");
+}
+
+/// Clipboard image paste over the bridge: the paste-image request reaches
+/// the (remote) client through the byte pump, the image bytes travel back
+/// the same way, and the file is staged on the server side where the pane's
+/// processes can read it.
+#[test]
+fn bridge_relays_clipboard_image_paste_and_stages_server_side() {
+    const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\nbridged-test-image";
+
+    let (_dir, runtime_dir, data_home) = setup_server_env();
+    let _server = spawn_server(&runtime_dir, &data_home).expect("spawn server");
+    let socket = socket_path(&runtime_dir);
+    wait_for_socket(&socket).expect("wait for socket");
+
+    let bin = resolve_spectra_binary().expect("resolve binary");
+    let config_home = data_home.join("config-home");
+    let mut bridge = Command::new(bin)
+        .arg("remote-client-bridge")
+        .env("XDG_RUNTIME_DIR", &runtime_dir)
+        .env("XDG_DATA_HOME", &data_home)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn bridge subcommand");
+
+    let mut bridge_stdin = bridge.stdin.take().expect("bridge stdin");
+    let bridge_stdout = bridge.stdout.take().expect("bridge stdout");
+
+    let (sender, receiver) = mpsc::channel::<ServerMessage>();
+    let reader_thread = thread::spawn(move || {
+        let reader = BufReader::new(bridge_stdout);
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(message) = serde_json::from_str::<ServerMessage>(&line) else {
+                break;
+            };
+            if sender.send(message).is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut send = |message: &ClientMessage| {
+        let encoded = encode_message(message).expect("encode client message");
+        bridge_stdin.write_all(&encoded).expect("write to bridge");
+        bridge_stdin.flush().expect("flush bridge stdin");
+    };
+    let wait_for = |predicate: &dyn Fn(&ServerMessage) -> bool, what: &str| {
+        let deadline = Instant::now() + WAIT_TIMEOUT;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                panic!("timed out waiting for {what} through the bridge");
+            }
+            match receiver.recv_timeout(remaining) {
+                Ok(message) if predicate(&message) => break,
+                Ok(_other) => continue,
+                Err(err) => panic!("bridge stdout closed while waiting for {what}: {err}"),
+            }
+        }
+    };
+
+    send(&hello(Some(PROTOCOL_VERSION)));
+    wait_for(
+        &|message| matches!(message, ServerMessage::Render { .. }),
+        "the initial render",
+    );
+
+    // `prefix v` triggers the paste-image action on the remote server.
+    send(&ClientMessage::Key {
+        key: NetKeyEvent::from(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL)),
+    });
+    send(&ClientMessage::Key {
+        key: NetKeyEvent::from(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE)),
+    });
+    wait_for(
+        &|message| matches!(message, ServerMessage::PasteImageRequest),
+        "the paste image request",
+    );
+
+    send(&ClientMessage::PasteImage {
+        image: Some(PasteImagePayload {
+            format: "png".to_string(),
+            data_base64: BASE64.encode(PNG_BYTES),
+        }),
+    });
+    wait_for(
+        &|message| matches!(message, ServerMessage::Render { ansi } if ansi.contains(".png")),
+        "the pasted image path render",
+    );
+
+    // The image must be staged under the server's runtime dir.
+    let staging_dir = runtime_dir.join("spectra").join("clipboard-images");
+    let staged: Vec<PathBuf> = std::fs::read_dir(&staging_dir)
+        .expect("staging dir exists")
+        .map(|entry| entry.expect("staging dir entry").path())
+        .collect();
+    assert_eq!(staged.len(), 1, "exactly one staged image: {staged:?}");
+    assert_eq!(
+        std::fs::read(&staged[0]).expect("read staged image"),
+        PNG_BYTES
+    );
+
+    drop(bridge_stdin);
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        if bridge.try_wait().expect("poll bridge exit").is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = bridge.kill();
+            panic!("bridge did not exit after stdin closed");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
     reader_thread.join().expect("join reader thread");
 }
 

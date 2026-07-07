@@ -16,7 +16,7 @@ use crate::io::terminal;
 use crate::ipc::codec::{decode_messages, encode_message};
 use crate::ipc::protocol::{
     ClientMessage, CommandRequest, CommandResult, CommandSplitAxis, NetKeyEvent, NetMouseEvent,
-    PROTOCOL_VERSION, ServerMessage,
+    PROTOCOL_VERSION, PasteImagePayload, ServerMessage,
 };
 use crate::ipc::socket_path;
 use crate::runtime::event_loop::poll_event_for;
@@ -208,6 +208,11 @@ fn run_client_loop(
                     stdout.write_all(ansi.as_bytes())?;
                     wrote_to_stdout = true;
                 }
+                ServerMessage::PasteImageRequest => {
+                    // The clipboard lives on this machine even when the
+                    // server is remote; read it here and bridge the bytes.
+                    send_client_message(stream, &paste_image_reply())?;
+                }
                 ServerMessage::Detached { .. } => {
                     if wrote_to_stdout {
                         stdout.flush()?;
@@ -295,6 +300,7 @@ fn run_command_request(
                 ServerMessage::Render { .. }
                 | ServerMessage::Passthrough { .. }
                 | ServerMessage::Clipboard { .. }
+                | ServerMessage::PasteImageRequest
                 | ServerMessage::Detached { .. } => {}
             }
         }
@@ -526,6 +532,16 @@ fn send_client_message(stream: &mut UnixStream, message: &ClientMessage) -> io::
     write_all_nonblocking(stream, &encoded)
 }
 
+fn paste_image_reply() -> ClientMessage {
+    use base64::Engine as _;
+
+    let image = crate::clipboard::read_image().map(|image| PasteImagePayload {
+        format: image.format.to_string(),
+        data_base64: base64::engine::general_purpose::STANDARD.encode(&image.bytes),
+    });
+    ClientMessage::PasteImage { image }
+}
+
 fn parse_attach_target(raw: Option<&str>, option_name: &str) -> io::Result<Option<AttachTarget>> {
     match raw {
         Some(value) => AttachTarget::parse(value).map(Some).map_err(|err| {
@@ -539,7 +555,10 @@ fn parse_attach_target(raw: Option<&str>, option_name: &str) -> io::Result<Optio
 }
 
 fn write_all_nonblocking(stream: &mut UnixStream, data: &[u8]) -> io::Result<()> {
-    let deadline = Instant::now() + CONNECT_TIMEOUT;
+    // The deadline advances while bytes keep flowing, so it only fires on a
+    // stuck socket — a large frame (e.g. a bridged clipboard image) draining
+    // slowly through the remote ssh bridge is not an error.
+    let mut deadline = Instant::now() + CONNECT_TIMEOUT;
     let mut offset = 0usize;
     while offset < data.len() {
         match stream.write(&data[offset..]) {
@@ -549,7 +568,10 @@ fn write_all_nonblocking(stream: &mut UnixStream, data: &[u8]) -> io::Result<()>
                     "socket write returned 0 bytes",
                 ));
             }
-            Ok(n) => offset += n,
+            Ok(n) => {
+                offset += n;
+                deadline = Instant::now() + CONNECT_TIMEOUT;
+            }
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
                 if Instant::now() >= deadline {
                     return Err(io::Error::new(
