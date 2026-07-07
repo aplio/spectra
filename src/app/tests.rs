@@ -2345,11 +2345,75 @@ fn command_palette_shows_only_leave_cursor_mode_in_cursor_mode() {
     let entries = App::command_palette_entries_for(super::CommandPaletteContext {
         locked_input: false,
         cursor_mode_active: true,
+        ..Default::default()
     });
     assert!(entries.iter().any(|entry| {
         entry.id == "cursor-mode.leave" && entry.action == CommandAction::LeaveCursorMode
     }));
     assert!(!entries.iter().any(|entry| entry.id == "cursor-mode.enter"));
+}
+
+#[test]
+fn restore_pane_action_restores_the_closed_pane() {
+    let mut app = build_app_for_resize_test();
+    app.current_session_mut()
+        .split_focused(crate::ui::window_manager::SplitAxis::Vertical, 80, 24)
+        .expect("split pane");
+    let closed = app.current_session().focused_pane_id();
+    assert_eq!(closed, Some(2));
+
+    let _ = app.handle_action(CommandAction::ClosePane);
+    assert_eq!(app.current_session().pane_count(), 1);
+    let message = app
+        .view
+        .status_message
+        .as_ref()
+        .map(|message| message.text.clone())
+        .unwrap_or_default();
+    assert!(
+        message.contains("to restore"),
+        "close message should hint the undo-close chord, got `{message}`"
+    );
+
+    let _ = app.handle_action(CommandAction::RestoreClosedPane);
+    assert_eq!(app.current_session().pane_count(), 2);
+    assert_eq!(app.current_session().focused_pane_id(), closed);
+}
+
+#[test]
+fn restore_pane_action_without_retained_pane_reports_a_message() {
+    let mut app = build_app_for_resize_test();
+    let _ = app.handle_action(CommandAction::RestoreClosedPane);
+    assert_eq!(app.current_session().pane_count(), 1);
+    let message = app
+        .view
+        .status_message
+        .as_ref()
+        .map(|message| message.text.clone())
+        .unwrap_or_default();
+    assert!(message.contains("no recently closed pane"));
+}
+
+#[test]
+fn command_palette_lists_restore_only_while_a_closed_pane_is_retained() {
+    let mut app = build_app_for_resize_test();
+
+    let ctx = app.command_palette_context();
+    assert!(!ctx.can_restore_pane);
+    let entries = App::command_palette_entries_for(ctx);
+    assert!(!entries.iter().any(|entry| entry.id == "pane.restore"));
+
+    app.current_session_mut()
+        .split_focused(crate::ui::window_manager::SplitAxis::Vertical, 80, 24)
+        .expect("split pane");
+    let _ = app.handle_action(CommandAction::ClosePane);
+
+    let ctx = app.command_palette_context();
+    assert!(ctx.can_restore_pane);
+    let entries = App::command_palette_entries_for(ctx);
+    assert!(entries.iter().any(|entry| {
+        entry.id == "pane.restore" && entry.action == CommandAction::RestoreClosedPane
+    }));
 }
 
 #[test]

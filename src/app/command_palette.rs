@@ -234,6 +234,7 @@ impl App {
         CommandPaletteContext {
             locked_input: self.view.locked_input,
             cursor_mode_active: matches!(self.view.input_mode, InputMode::CursorMode { .. }),
+            can_restore_pane: self.current_session().has_restorable_closed_pane(),
         }
     }
 
@@ -313,6 +314,18 @@ impl App {
             "Close focused pane",
             "close pane focused",
             &["action: close focused pane"],
+        );
+        Self::push_command_palette_entry_if(
+            &mut entries,
+            ctx.can_restore_pane,
+            "pane.restore",
+            CommandAction::RestoreClosedPane,
+            "Restore closed pane",
+            "restore closed pane undo close reopen",
+            &[
+                "action: restore the most recently closed pane",
+                "note: available for a short grace period after closing",
+            ],
         );
         Self::push_command_palette_entry(
             &mut entries,

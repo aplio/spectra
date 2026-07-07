@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -35,7 +36,14 @@ pub struct SessionOptions {
     /// Host terminal default fg/bg colors applied to new panes so guests
     /// can query them via OSC 10/11 (unknown by default).
     pub host_colors: HostColors,
+    /// How long a user-closed pane is retained (child process kept alive)
+    /// so it can be restored, ghostty-style undo close. Zero disables
+    /// retention.
+    pub undo_close_timeout: Duration,
 }
+
+/// Default grace period during which a closed pane can be restored.
+pub const DEFAULT_UNDO_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl SessionOptions {
     pub fn from_cli(shell: Option<String>, cwd: Option<PathBuf>, command: Vec<String>) -> Self {
@@ -48,6 +56,7 @@ impl SessionOptions {
             suppress_prompt_eol_marker: false,
             allow_passthrough: true,
             host_colors: HostColors::default(),
+            undo_close_timeout: DEFAULT_UNDO_CLOSE_TIMEOUT,
         }
     }
 
@@ -160,6 +169,25 @@ pub(super) struct SessionWindow {
     pub(super) zoom_snapshot: Option<WindowManagerSnapshot>,
 }
 
+/// A pane the user closed, retained with its child process still running so
+/// it can be restored during the undo-close grace period.
+pub(super) struct ClosedPaneEntry {
+    pub(super) pane_id: PaneId,
+    pub(super) pane: Pane,
+    pub(super) window_id: WindowId,
+    /// Index the window had at close time; used to recreate a window the
+    /// close removed at (roughly) its old spot.
+    pub(super) window_index: usize,
+    /// The window's layout right before the close, so an immediate restore
+    /// puts the pane back at its exact position and size.
+    pub(super) window_snapshot: WindowManagerSnapshot,
+    pub(super) closed_at: Instant,
+}
+
+/// Retained closed panes beyond this count are dropped oldest-first, so a
+/// close spree cannot pile up live child processes.
+const MAX_RETAINED_CLOSED_PANES: usize = 8;
+
 pub struct SessionManager {
     pub(super) options: SessionOptions,
     pub(super) pane_factory: Arc<dyn PaneFactory>,
@@ -171,6 +199,8 @@ pub struct SessionManager {
     pub(super) session_name: String,
     pub(super) pending_passthrough: Vec<Vec<u8>>,
     pub(super) pending_terminal_events: Vec<PaneTerminalEvent>,
+    /// Recently closed panes kept alive for undo close, oldest first.
+    pub(super) closed_panes: Vec<ClosedPaneEntry>,
 }
 
 impl SessionManager {
@@ -217,6 +247,7 @@ impl SessionManager {
             session_name,
             pending_passthrough: Vec::new(),
             pending_terminal_events: Vec::new(),
+            closed_panes: Vec::new(),
         })
     }
 
@@ -298,6 +329,55 @@ impl SessionManager {
         self.panes.contains_key(&pane_id)
     }
 
+    pub fn set_undo_close_timeout(&mut self, timeout: Duration) {
+        self.options.undo_close_timeout = timeout;
+    }
+
+    /// Whether an undo close is currently possible: a retained pane whose
+    /// grace period has not lapsed yet.
+    pub fn has_restorable_closed_pane(&self) -> bool {
+        let timeout = self.options.undo_close_timeout;
+        self.closed_panes
+            .iter()
+            .any(|entry| entry.closed_at.elapsed() < timeout)
+    }
+
+    /// Stash a just-closed pane for undo close. Dead panes (process already
+    /// exited) and a zero timeout skip retention — there is nothing useful
+    /// to restore.
+    pub(super) fn retain_closed_pane(
+        &mut self,
+        pane_id: PaneId,
+        mut pane: Pane,
+        window_id: WindowId,
+        window_index: usize,
+        window_snapshot: WindowManagerSnapshot,
+    ) {
+        if self.options.undo_close_timeout.is_zero() || pane.is_closed() {
+            return;
+        }
+        self.closed_panes.push(ClosedPaneEntry {
+            pane_id,
+            pane,
+            window_id,
+            window_index,
+            window_snapshot,
+            closed_at: Instant::now(),
+        });
+        if self.closed_panes.len() > MAX_RETAINED_CLOSED_PANES {
+            let overflow = self.closed_panes.len() - MAX_RETAINED_CLOSED_PANES;
+            self.closed_panes.drain(..overflow);
+        }
+    }
+
+    /// Drop retained panes whose grace period lapsed or whose process exited
+    /// in the meantime; dropping the pane kills its child.
+    pub(super) fn purge_expired_closed_panes(&mut self) {
+        let timeout = self.options.undo_close_timeout;
+        self.closed_panes
+            .retain_mut(|entry| entry.closed_at.elapsed() < timeout && !entry.pane.is_closed());
+    }
+
     pub fn pane_closed(&mut self, pane_id: PaneId) -> bool {
         self.panes.get_mut(&pane_id).is_some_and(Pane::is_closed)
     }
@@ -313,6 +393,9 @@ impl SessionManager {
     /// Poll all panes for pending output and return the ids of panes whose
     /// terminal content changed.
     pub fn poll_output_changed_panes(&mut self) -> Vec<PaneId> {
+        // Piggyback on the server heartbeat so lapsed undo-close panes are
+        // dropped (killing their children) without a dedicated timer.
+        self.purge_expired_closed_panes();
         let mut changed_panes = Vec::new();
         let mut pane_ids = self.panes.keys().copied().collect::<Vec<_>>();
         pane_ids.sort_unstable();

@@ -240,6 +240,8 @@ pub(super) struct CommandPaletteState {
 pub(super) struct CommandPaletteContext {
     pub locked_input: bool,
     pub cursor_mode_active: bool,
+    /// Whether a recently closed pane is still retained for undo close.
+    pub can_restore_pane: bool,
 }
 
 /// One row of the keyboard-shortcut cheat sheet: a key display and what it does.
@@ -429,6 +431,7 @@ pub(super) enum HookEvent {
     WindowCreated,
     PaneSplit,
     PaneClosed,
+    PaneRestored,
     ConfigReloaded,
 }
 
@@ -440,6 +443,7 @@ impl HookEvent {
             Self::WindowCreated => "window_created",
             Self::PaneSplit => "pane_split",
             Self::PaneClosed => "pane_closed",
+            Self::PaneRestored => "pane_restored",
             Self::ConfigReloaded => "config_reloaded",
         }
     }
@@ -452,6 +456,7 @@ impl HookEvent {
             Self::WindowCreated => "window.created",
             Self::PaneSplit => "pane.split",
             Self::PaneClosed => "pane.closed",
+            Self::PaneRestored => "pane.restored",
             Self::ConfigReloaded => "config.reloaded",
         }
     }

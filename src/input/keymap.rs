@@ -14,6 +14,8 @@ pub enum CommandAction {
     FocusNextPane,
     FocusPrevPane,
     ClosePane,
+    /// Restore the most recently closed pane (undo close).
+    RestoreClosedPane,
     Quit,
     DetachClient,
     SystemTree,
@@ -75,6 +77,7 @@ impl CommandAction {
             Self::FocusNextPane => "Focus next pane".to_string(),
             Self::FocusPrevPane => "Focus previous pane".to_string(),
             Self::ClosePane => "Close pane".to_string(),
+            Self::RestoreClosedPane => "Restore closed pane".to_string(),
             Self::Quit => "Quit".to_string(),
             Self::DetachClient => "Detach client".to_string(),
             Self::SystemTree => "Open tree (sessions/windows/panes)".to_string(),
@@ -233,6 +236,17 @@ impl KeyMapper {
         &self.bindings.prefix_key
     }
 
+    /// A prefix-map key bound to `action`, for user-facing hints (e.g. the
+    /// undo-close message after a pane closes). `None` when unbound.
+    pub fn prefix_key_for(&self, action: &CommandAction) -> Option<String> {
+        self.bindings
+            .prefix_bindings
+            .iter()
+            .filter(|(_, bound)| *bound == action)
+            .map(|(key, _)| key.clone())
+            .min()
+    }
+
     /// Whether prefix mode stays active after a bound key runs. When sticky,
     /// a follow-up chord key (e.g. a quit confirmation) needs only the key,
     /// not the prefix again.
@@ -285,6 +299,7 @@ fn default_prefix_bindings() -> HashMap<String, CommandAction> {
     map.insert("Up".to_string(), CommandAction::Focus(Direction::Up));
     map.insert("Right".to_string(), CommandAction::Focus(Direction::Right));
     map.insert("x".to_string(), CommandAction::ClosePane);
+    map.insert("u".to_string(), CommandAction::RestoreClosedPane);
     map.insert("q".to_string(), CommandAction::Quit);
     map.insert("d".to_string(), CommandAction::DetachClient);
 
@@ -394,6 +409,11 @@ fn parse_action(spec: &str) -> Option<CommandAction> {
         }
 
         "close-pane" => Some(CommandAction::ClosePane),
+        "restore-pane"
+        | "restore-closed-pane"
+        | "undo-close-pane"
+        | "undo-close"
+        | "reopen-pane" => Some(CommandAction::RestoreClosedPane),
         "quit" => Some(CommandAction::Quit),
         "detach-client" | "detach" => Some(CommandAction::DetachClient),
 
@@ -918,6 +938,51 @@ mod tests {
         mapper.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
         let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
         assert_eq!(action, InputAction::Command(CommandAction::CommandPalette));
+    }
+
+    #[test]
+    fn prefix_u_restores_closed_pane() {
+        let mut mapper = KeyMapper::new();
+        mapper.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(
+            action,
+            InputAction::Command(CommandAction::RestoreClosedPane)
+        );
+    }
+
+    #[test]
+    fn restore_pane_action_names_parse() {
+        for name in [
+            "restore-pane",
+            "restore-closed-pane",
+            "undo-close-pane",
+            "undo-close",
+            "reopen-pane",
+        ] {
+            assert_eq!(
+                parse_action(name),
+                Some(CommandAction::RestoreClosedPane),
+                "`{name}` should parse to RestoreClosedPane"
+            );
+        }
+    }
+
+    #[test]
+    fn prefix_key_for_finds_the_bound_key() {
+        let mapper = KeyMapper::new();
+        assert_eq!(
+            mapper.prefix_key_for(&CommandAction::RestoreClosedPane),
+            Some("u".to_string())
+        );
+
+        let mut prefix = HashMap::new();
+        prefix.insert("u".to_string(), "none".to_string());
+        let mapper = KeyMapper::with_config(None, true, &prefix, &HashMap::new());
+        assert_eq!(
+            mapper.prefix_key_for(&CommandAction::RestoreClosedPane),
+            None
+        );
     }
 
     #[test]

@@ -58,6 +58,7 @@ The prefix is `Ctrl+j`. Press `prefix ?` for the full searchable cheat sheet.
 | `prefix y` | copy the mouse drag selection |
 | `prefix d` | detach (server keeps running) |
 | `prefix x` | close focused pane (closes the window, then the session, when it's the last one) |
+| `prefix u` | restore the last closed pane (kept alive for `[pane].undo_close_seconds`, default 10s) |
 | `prefix q` | quit (press again within 3s to confirm) |
 
 With `[mouse].enabled = true`, click focuses panes, dragging on dividers resizes,

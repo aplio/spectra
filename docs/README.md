@@ -65,6 +65,7 @@ spectra is a terminal multiplexer style app.
 - rendered `http://` and `https://` text is emitted as OSC 8 hyperlinks, so supporting terminals can click and open URLs in a browser; terminals without OSC 8 support still show plain text
 - xdg storage writes session info, logs, layouts, and scrollback artifacts
 - closed-pane write errors and process exits are treated as pane closure events instead of fatal app errors
+- a user-closed pane whose process is still alive is retained (ghostty-style undo close) for `[pane].undo_close_seconds` (default 10s, 0 disables, at most 8 panes); `restore-pane` (`prefix u`, also in the command palette while a pane is retained) restores the most recent one — back at its exact position/size when the window layout is unchanged since the close, via a split fallback otherwise, recreating the window if the close removed it. Panes whose process already exited are never retained, and retained panes are dropped (killing the child) once the grace period lapses
 - when the active session loses its final pane, spectra switches to another existing session if available; only the final remaining session triggers shutdown
 - socket e2e tests should set isolated `XDG_RUNTIME_DIR`, `XDG_DATA_HOME`, and `XDG_CONFIG_HOME` so local user config does not affect command/key behavior
 

@@ -13,6 +13,7 @@ impl App {
             HookEvent::WindowCreated => self.hooks.window_created.as_deref(),
             HookEvent::PaneSplit => self.hooks.pane_split.as_deref(),
             HookEvent::PaneClosed => self.hooks.pane_closed.as_deref(),
+            HookEvent::PaneRestored => self.hooks.pane_restored.as_deref(),
             HookEvent::ConfigReloaded => self.hooks.config_reloaded.as_deref(),
         }
     }
