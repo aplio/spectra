@@ -10,6 +10,7 @@ pub enum CliMode {
     ApiRequest,
     Update,
     Check,
+    Version,
     RemoteAttach,
     RemoteClientBridge,
     ServerHandoff,
@@ -119,6 +120,8 @@ pub enum CliCommand {
         #[command(subcommand)]
         action: IntegrationAction,
     },
+    /// Print the spectra version.
+    Version,
     /// Internal: relay stdio to the local client socket (remote end of --remote).
     #[command(hide = true)]
     RemoteClientBridge,
@@ -190,6 +193,8 @@ impl Cli {
             CliMode::Update
         } else if self.check {
             CliMode::Check
+        } else if matches!(self.subcommand, Some(CliCommand::Version)) {
+            CliMode::Version
         } else if matches!(self.subcommand, Some(CliCommand::RemoteClientBridge)) {
             CliMode::RemoteClientBridge
         } else if matches!(self.subcommand, Some(CliCommand::ServerHandoff { .. })) {
@@ -248,6 +253,12 @@ impl Cli {
             }
         }
         Ok(())
+    }
+
+    /// The version line printed by both `--version` and the `version`
+    /// subcommand, e.g. `spectra 0.2.2`.
+    pub fn version_string() -> String {
+        format!("spectra {}", env!("CARGO_PKG_VERSION"))
     }
 
     pub fn without_server_flag(&self) -> Self {
@@ -330,6 +341,21 @@ mod tests {
         let cli = Cli::try_parse_from(["spectra", "--check", "new-session"])
             .expect("parse check with command");
         assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn parses_version_subcommand() {
+        let cli = Cli::try_parse_from(["spectra", "version"]).expect("parse version");
+        assert!(matches!(cli.subcommand, Some(CliCommand::Version)));
+        assert_eq!(cli.mode(), CliMode::Version);
+    }
+
+    #[test]
+    fn version_string_matches_package_version() {
+        assert_eq!(
+            Cli::version_string(),
+            format!("spectra {}", env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[test]

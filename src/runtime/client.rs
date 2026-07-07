@@ -422,6 +422,10 @@ fn command_request_from_cli(command: &CliCommand) -> io::Result<CommandRequest> 
             io::ErrorKind::InvalidInput,
             "integration commands run locally, not against the server",
         )),
+        CliCommand::Version => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "version prints locally, not against the server",
+        )),
         CliCommand::RemoteClientBridge => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "remote-client-bridge is not a one-shot command",
