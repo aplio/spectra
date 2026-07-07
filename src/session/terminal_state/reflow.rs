@@ -38,6 +38,14 @@ impl TerminalGrid {
             for x in 0..copy_w {
                 self.cells[y * new_width + x] = old_cells[y * old_width + x].clone();
             }
+            // Shrinking can cut a wide char in half at the copy boundary:
+            // blank an owner whose continuation cell no longer fits.
+            if copy_w > 0 && copy_w < old_width {
+                let idx = y * new_width + copy_w - 1;
+                if UnicodeWidthChar::width(self.cells[idx].ch).unwrap_or(1) == 2 {
+                    self.cells[idx] = StyledCell::default();
+                }
+            }
             self.row_boundaries[y] = old_boundaries.get(y).copied().unwrap_or(RowBoundary::None);
         }
 

@@ -35,6 +35,26 @@ format = "session {session_index}/{session_count}:{session_name} | window {windo
 background = "#2E3440"
 foreground = "#D8DEE9"
 
+[ime]
+# CJK / IME affordances.
+# macOS IMEs draw their candidate window at the host terminal's real cursor.
+# Guests that hide the cursor and draw their own (Claude Code, fzf, ...)
+# would strand the candidate window; this re-shows the host cursor at the
+# guest cursor cell so the popup anchors correctly. (default: false)
+reveal_hidden_cursor = false
+# Cursor shape while a hidden cursor is revealed: "block" | "bar" |
+# "underline". Omit to keep the guest's shape.
+#cursor_shape = "bar"
+# Limit the reveal to panes running these detected agents (manifest names,
+# e.g. "claude"). Empty = every pane.
+agents = []
+# With a CJK IME active, the key after the prefix can be eaten by the IME.
+# These commands run when the pending-prefix state starts/ends, e.g. with
+# im-select (macOS) or fcitx5-remote/ibus (Linux). SPECTRA_PREFIX_PENDING is
+# 1 or 0 in the command's environment.
+#prefix_ascii_command = "im-select com.apple.keylayout.ABC"
+#prefix_restore_command = "im-select com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese"
+
 [hooks]
 session_created = ""
 session_killed = ""

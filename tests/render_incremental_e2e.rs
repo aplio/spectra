@@ -183,6 +183,7 @@ fn sample_frame(cols: usize, row0: &str, row1: &str, cursor: (u16, u16)) -> Rend
         }],
         dividers: vec![],
         focused_cursor: Some(cursor),
+        focused_cursor_hidden: false,
         cursor_style: crossterm::cursor::SetCursorStyle::DefaultUserShape,
     }
 }
@@ -298,6 +299,7 @@ fn tall_frame(cols: usize, rows: &[&str], cursor: (u16, u16)) -> RenderFrame {
         }],
         dividers: vec![],
         focused_cursor: Some(cursor),
+        focused_cursor_hidden: false,
         cursor_style: crossterm::cursor::SetCursorStyle::DefaultUserShape,
     }
 }
@@ -347,6 +349,7 @@ fn split_frame(
             len: left_rows.len(),
         }],
         focused_cursor: Some(cursor),
+        focused_cursor_hidden: false,
         cursor_style: crossterm::cursor::SetCursorStyle::DefaultUserShape,
     }
 }

@@ -1101,6 +1101,31 @@ fn pending_wrap_cleared_by_cursor_movement() {
 }
 
 #[test]
+fn cursor_visibility_tracks_dectcem() {
+    let mut state = TerminalState::new(4, 2);
+    assert!(state.cursor_visible(), "cursor starts visible");
+    state.feed(b"\x1b[?25l");
+    assert!(!state.cursor_visible(), "CSI ?25l hides the cursor");
+    state.feed(b"\x1b[?25h");
+    assert!(state.cursor_visible(), "CSI ?25h shows the cursor");
+}
+
+#[test]
+fn cursor_visibility_survives_alternate_screen_switch() {
+    let mut state = TerminalState::new(4, 2);
+    state.feed(b"\x1b[?25l");
+    state.feed(b"\x1b[?1049h");
+    assert!(
+        !state.cursor_visible(),
+        "DECTCEM is global; entering the alt screen must not reset it"
+    );
+    state.feed(b"\x1b[?1049l");
+    assert!(!state.cursor_visible());
+    state.feed(b"\x1b[?25h");
+    assert!(state.cursor_visible());
+}
+
+#[test]
 fn cursor_style_set_via_decscusr() {
     let mut state = TerminalState::new(10, 2);
     assert_eq!(
@@ -1595,4 +1620,86 @@ fn reflow_height_only_change_pulls_scrollback() {
     assert_eq!(state.row_text(0), "line1 ");
     assert_eq!(state.row_text(1), "line2 ");
     assert_eq!(state.row_text(2), "line3 ");
+}
+
+// ---- CJK wide-char handling ----
+
+#[test]
+fn overwriting_wide_char_continuation_clears_owner() {
+    let mut state = TerminalState::new(4, 2);
+    state.feed("中".as_bytes());
+    // Overwrite the continuation cell (col 1, 1-based col 2).
+    state.feed(b"\x1b[1;2HX");
+    assert_eq!(
+        state.row_text(0),
+        " X  ",
+        "the orphaned owner cell must be blanked"
+    );
+}
+
+#[test]
+fn overwriting_wide_char_owner_clears_continuation() {
+    let mut state = TerminalState::new(4, 2);
+    state.feed("中".as_bytes());
+    // Overwrite the owner cell (col 0).
+    state.feed(b"\x1b[1;1HX");
+    assert_eq!(
+        state.row_text(0),
+        "X   ",
+        "the dangling continuation cell must be blanked"
+    );
+}
+
+#[test]
+fn mixed_width_text_lays_out_cells_with_continuations() {
+    let mut state = TerminalState::new(10, 2);
+    state.feed("a日b本".as_bytes());
+    let row = state.row_cells(0);
+    assert_eq!(row[0].ch, 'a');
+    assert_eq!(row[1].ch, '日');
+    assert_eq!(row[2].ch, '\0', "wide char must own a continuation cell");
+    assert_eq!(row[3].ch, 'b');
+    assert_eq!(row[4].ch, '本');
+    assert_eq!(row[5].ch, '\0');
+    assert_eq!(state.cursor(), (6, 0));
+    assert_eq!(state.row_text(0), "a日b本    ");
+}
+
+#[test]
+fn alt_screen_shrink_blanks_wide_char_split_at_boundary() {
+    let mut state = TerminalState::new(6, 2);
+    state.feed(b"\x1b[?1049h");
+    state.feed("abc中".as_bytes());
+    assert_eq!(state.row_text(0), "abc中 ");
+
+    // Shrinking to 4 columns cuts 中's continuation cell (col 4) off; the
+    // owner at col 3 must not survive as a half-drawn wide char.
+    state.resize(4, 2);
+    assert_eq!(
+        state.row_text(0),
+        "abc ",
+        "an owner whose continuation fell off must be blanked"
+    );
+}
+
+#[test]
+fn reflow_mixed_width_japanese_line_preserves_text() {
+    let mut state = TerminalState::new(24, 4);
+    state.feed("$ echo 日本語のテスト".as_bytes());
+    state.resize(8, 4);
+    let text: String = (0..4)
+        .map(|row| state.row_text(row).trim_end().to_string())
+        .collect::<Vec<_>>()
+        .join("");
+    assert_eq!(
+        text.replace(' ', ""),
+        "$echo日本語のテスト",
+        "shrinking must reflow without dropping or splitting wide chars"
+    );
+
+    // Growing back re-joins the soft-wrapped rows. The pad cell inserted
+    // where 日 could not split across the width-8 boundary stays part of the
+    // logical line (same design as reflow_wide_char_wraps_at_boundary).
+    state.resize(24, 4);
+    assert_eq!(state.row_text(0).trim_end(), "$ echo  日本語のテスト");
 }

@@ -234,6 +234,11 @@ impl TerminalState {
         self.grid.cursor_style
     }
 
+    /// Whether the guest wants the cursor shown (DECTCEM, CSI ?25 h/l).
+    pub fn cursor_visible(&self) -> bool {
+        self.grid.cursor_visible
+    }
+
     pub fn scrollback_text(&self) -> String {
         self.grid.scrollback_text()
     }
@@ -281,6 +286,10 @@ struct TerminalGrid {
     saved_cursor_y: usize,
     saved_style: CellStyle,
     cursor_style: crossterm::cursor::SetCursorStyle,
+    /// Cursor visibility requested via DECTCEM (CSI ?25 h/l). Like real
+    /// terminals this is global, not per-screen: entering or leaving the
+    /// alternate screen does not change it.
+    cursor_visible: bool,
     saved_screen: Option<SavedScreen>,
     /// Bytes to send back to the child process (e.g. cursor position reports).
     response_queue: Vec<Vec<u8>>,

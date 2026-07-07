@@ -13,6 +13,7 @@ impl SessionManager {
 
         let mut panes = Vec::new();
         let mut focused_cursor = None;
+        let mut focused_cursor_hidden = false;
         let mut cursor_style = crossterm::cursor::SetCursorStyle::DefaultUserShape;
 
         for pane_layout in &layout.panes {
@@ -29,6 +30,7 @@ impl SessionManager {
                         let cursor_x = pane_layout.rect.x + cursor.0.min(max_x);
                         let cursor_y = pane_layout.rect.y + visible_cursor_y.min(max_y);
                         focused_cursor = Some((cursor_x as u16, cursor_y as u16));
+                        focused_cursor_hidden = !pane.cursor_visible();
                         cursor_style = pane.cursor_style();
                     }
                 }
@@ -48,6 +50,7 @@ impl SessionManager {
             dividers: layout.dividers,
             focused_cursor,
             cursor_style,
+            focused_cursor_hidden,
         }
     }
 
@@ -63,6 +66,7 @@ impl SessionManager {
 
         let mut panes = Vec::new();
         let mut focused_cursor = None;
+        let mut focused_cursor_hidden = false;
         let mut cursor_style = crossterm::cursor::SetCursorStyle::DefaultUserShape;
 
         for (pane_id, rect) in pane_ids.into_iter().zip(rects.into_iter()) {
@@ -79,6 +83,7 @@ impl SessionManager {
                         let cursor_x = rect.x + cursor.0.min(max_x);
                         let cursor_y = rect.y + visible_cursor_y.min(max_y);
                         focused_cursor = Some((cursor_x as u16, cursor_y as u16));
+                        focused_cursor_hidden = !pane.cursor_visible();
                         cursor_style = pane.cursor_style();
                     }
                 }
@@ -98,6 +103,7 @@ impl SessionManager {
             dividers,
             focused_cursor,
             cursor_style,
+            focused_cursor_hidden,
         }
     }
 
@@ -173,6 +179,7 @@ fn empty_frame() -> RenderFrame {
         dividers: Vec::new(),
         focused_cursor: None,
         cursor_style: crossterm::cursor::SetCursorStyle::DefaultUserShape,
+        focused_cursor_hidden: false,
     }
 }
 

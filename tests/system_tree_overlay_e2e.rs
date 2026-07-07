@@ -149,6 +149,7 @@ fn sample_frame() -> RenderFrame {
         }],
         dividers: vec![],
         focused_cursor: Some((2, 0)),
+        focused_cursor_hidden: false,
         cursor_style: crossterm::cursor::SetCursorStyle::DefaultUserShape,
     }
 }

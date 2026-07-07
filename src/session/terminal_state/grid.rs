@@ -20,6 +20,7 @@ impl TerminalGrid {
             saved_cursor_y: 0,
             saved_style: CellStyle::default(),
             cursor_style: crossterm::cursor::SetCursorStyle::DefaultUserShape,
+            cursor_visible: true,
             saved_screen: None,
             response_queue: Vec::new(),
             insert_mode: false,
@@ -1059,6 +1060,7 @@ impl Perform for TerminalGrid {
             'h' if intermediates == [b'?'] => {
                 for param in params.iter() {
                     match param[0] {
+                        25 => self.cursor_visible = true,
                         47 | 1047 | 1049 => self.enter_alternate_screen(),
                         9 => self.mouse_protocol = MouseProtocol::X10,
                         1000 => self.mouse_protocol = MouseProtocol::Normal,
@@ -1074,6 +1076,7 @@ impl Perform for TerminalGrid {
             'l' if intermediates == [b'?'] => {
                 for param in params.iter() {
                     match param[0] {
+                        25 => self.cursor_visible = false,
                         47 | 1047 | 1049 => self.leave_alternate_screen(),
                         9 | 1000 | 1002 | 1003 => self.mouse_protocol = MouseProtocol::None,
                         1006 => self.mouse_sgr = false,

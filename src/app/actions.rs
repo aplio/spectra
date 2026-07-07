@@ -579,6 +579,7 @@ impl App {
         self.hooks = loaded.hooks.clone();
         self.editor_command = normalize_editor_command(loaded.editor.clone());
         self.agent_notify = loaded.agent.notify;
+        self.ime = loaded.ime.clone();
 
         let suppress_prompt_eol_marker = loaded.shell.suppress_prompt_eol_marker;
         self.session_template.suppress_prompt_eol_marker = suppress_prompt_eol_marker;

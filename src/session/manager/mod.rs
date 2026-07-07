@@ -77,6 +77,10 @@ pub struct RenderFrame {
     pub dividers: Vec<Divider>,
     pub focused_cursor: Option<(u16, u16)>,
     pub cursor_style: crossterm::cursor::SetCursorStyle,
+    /// The focused pane's guest hid its cursor (DECTCEM). `focused_cursor`
+    /// still carries the cell so a client may park the host cursor there for
+    /// IME anchoring, but by default the host cursor stays hidden.
+    pub focused_cursor_hidden: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

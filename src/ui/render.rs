@@ -209,6 +209,7 @@ struct ComposedFrame {
     cells: Vec<StyledCell>,
     cursor: (u16, u16),
     cursor_style: SetCursorStyle,
+    cursor_visible: bool,
 }
 
 impl ComposedFrame {
@@ -221,6 +222,7 @@ impl ComposedFrame {
             cells: vec![StyledCell::default(); width * height],
             cursor: (0, 0),
             cursor_style: SetCursorStyle::DefaultUserShape,
+            cursor_visible: true,
         }
     }
 
@@ -334,12 +336,13 @@ impl FrameRenderer {
         }
 
         reset_style(writer)?;
-        queue!(
-            writer,
-            MoveTo(composed.cursor.0, composed.cursor.1),
-            composed.cursor_style,
-            cursor::Show
-        )?;
+        // The host cursor is parked at the frame cursor cell even when it
+        // stays hidden, so IMEs that anchor their candidate window to the
+        // real cursor keep pointing at the focused pane's cursor.
+        queue!(writer, MoveTo(composed.cursor.0, composed.cursor.1))?;
+        if composed.cursor_visible {
+            queue!(writer, composed.cursor_style, cursor::Show)?;
+        }
         writer.flush()?;
 
         self.previous = Some(BackBuffer::from_composed(&composed));
@@ -480,6 +483,9 @@ fn compose_frame(
     };
     composed.cursor = clamp_cursor(cursor, cols, rows);
     composed.cursor_style = frame.cursor_style;
+    // Overlay text inputs are spectra's own cursor and always show; otherwise
+    // the guest's DECTCEM state for the focused pane decides.
+    composed.cursor_visible = overlay_cursor.is_some() || !frame.focused_cursor_hidden;
 
     composed
 }
@@ -1476,9 +1482,9 @@ mod tests {
     use crate::ui::window_manager::{Divider, DividerOrientation, PaneRect};
 
     use super::{
-        AgentIndicator, DOWN, FrameRenderer, LEFT, RIGHT, SideTreeEntry, SideWindowTree, UP,
-        compose_frame, connected_divider_cells, divider_glyph, fixed_width_cells,
-        focused_pane_border_color, write_styled_cells,
+        AgentIndicator, DOWN, FrameRenderer, LEFT, RIGHT, SideTreeEntry, SideWindowTree,
+        SystemOverlay, UP, compose_frame, connected_divider_cells, divider_glyph,
+        fixed_width_cells, focused_pane_border_color, render_to_writer, write_styled_cells,
     };
 
     #[test]
@@ -1665,6 +1671,7 @@ mod tests {
             panes: Vec::new(),
             dividers: Vec::new(),
             focused_cursor: None,
+            focused_cursor_hidden: false,
             cursor_style: SetCursorStyle::DefaultUserShape,
         };
         let status_style = CellStyle {
@@ -1696,6 +1703,7 @@ mod tests {
             panes: Vec::new(),
             dividers: Vec::new(),
             focused_cursor: None,
+            focused_cursor_hidden: false,
             cursor_style: SetCursorStyle::DefaultUserShape,
         };
         let side = SideWindowTree {
@@ -1739,6 +1747,7 @@ mod tests {
             panes: Vec::new(),
             dividers: Vec::new(),
             focused_cursor: None,
+            focused_cursor_hidden: false,
             cursor_style: SetCursorStyle::DefaultUserShape,
         };
         let side = SideWindowTree {
@@ -1838,6 +1847,7 @@ mod tests {
             panes: Vec::new(),
             dividers: Vec::new(),
             focused_cursor: None,
+            focused_cursor_hidden: false,
             cursor_style: SetCursorStyle::DefaultUserShape,
         };
         let side = SideWindowTree {
@@ -2129,6 +2139,7 @@ mod tests {
                 },
             ],
             focused_cursor: Some((0, 0)),
+            focused_cursor_hidden: false,
             cursor_style: SetCursorStyle::DefaultUserShape,
         };
 
@@ -2176,6 +2187,7 @@ mod tests {
             }],
             dividers: Vec::new(),
             focused_cursor: Some((0, 0)),
+            focused_cursor_hidden: false,
             cursor_style: SetCursorStyle::DefaultUserShape,
         };
 
@@ -2187,6 +2199,104 @@ mod tests {
                 assert_ne!(composed.row_slice(y)[x].style.fg, Some(focused_color));
             }
         }
+    }
+
+    #[test]
+    fn hidden_focused_cursor_keeps_host_cursor_hidden_but_parked() {
+        let frame = RenderFrame {
+            panes: vec![RenderPane {
+                pane_id: 1,
+                rect: PaneRect {
+                    x: 0,
+                    y: 0,
+                    width: 4,
+                    height: 3,
+                },
+                view_row_origin: 0,
+                rows: vec![plain_cells("aaaa")],
+                cursor: (2, 0),
+                focused: true,
+            }],
+            dividers: Vec::new(),
+            focused_cursor: Some((2, 0)),
+            focused_cursor_hidden: true,
+            cursor_style: SetCursorStyle::DefaultUserShape,
+        };
+
+        let mut out = Vec::new();
+        render_to_writer(&mut out, &frame, "status", 10, 5, true, None, None)
+            .expect("render hidden cursor frame");
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            !text.contains("\x1b[?25h"),
+            "host cursor must stay hidden when the guest hid it: {text:?}"
+        );
+        // The cursor is still parked at the pane cursor cell for IMEs that
+        // anchor to the real cursor position (final MoveTo is 1-based).
+        assert!(
+            text.ends_with("\x1b[1;3H"),
+            "host cursor should be parked at the hidden cursor cell: {text:?}"
+        );
+    }
+
+    #[test]
+    fn visible_focused_cursor_shows_host_cursor() {
+        let frame = RenderFrame {
+            panes: Vec::new(),
+            dividers: Vec::new(),
+            focused_cursor: Some((0, 0)),
+            focused_cursor_hidden: false,
+            cursor_style: SetCursorStyle::DefaultUserShape,
+        };
+
+        let mut out = Vec::new();
+        render_to_writer(&mut out, &frame, "status", 10, 5, true, None, None)
+            .expect("render visible cursor frame");
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.contains("\x1b[?25h"),
+            "host cursor should be shown when the guest cursor is visible: {text:?}"
+        );
+    }
+
+    #[test]
+    fn overlay_cursor_shows_even_when_guest_hid_cursor() {
+        let frame = RenderFrame {
+            panes: Vec::new(),
+            dividers: Vec::new(),
+            focused_cursor: Some((0, 0)),
+            focused_cursor_hidden: true,
+            cursor_style: SetCursorStyle::DefaultUserShape,
+        };
+        let overlay = SystemOverlay {
+            title: "tree".to_string(),
+            query: String::new(),
+            query_cursor_pos: 0,
+            query_active: true,
+            candidates: vec!["one".to_string()],
+            selected: 0,
+            selected_cursor_pos: None,
+            preview_lines: vec!["preview".to_string()],
+            preview_from_tail: false,
+        };
+
+        let mut out = Vec::new();
+        render_to_writer(
+            &mut out,
+            &frame,
+            "status",
+            40,
+            12,
+            true,
+            Some(&overlay),
+            None,
+        )
+        .expect("render overlay frame");
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.contains("\x1b[?25h"),
+            "overlay text input cursor must show regardless of guest DECTCEM: {text:?}"
+        );
     }
 
     #[test]
@@ -2463,6 +2573,7 @@ mod tests {
             }],
             dividers: Vec::new(),
             focused_cursor: Some((0, 0)),
+            focused_cursor_hidden: false,
             cursor_style: SetCursorStyle::DefaultUserShape,
         }
     }

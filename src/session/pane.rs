@@ -238,6 +238,11 @@ impl Pane {
         self.terminal.cursor_style()
     }
 
+    /// Whether the guest wants the cursor shown (DECTCEM, CSI ?25 h/l).
+    pub fn cursor_visible(&self) -> bool {
+        self.terminal.cursor_visible()
+    }
+
     pub fn scrollback_text(&self) -> String {
         self.terminal.scrollback_text()
     }

@@ -524,6 +524,7 @@ pub(super) struct RuntimeUiConfig {
     /// Whether the window-tree sidebar starts open on session start.
     pub sidebar_default_open: bool,
     pub sidebar_formats: SidebarFormats,
+    pub ime: config::ImeConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

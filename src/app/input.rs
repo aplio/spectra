@@ -8,6 +8,15 @@ const MULTI_CLICK_RADIUS_CELLS: usize = 1;
 
 impl App {
     pub(super) fn handle_key(&mut self, key: KeyEvent) -> io::Result<AppSignal> {
+        let result = self.handle_key_inner(key);
+        // Every path that arms or clears the pending prefix goes through a
+        // key, so syncing here covers bound commands, Esc, pass-through and
+        // sticky exits alike.
+        self.sync_prefix_input_source();
+        result
+    }
+
+    fn handle_key_inner(&mut self, key: KeyEvent) -> io::Result<AppSignal> {
         if self.current_session_mut().reset_focused_pane_view_scroll() {
             self.needs_render = true;
         }
@@ -718,11 +727,16 @@ impl App {
                 let cells = session
                     .pane_absolute_row_cells(sel.pane_id, abs_row)
                     .unwrap_or_default();
-                let from = if abs_row == start_abs_row {
+                let mut from = if abs_row == start_abs_row {
                     start_col
                 } else {
                     0
                 };
+                // A selection starting on a wide char's continuation cell
+                // must still copy the char, which lives in the owner cell.
+                while from > 0 && cells.get(from).is_some_and(|cell| cell.ch == '\0') {
+                    from -= 1;
+                }
                 let to = if abs_row == end_abs_row {
                     (end_col + 1).min(cells.len())
                 } else {
