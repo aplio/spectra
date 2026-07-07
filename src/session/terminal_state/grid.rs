@@ -25,7 +25,12 @@ impl TerminalGrid {
             insert_mode: false,
             bracketed_paste: false,
             sync_output_since: None,
-            last_prompt_abs_row: None,
+            semantic_prompt: SemanticPrompt::default(),
+            progress: None,
+            palette_overrides: std::collections::HashMap::new(),
+            default_fg_override: None,
+            default_bg_override: None,
+            cursor_color_override: None,
             mouse_protocol: MouseProtocol::None,
             mouse_sgr: false,
             allow_passthrough,
@@ -711,6 +716,187 @@ impl TerminalGrid {
         }
         payload
     }
+
+    /// ConEmu OSC 9;4;st;pr progress report. Unknown states are dropped;
+    /// consecutive identical reports collapse into one event.
+    fn handle_conemu_progress(&mut self, params: &[&[u8]]) {
+        fn param_u8(params: &[&[u8]], index: usize) -> Option<u8> {
+            std::str::from_utf8(params.get(index)?).ok()?.parse().ok()
+        }
+        let state = param_u8(params, 2).unwrap_or(0);
+        let percent = param_u8(params, 3).map(|value| value.min(100));
+        let progress = match state {
+            0 => None,
+            1 => Some(ProgressReport {
+                state: ProgressState::Normal,
+                percent: Some(percent.unwrap_or(0)),
+            }),
+            2 => Some(ProgressReport {
+                state: ProgressState::Error,
+                percent,
+            }),
+            3 => Some(ProgressReport {
+                state: ProgressState::Indeterminate,
+                percent: None,
+            }),
+            4 => Some(ProgressReport {
+                state: ProgressState::Paused,
+                percent,
+            }),
+            _ => return,
+        };
+        if self.progress != progress {
+            self.progress = progress;
+            self.terminal_events
+                .push(TerminalEvent::ProgressChanged { progress });
+        }
+    }
+
+    /// Whether any OSC 4/10/11 color override is active; fast-path guard
+    /// so panes without overrides pay nothing per cell.
+    fn has_color_overrides(&self) -> bool {
+        !self.palette_overrides.is_empty()
+            || self.default_fg_override.is_some()
+            || self.default_bg_override.is_some()
+    }
+
+    /// Apply pane-local OSC 4/10/11 color overrides to cells being read
+    /// for display. Indexed colors map through the palette overrides and
+    /// cells without an explicit fg/bg take the OSC 10/11 defaults. Called
+    /// only at the read-for-display boundary ([`TerminalState`]) so stored
+    /// cells (grid, scrollback) keep their original colors and a later
+    /// OSC 104/110/111 reset recolors them retroactively, like xterm.
+    pub(super) fn resolve_cell_colors(&self, mut cells: Vec<StyledCell>) -> Vec<StyledCell> {
+        if !self.has_color_overrides() {
+            return cells;
+        }
+        for cell in &mut cells {
+            cell.style.fg = self.resolve_color(cell.style.fg, self.default_fg_override);
+            cell.style.bg = self.resolve_color(cell.style.bg, self.default_bg_override);
+        }
+        cells
+    }
+
+    fn resolve_color(
+        &self,
+        color: Option<Color>,
+        default_override: Option<(u8, u8, u8)>,
+    ) -> Option<Color> {
+        match color {
+            Some(Color::AnsiValue(index)) => match self.palette_overrides.get(&index) {
+                Some(&(r, g, b)) => Some(Color::Rgb { r, g, b }),
+                None => color,
+            },
+            None => default_override.map(|(r, g, b)| Color::Rgb { r, g, b }),
+            other => other,
+        }
+    }
+}
+
+/// Parse a palette index parameter (OSC 4/104). Values above 255 (xterm's
+/// "special colors") are rejected.
+fn parse_palette_index(raw: &[u8]) -> Option<u8> {
+    std::str::from_utf8(raw).ok()?.parse::<u8>().ok()
+}
+
+/// Parse an XParseColor-style color spec: `rgb:R/G/B` with 1-4 hex digits
+/// per channel (scaled to 8 bits), or `#RGB`/`#RRGGBB`/`#RRRGGGBBB`/
+/// `#RRRRGGGGBBBB` (digits are the most significant bits). Named X11
+/// colors are not supported.
+fn parse_color_spec(spec: &[u8]) -> Option<(u8, u8, u8)> {
+    let spec = std::str::from_utf8(spec).ok()?.trim();
+    if let Some(rest) = spec.strip_prefix("rgb:") {
+        let mut channels = rest.split('/');
+        let r = parse_scaled_hex_channel(channels.next()?)?;
+        let g = parse_scaled_hex_channel(channels.next()?)?;
+        let b = parse_scaled_hex_channel(channels.next()?)?;
+        if channels.next().is_some() {
+            return None;
+        }
+        return Some((r, g, b));
+    }
+    let rest = spec.strip_prefix('#')?;
+    let digits_per_channel = match rest.len() {
+        3 => 1,
+        6 => 2,
+        9 => 3,
+        12 => 4,
+        _ => return None,
+    };
+    let channel = |index: usize| -> Option<u8> {
+        let start = index * digits_per_channel;
+        let text = rest.get(start..start + digits_per_channel)?;
+        let value = u16::from_str_radix(text, 16).ok()?;
+        Some((value << (4 * (4 - digits_per_channel)) >> 8) as u8)
+    };
+    Some((channel(0)?, channel(1)?, channel(2)?))
+}
+
+/// Scale an `rgb:` channel of 1-4 hex digits to 8 bits (XParseColor
+/// scaling: the value is a fraction of the channel's maximum).
+fn parse_scaled_hex_channel(text: &str) -> Option<u8> {
+    if text.is_empty() || text.len() > 4 {
+        return None;
+    }
+    let value = u32::from_str_radix(text, 16).ok()?;
+    let max = (1u32 << (4 * text.len() as u32)) - 1;
+    Some(((value * 255 + max / 2) / max) as u8)
+}
+
+/// The xterm default 256-color palette, used to answer OSC 4 queries for
+/// indices the guest never redefined (the host terminal's real palette is
+/// unknowable from inside a multiplexer).
+fn default_palette_color(index: u8) -> (u8, u8, u8) {
+    const BASE: [(u8, u8, u8); 16] = [
+        (0, 0, 0),
+        (205, 0, 0),
+        (0, 205, 0),
+        (205, 205, 0),
+        (0, 0, 238),
+        (205, 0, 205),
+        (0, 205, 205),
+        (229, 229, 229),
+        (127, 127, 127),
+        (255, 0, 0),
+        (0, 255, 0),
+        (255, 255, 0),
+        (92, 92, 255),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
+    ];
+    match index {
+        0..=15 => BASE[index as usize],
+        16..=231 => {
+            let cube = index as usize - 16;
+            let level = |value: usize| {
+                if value == 0 {
+                    0
+                } else {
+                    (55 + 40 * value) as u8
+                }
+            };
+            (level(cube / 36), level(cube / 6 % 6), level(cube % 6))
+        }
+        _ => {
+            let gray = (8 + 10 * (index as usize - 232)) as u8;
+            (gray, gray, gray)
+        }
+    }
+}
+
+/// Build an OSC color reply (`OSC {prefix};rgb:rrrr/gggg/bbbb`) in xterm's
+/// 16-bit-per-channel form (each 8-bit channel byte doubled). The
+/// terminator mirrors the query's (BEL or ST).
+fn osc_color_reply(prefix: &str, (r, g, b): (u8, u8, u8), bell_terminated: bool) -> Vec<u8> {
+    let mut response =
+        format!("\x1b]{prefix};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}").into_bytes();
+    if bell_terminated {
+        response.push(0x07);
+    } else {
+        response.extend_from_slice(b"\x1b\\");
+    }
+    response
 }
 
 fn parse_osc7_path(raw: &str) -> Option<String> {
@@ -849,51 +1035,121 @@ impl Perform for TerminalGrid {
                     self.terminal_events.push(TerminalEvent::CwdChanged { cwd });
                 }
             }
-            b"10" | b"11" => {
-                // OSC 10/11: default foreground/background color. Only the
-                // query form ("?") is answered, using the colors mirrored
-                // from the most recently attached client's host terminal
-                // (reported once in the Hello handshake and cached
-                // server-side). When no color is cached the query stays
-                // unanswered, preserving the previous behaviour (guest
-                // falls back to its own timeout). Guests *setting* these
-                // colors are ignored in v1: honouring a set would require
-                // repainting the host terminal and restoring it on detach.
-                if params.get(1).copied() != Some(b"?".as_slice()) {
+            b"10" | b"11" | b"12" => {
+                // OSC 10/11/12: default foreground/background/cursor color.
+                // A set stores a pane-local override: fg/bg are applied at
+                // render time to cells without an explicit color, the cursor
+                // color is forwarded to the host while the pane is focused.
+                // Queries answer from the override first; without one, 10/11
+                // fall back to the colors mirrored from the most recently
+                // attached client's host terminal (reported once in the
+                // Hello handshake and cached server-side) and 12 stays
+                // unanswered (the host cursor color is unknown; the guest
+                // falls back to its own timeout).
+                let code: u16 = if *ps == b"10" {
+                    10
+                } else if *ps == b"11" {
+                    11
+                } else {
+                    12
+                };
+                let spec: &[u8] = params.get(1).copied().unwrap_or(b"");
+                if spec == b"?" {
+                    let color = match code {
+                        10 => self.default_fg_override.or(self.host_colors.fg),
+                        11 => self.default_bg_override.or(self.host_colors.bg),
+                        _ => self.cursor_color_override,
+                    };
+                    let Some(rgb) = color else {
+                        return;
+                    };
+                    self.response_queue.push(osc_color_reply(
+                        &code.to_string(),
+                        rgb,
+                        bell_terminated,
+                    ));
+                } else if let Some(rgb) = parse_color_spec(spec) {
+                    match code {
+                        10 => self.default_fg_override = Some(rgb),
+                        11 => self.default_bg_override = Some(rgb),
+                        _ => self.cursor_color_override = Some(rgb),
+                    }
+                }
+            }
+            b"110" | b"111" | b"112" => {
+                // Reset the corresponding OSC 10/11/12 override.
+                match *ps {
+                    b"110" => self.default_fg_override = None,
+                    b"111" => self.default_bg_override = None,
+                    _ => self.cursor_color_override = None,
+                }
+            }
+            b"4" => {
+                // OSC 4: 256-color palette set/query, as pane-local
+                // overrides resolved at render time. Parameters come in
+                // (index, spec) pairs; "?" answers with the override or the
+                // xterm default palette (the host's real palette is
+                // unknowable from inside a multiplexer). Invalid pairs are
+                // skipped, matching xterm.
+                for pair in params[1..].chunks_exact(2) {
+                    let (raw_index, spec) = (pair[0], pair[1]);
+                    let Some(palette_index) = parse_palette_index(raw_index) else {
+                        continue;
+                    };
+                    if spec == b"?" {
+                        let rgb = self
+                            .palette_overrides
+                            .get(&palette_index)
+                            .copied()
+                            .unwrap_or_else(|| default_palette_color(palette_index));
+                        self.response_queue.push(osc_color_reply(
+                            &format!("4;{palette_index}"),
+                            rgb,
+                            bell_terminated,
+                        ));
+                    } else if let Some(rgb) = parse_color_spec(spec) {
+                        self.palette_overrides.insert(palette_index, rgb);
+                    }
+                }
+            }
+            b"104" => {
+                // OSC 104: palette reset — all overrides without
+                // parameters, otherwise the listed indices.
+                if params.len() <= 1 {
+                    self.palette_overrides.clear();
                     return;
                 }
-                let color = if *ps == b"10" {
-                    self.host_colors.fg
-                } else {
-                    self.host_colors.bg
-                };
-                let Some((r, g, b)) = color else {
-                    return;
-                };
-                // 16-bit-per-channel reply form: each 8-bit channel byte is
-                // doubled (0xab -> "abab"), matching xterm's replies. The
-                // terminator mirrors the query's (BEL or ST).
-                let code = if *ps == b"10" { 10 } else { 11 };
-                let mut response =
-                    format!("\x1b]{code};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}")
-                        .into_bytes();
-                if bell_terminated {
-                    response.push(0x07);
-                } else {
-                    response.extend_from_slice(b"\x1b\\");
+                for raw_index in &params[1..] {
+                    if let Some(palette_index) = parse_palette_index(raw_index) {
+                        self.palette_overrides.remove(&palette_index);
+                    }
                 }
-                self.response_queue.push(response);
             }
             b"133" => {
-                // OSC 133 semantic prompt marks (shell integration). Only
-                // the prompt-start mark ("A") is tracked for now; it gives
-                // downstream consumers (e.g. agent detection) the location
-                // of the last shell prompt.
-                if params
-                    .get(1)
-                    .is_some_and(|kind| kind.first() == Some(&b'A'))
-                {
-                    self.last_prompt_abs_row = Some(self.scrollback.len() + self.cursor_y);
+                // OSC 133 semantic prompt marks (shell integration):
+                // A = prompt start, B = input start, C = command output
+                // start, D = command end with an optional exit code. The
+                // marks give downstream consumers (agent detection, prompt
+                // navigation) the location of the last prompt/command and
+                // whether a command is currently running.
+                let abs_row = self.scrollback.len() + self.cursor_y;
+                match params.get(1).and_then(|kind| kind.first()) {
+                    Some(b'A') => self.semantic_prompt.prompt_abs_row = Some(abs_row),
+                    Some(b'B') => self.semantic_prompt.input_abs_row = Some(abs_row),
+                    Some(b'C') => {
+                        self.semantic_prompt.output_abs_row = Some(abs_row);
+                        self.semantic_prompt.command_running = true;
+                    }
+                    Some(b'D') => {
+                        self.semantic_prompt.command_running = false;
+                        // `133;D` without a code means "ended, code
+                        // unknown"; a stale code must not survive it.
+                        self.semantic_prompt.last_exit_code = params
+                            .get(2)
+                            .and_then(|code| std::str::from_utf8(code).ok())
+                            .and_then(|code| code.parse::<i32>().ok());
+                    }
+                    _ => {}
                 }
             }
             b"52" => {
@@ -915,6 +1171,56 @@ impl Perform for TerminalGrid {
                 }
                 self.terminal_events
                     .push(TerminalEvent::ClipboardSet { text });
+            }
+            b"9" => {
+                // OSC 9 is two overlapping protocols. A first argument of
+                // 1-12 selects the ConEmu subcommand namespace (only 9;4
+                // progress is handled, the rest are dropped); anything else
+                // is an iTerm2-style desktop notification, forwarded to the
+                // attached clients' host terminals. The ambiguity is
+                // resolved the same way ghostty does it, so a notification
+                // body that happens to be a small number is misread as
+                // ConEmu there too.
+                let conemu_subcommand = params
+                    .get(1)
+                    .and_then(|sub| std::str::from_utf8(sub).ok())
+                    .and_then(|sub| sub.parse::<u8>().ok())
+                    .filter(|sub| (1..=12).contains(sub));
+                match conemu_subcommand {
+                    Some(4) => self.handle_conemu_progress(params),
+                    Some(_) => {}
+                    None => {
+                        let payload = Self::osc_payload_bytes(params, 1);
+                        let raw = String::from_utf8_lossy(&payload);
+                        if let Some(message) = sanitize_display_text(&raw) {
+                            self.terminal_events
+                                .push(TerminalEvent::Notification { message });
+                        }
+                    }
+                }
+            }
+            b"777" => {
+                // OSC 777;notify;title;body (rxvt extension). Other 777
+                // subcommands are not supported.
+                if params.get(1).copied() != Some(b"notify".as_slice()) {
+                    return;
+                }
+                let title =
+                    String::from_utf8_lossy(params.get(2).copied().unwrap_or(b"")).into_owned();
+                // The body may itself contain ';'.
+                let body =
+                    String::from_utf8_lossy(&Self::osc_payload_bytes(params, 3)).into_owned();
+                let raw = if body.is_empty() {
+                    title
+                } else if title.is_empty() {
+                    body
+                } else {
+                    format!("{title}: {body}")
+                };
+                if let Some(message) = sanitize_display_text(&raw) {
+                    self.terminal_events
+                        .push(TerminalEvent::Notification { message });
+                }
             }
             _ => {}
         }

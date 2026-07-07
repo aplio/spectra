@@ -79,6 +79,52 @@ pub enum TerminalEvent {
     ClipboardSet {
         text: String,
     },
+    /// The guest requested a desktop notification (OSC 9 iTerm2-style or
+    /// OSC 777;notify).
+    Notification {
+        message: String,
+    },
+    /// The guest reported command progress (ConEmu OSC 9;4). `None` removes
+    /// a previously shown progress indicator.
+    ProgressChanged {
+        progress: Option<ProgressReport>,
+    },
+}
+
+/// Semantic prompt / shell integration state reported via OSC 133. Rows are
+/// absolute (scrollback + viewport).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SemanticPrompt {
+    /// Row of the most recent prompt start (133;A).
+    pub prompt_abs_row: Option<usize>,
+    /// Row of the most recent input start (133;B).
+    pub input_abs_row: Option<usize>,
+    /// Row of the most recent command-output start (133;C).
+    pub output_abs_row: Option<usize>,
+    /// A 133;C was seen without a matching 133;D yet.
+    pub command_running: bool,
+    /// Exit code carried by the most recent 133;D, when present.
+    pub last_exit_code: Option<i32>,
+}
+
+/// Kind of a ConEmu OSC 9;4 progress report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressState {
+    /// `9;4;1;pr` — determinate progress.
+    Normal,
+    /// `9;4;2[;pr]` — error state.
+    Error,
+    /// `9;4;3` — indeterminate (busy spinner).
+    Indeterminate,
+    /// `9;4;4[;pr]` — paused / warning.
+    Paused,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgressReport {
+    pub state: ProgressState,
+    /// 0-100. `None` for states reported without a percentage.
+    pub percent: Option<u8>,
 }
 
 /// Upper bound for an inbound OSC 52 base64 payload (~256 KiB of decoded
@@ -195,7 +241,22 @@ impl TerminalState {
     /// Absolute row (scrollback + viewport) of the most recent OSC 133;A
     /// shell prompt mark, if the guest shell reports semantic prompts.
     pub fn last_prompt_abs_row(&self) -> Option<usize> {
-        self.grid.last_prompt_abs_row
+        self.grid.semantic_prompt.prompt_abs_row
+    }
+
+    /// Full semantic prompt state (OSC 133 A/B/C/D marks).
+    pub fn semantic_prompt(&self) -> SemanticPrompt {
+        self.grid.semantic_prompt
+    }
+
+    /// Progress reported by the guest via ConEmu OSC 9;4, if active.
+    pub fn progress(&self) -> Option<ProgressReport> {
+        self.grid.progress
+    }
+
+    /// Cursor color set by the guest via OSC 12, if any.
+    pub fn cursor_color(&self) -> Option<(u8, u8, u8)> {
+        self.grid.cursor_color_override
     }
 
     pub fn row_text(&self, row: usize) -> String {
@@ -203,11 +264,12 @@ impl TerminalState {
     }
 
     pub fn row_cells(&self, row: usize) -> Vec<StyledCell> {
-        self.grid.row_cells(row)
+        self.grid.resolve_cell_colors(self.grid.row_cells(row))
     }
 
     pub fn absolute_row_cells(&self, absolute_row: usize) -> Vec<StyledCell> {
-        self.grid.absolute_row_cells(absolute_row)
+        self.grid
+            .resolve_cell_colors(self.grid.absolute_row_cells(absolute_row))
     }
 
     pub fn history_len(&self) -> usize {
@@ -243,7 +305,11 @@ impl TerminalState {
     }
 
     pub fn history_cells(&self) -> Vec<Vec<StyledCell>> {
-        self.grid.history_cells()
+        self.grid
+            .history_cells()
+            .into_iter()
+            .map(|cells| self.grid.resolve_cell_colors(cells))
+            .collect()
     }
 
     pub fn history_tail_lines(&self, max_lines: usize) -> Vec<String> {
@@ -294,9 +360,22 @@ struct TerminalGrid {
     /// flushed to clients. The timestamp bounds the hold so a misbehaving
     /// guest cannot freeze rendering.
     sync_output_since: Option<std::time::Instant>,
-    /// Absolute row (scrollback + viewport) of the most recent shell prompt
-    /// reported via OSC 133;A (semantic prompt / shell integration).
-    last_prompt_abs_row: Option<usize>,
+    /// Semantic prompt marks reported via OSC 133 (shell integration).
+    semantic_prompt: SemanticPrompt,
+    /// Progress reported via ConEmu OSC 9;4, if any is active.
+    progress: Option<ProgressReport>,
+    /// Palette entries redefined by the guest via OSC 4 (index → RGB).
+    /// Resolved when cells are read for rendering, so overrides stay
+    /// pane-local and never touch the host terminal's palette.
+    palette_overrides: std::collections::HashMap<u8, (u8, u8, u8)>,
+    /// Default foreground set by the guest via OSC 10, applied at render
+    /// time to cells without an explicit foreground.
+    default_fg_override: Option<(u8, u8, u8)>,
+    /// Default background set by the guest via OSC 11.
+    default_bg_override: Option<(u8, u8, u8)>,
+    /// Cursor color set by the guest via OSC 12; forwarded to the host
+    /// terminal while this pane is focused.
+    cursor_color_override: Option<(u8, u8, u8)>,
     /// Mouse reporting level requested via DECSET 9/1000/1002/1003.
     mouse_protocol: MouseProtocol,
     /// SGR mouse encoding (DECSET 1006). Without it the legacy X10 byte

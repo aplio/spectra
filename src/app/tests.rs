@@ -1061,6 +1061,42 @@ fn tick_queues_tmux_passthrough_for_each_attached_client_on_session() {
 }
 
 #[test]
+fn guest_osc9_notification_is_broadcast_to_each_attached_client() {
+    let (mut app, _) = build_recording_app_with_output(vec![b"\x1b]9;build done\x07".to_vec()]);
+    let remote_client_id = 43;
+    app.register_client(remote_client_id, 80, 24);
+
+    app.tick();
+
+    assert_eq!(
+        app.take_pending_passthrough_ansi_for_client(super::LOCAL_CLIENT_ID),
+        vec!["\x1b]9;build done\x07".to_string()]
+    );
+    assert_eq!(
+        app.take_pending_passthrough_ansi_for_client(remote_client_id),
+        vec!["\x1b]9;build done\x07".to_string()]
+    );
+}
+
+#[test]
+fn guest_progress_report_is_broadcast_and_removed() {
+    let (mut app, _) = build_recording_app_with_output(vec![
+        b"\x1b]9;4;1;55\x07".to_vec(),
+        b"\x1b]9;4;0\x07".to_vec(),
+    ]);
+
+    app.tick();
+
+    assert_eq!(
+        app.take_pending_passthrough_ansi_for_client(super::LOCAL_CLIENT_ID),
+        vec![
+            "\x1b]9;4;1;55\x07".to_string(),
+            "\x1b]9;4;0\x07".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn disabling_passthrough_stops_forwarding_tmux_wrapped_sequences() {
     let (mut app, _) = build_recording_app_with_output(vec![
         b"\x1bPtmux;\x1b\x1b]52;c;aGVsbG8=\x07\x1b\\".to_vec(),

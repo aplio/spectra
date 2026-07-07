@@ -183,6 +183,21 @@ impl Pane {
         self.terminal.kitty_keyboard_flags()
     }
 
+    /// Semantic prompt state reported via OSC 133 (shell integration).
+    pub fn semantic_prompt(&self) -> crate::session::terminal_state::SemanticPrompt {
+        self.terminal.semantic_prompt()
+    }
+
+    /// Progress reported by the guest via ConEmu OSC 9;4, if active.
+    pub fn progress(&self) -> Option<crate::session::terminal_state::ProgressReport> {
+        self.terminal.progress()
+    }
+
+    /// Cursor color set by the guest via OSC 12, if any.
+    pub fn cursor_color(&self) -> Option<(u8, u8, u8)> {
+        self.terminal.cursor_color()
+    }
+
     pub fn wants_mouse_reporting(&self) -> bool {
         self.terminal.mouse_protocol() != crate::session::terminal_state::MouseProtocol::None
     }

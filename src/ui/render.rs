@@ -179,6 +179,9 @@ impl SidebarRect {
 
 pub struct FrameRenderer {
     previous: Option<BackBuffer>,
+    /// Cursor color last forwarded to the host terminal (guest OSC 12).
+    /// `None` after an OSC 112 reset or when never set.
+    cursor_color: Option<(u8, u8, u8)>,
 }
 
 #[derive(Debug, Clone)]
@@ -268,7 +271,10 @@ impl Default for FrameRenderer {
 
 impl FrameRenderer {
     pub fn new() -> Self {
-        Self { previous: None }
+        Self {
+            previous: None,
+            cursor_color: None,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -334,6 +340,17 @@ impl FrameRenderer {
         }
 
         reset_style(writer)?;
+        // Follow the focused pane's OSC 12 cursor color on the host,
+        // restoring the host default (OSC 112) when the pane clears it or
+        // focus moves to a pane without one.
+        if frame.cursor_color != self.cursor_color {
+            let sequence = match frame.cursor_color {
+                Some(rgb) => crate::io::terminal::osc12_cursor_color_sequence(rgb),
+                None => crate::io::terminal::osc112_reset_cursor_color_sequence(),
+            };
+            writer.write_all(sequence.as_bytes())?;
+            self.cursor_color = frame.cursor_color;
+        }
         queue!(
             writer,
             MoveTo(composed.cursor.0, composed.cursor.1),
@@ -1666,6 +1683,7 @@ mod tests {
             dividers: Vec::new(),
             focused_cursor: None,
             cursor_style: SetCursorStyle::DefaultUserShape,
+            cursor_color: None,
         };
         let status_style = CellStyle {
             fg: Some(Color::Rgb {
@@ -1697,6 +1715,7 @@ mod tests {
             dividers: Vec::new(),
             focused_cursor: None,
             cursor_style: SetCursorStyle::DefaultUserShape,
+            cursor_color: None,
         };
         let side = SideWindowTree {
             title: "windows".to_string(),
@@ -1740,6 +1759,7 @@ mod tests {
             dividers: Vec::new(),
             focused_cursor: None,
             cursor_style: SetCursorStyle::DefaultUserShape,
+            cursor_color: None,
         };
         let side = SideWindowTree {
             title: "windows".to_string(),
@@ -1839,6 +1859,7 @@ mod tests {
             dividers: Vec::new(),
             focused_cursor: None,
             cursor_style: SetCursorStyle::DefaultUserShape,
+            cursor_color: None,
         };
         let side = SideWindowTree {
             title: "windows".to_string(),
@@ -2130,6 +2151,7 @@ mod tests {
             ],
             focused_cursor: Some((0, 0)),
             cursor_style: SetCursorStyle::DefaultUserShape,
+            cursor_color: None,
         };
 
         let composed = compose_frame(&frame, "status", CellStyle::default(), 10, 5, None, None);
@@ -2177,6 +2199,7 @@ mod tests {
             dividers: Vec::new(),
             focused_cursor: Some((0, 0)),
             cursor_style: SetCursorStyle::DefaultUserShape,
+            cursor_color: None,
         };
 
         let composed = compose_frame(&frame, "status", CellStyle::default(), 10, 5, None, None);
@@ -2464,6 +2487,7 @@ mod tests {
             dividers: Vec::new(),
             focused_cursor: Some((0, 0)),
             cursor_style: SetCursorStyle::DefaultUserShape,
+            cursor_color: None,
         }
     }
 

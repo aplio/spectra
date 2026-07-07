@@ -860,6 +860,8 @@ impl App {
 
         let mut changed = false;
         let mut clipboard_texts = Vec::new();
+        let mut notifications = Vec::new();
+        let mut progress_updates = Vec::new();
         for pane_event in events {
             let pane_id = pane_event.pane_id;
             match pane_event.event {
@@ -873,6 +875,14 @@ impl App {
                     clipboard_texts.push(text);
                     continue;
                 }
+                TerminalEvent::Notification { message } => {
+                    notifications.push(message);
+                    continue;
+                }
+                TerminalEvent::ProgressChanged { progress } => {
+                    progress_updates.push(progress);
+                    continue;
+                }
             }
 
             let auto_name = Self::resolve_auto_pane_name(managed, pane_id);
@@ -884,6 +894,12 @@ impl App {
 
         for text in clipboard_texts {
             self.broadcast_clipboard_to_clients(&text);
+        }
+        for message in notifications {
+            self.broadcast_notification_to_clients(&message);
+        }
+        for progress in progress_updates {
+            self.broadcast_progress_to_clients(progress);
         }
 
         changed
@@ -906,6 +922,21 @@ impl App {
     /// drains on every pass.
     fn broadcast_notification_to_clients(&mut self, message: &str) {
         let sequence = crate::io::terminal::osc9_notification_sequence(message);
+        self.view.pending_passthrough_ansi.push(sequence.clone());
+        for state in self.inactive_client_states.values_mut() {
+            state.pending_passthrough_ansi.push(sequence.clone());
+        }
+    }
+
+    /// Queue a ConEmu OSC 9;4 progress frame for every attached client's
+    /// host terminal. Reports from any pane are forwarded (most recent
+    /// wins) so a finishing command's remove always reaches the host;
+    /// concurrent progress in multiple panes may interleave.
+    fn broadcast_progress_to_clients(
+        &mut self,
+        progress: Option<crate::session::terminal_state::ProgressReport>,
+    ) {
+        let sequence = crate::io::terminal::osc94_progress_sequence(progress);
         self.view.pending_passthrough_ansi.push(sequence.clone());
         for state in self.inactive_client_states.values_mut() {
             state.pending_passthrough_ansi.push(sequence.clone());

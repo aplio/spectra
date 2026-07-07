@@ -86,6 +86,10 @@ pub struct RenderFrame {
     pub dividers: Vec<Divider>,
     pub focused_cursor: Option<(u16, u16)>,
     pub cursor_style: crossterm::cursor::SetCursorStyle,
+    /// Cursor color requested by the focused pane's guest via OSC 12;
+    /// forwarded to the host terminal (and reset via OSC 112) by the
+    /// renderer.
+    pub cursor_color: Option<(u8, u8, u8)>,
 }
 
 #[derive(Debug, Clone, Serialize)]
