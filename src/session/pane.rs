@@ -120,9 +120,21 @@ impl Pane {
         } else {
             None
         };
-        for chunk in self.backend.poll_output() {
-            self.terminal.feed(&chunk);
-            self.push_replay_tail(&chunk);
+        // Coalesce every queued chunk into a single feed so the per-feed
+        // costs (passthrough filtering, event/passthrough drains, replay
+        // bookkeeping) are paid once per poll instead of once per PTY read.
+        let chunks = self.backend.poll_output();
+        if !chunks.is_empty() {
+            let merged;
+            let bytes: &[u8] = match chunks.as_slice() {
+                [single] => single,
+                _ => {
+                    merged = chunks.concat();
+                    &merged
+                }
+            };
+            self.terminal.feed(bytes);
+            self.push_replay_tail(bytes);
             self.pending_passthrough
                 .extend(self.terminal.drain_passthrough());
             let events = self.terminal.drain_events();

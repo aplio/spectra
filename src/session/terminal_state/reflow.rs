@@ -8,6 +8,10 @@ impl TerminalGrid {
             return;
         }
 
+        // Reflow and the naive alt-screen resize treat `cells` as a linear
+        // top-to-bottom buffer, so undo any ring rotation first.
+        self.normalize_ring();
+
         if self.saved_screen.is_some() {
             self.resize_alt_screen_naive(width, height);
             if let Some(ref mut saved) = self.saved_screen {
@@ -159,8 +163,9 @@ impl TerminalGrid {
         self.width = new_width;
         self.height = new_height;
         self.cells = new_cells;
+        self.row0 = 0;
         self.row_boundaries = new_boundaries;
-        self.scrollback = new_scrollback;
+        self.scrollback = new_scrollback.into();
         self.scroll_top = 0;
         self.scroll_bottom = new_height.saturating_sub(1);
         self.cursor_x = cursor_col.min(new_width.saturating_sub(1));
@@ -364,6 +369,9 @@ impl TerminalGrid {
         if self.saved_screen.is_some() {
             return;
         }
+        // The saved snapshot is stored (and later restored) as a linear
+        // buffer, so undo any ring rotation before stashing it.
+        self.normalize_ring();
         self.saved_screen = Some(SavedScreen {
             cells: std::mem::replace(
                 &mut self.cells,
@@ -392,6 +400,9 @@ impl TerminalGrid {
             return;
         };
         self.cells = saved.cells;
+        // The snapshot was normalized when saved; the alt screen's own
+        // rotation dies with its buffer.
+        self.row0 = 0;
         self.scrollback = saved.scrollback;
         self.row_boundaries = saved.row_boundaries;
         self.cursor_x = saved.cursor_x;

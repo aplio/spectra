@@ -1,6 +1,6 @@
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -43,7 +43,7 @@ pub struct PtyPaneBackend {
     /// so the disarm path leaks the writer instead of dropping it.
     writer: Option<Box<dyn Write + Send>>,
     child: Box<dyn Child + Send + Sync>,
-    output_rx: Receiver<Vec<u8>>,
+    output_pipe: Arc<OutputPipe>,
     output_channel_open: bool,
     exited: bool,
     /// Cleared during a live server handoff so process exit leaves the
@@ -70,16 +70,17 @@ impl PtyPaneBackend {
         let mut reader = pair.master.try_clone_reader().map_err(map_pty_error)?;
         let writer = pair.master.take_writer().map_err(map_pty_error)?;
 
-        let (tx, output_rx) = mpsc::channel();
+        let output_pipe = OutputPipe::new();
+        let pipe = Arc::clone(&output_pipe);
         thread::spawn(move || {
-            pump_reader(&mut *reader, tx);
+            pump_reader(&mut *reader, &pipe);
         });
 
         Ok(Self {
             master: pair.master,
             writer: Some(writer),
             child,
-            output_rx,
+            output_pipe,
             output_channel_open: true,
             exited: false,
             kill_child_on_drop: true,
@@ -250,24 +251,135 @@ fn notify_server_loop() {
     crate::runtime::wake::notify();
 }
 
-pub(crate) fn pump_reader<R: Read + ?Sized>(reader: &mut R, tx: mpsc::Sender<Vec<u8>>) {
-    let mut buf = [0u8; 8192];
+/// Ceiling on bytes buffered between a pane's reader thread and the server
+/// loop. Once reached the reader blocks, the kernel pty queue fills, and
+/// the guest's writes stall — flow control reaches the child instead of
+/// this process growing without bound.
+const PENDING_CAP_BYTES: usize = 1024 * 1024;
+
+/// Coalescing byte pipe between a pane's reader thread (producer) and the
+/// server loop (consumer). Reads accumulate into one pending buffer, so the
+/// consumer pays its per-poll costs per batch instead of per kernel read,
+/// and the loop is woken only when the buffer transitions empty→non-empty
+/// instead of once per read. Replaces an unbounded mpsc of per-read `Vec`s
+/// (one allocation and one wakeup per ≤8 KiB read, no backpressure).
+pub(crate) struct OutputPipe {
+    state: Mutex<PipeState>,
+    drained: Condvar,
+}
+
+struct PipeState {
+    pending: Vec<u8>,
+    producer_done: bool,
+    consumer_gone: bool,
+}
+
+/// Result of one consumer poll of an [`OutputPipe`].
+pub(crate) enum PipePoll {
+    Data(Vec<u8>),
+    Empty,
+    /// The reader thread has exited and every byte has been consumed.
+    Closed,
+}
+
+impl OutputPipe {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(PipeState {
+                pending: Vec::new(),
+                producer_done: false,
+                consumer_gone: false,
+            }),
+            drained: Condvar::new(),
+        })
+    }
+
+    /// Recover the guard from a poisoned lock: the state is plain bytes and
+    /// flags, still safe to use after a panic elsewhere, and panicking here
+    /// would take down whichever of the two threads survived.
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, PipeState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Consumer side: take everything gathered since the last poll.
+    pub(crate) fn poll(&self) -> PipePoll {
+        let mut state = self.lock_state();
+        if state.pending.is_empty() {
+            return if state.producer_done {
+                PipePoll::Closed
+            } else {
+                PipePoll::Empty
+            };
+        }
+        let batch = std::mem::take(&mut state.pending);
+        drop(state);
+        // Unblock a producer waiting on the byte cap.
+        self.drained.notify_one();
+        PipePoll::Data(batch)
+    }
+
+    /// Consumer side: called when the backend drops so a producer blocked
+    /// on the byte cap exits instead of waiting forever.
+    pub(crate) fn close_consumer(&self) {
+        self.lock_state().consumer_gone = true;
+        self.drained.notify_one();
+    }
+
+    /// Producer side: append one read's bytes, blocking on the byte cap.
+    /// Returns false when the consumer is gone and the reader should exit.
+    fn push(&self, bytes: &[u8]) -> bool {
+        let mut state = self.lock_state();
+        while state.pending.len() >= PENDING_CAP_BYTES {
+            if state.consumer_gone {
+                return false;
+            }
+            state = self
+                .drained
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        if state.consumer_gone {
+            return false;
+        }
+        let was_empty = state.pending.is_empty();
+        if was_empty && state.pending.capacity() == 0 {
+            // mem::take in poll() hands the whole buffer to the consumer;
+            // reserve a fresh batch up front instead of growing through
+            // several reallocations per batch.
+            state.pending.reserve(64 * 1024);
+        }
+        state.pending.extend_from_slice(bytes);
+        drop(state);
+        if was_empty {
+            notify_server_loop();
+        }
+        true
+    }
+
+    fn finish_producer(&self) {
+        self.lock_state().producer_done = true;
+        // EOF or read error: wake the loop so pane cleanup runs promptly.
+        notify_server_loop();
+    }
+}
+
+pub(crate) fn pump_reader<R: Read + ?Sized>(reader: &mut R, pipe: &OutputPipe) {
+    let mut buf = [0u8; 64 * 1024];
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                if tx.send(buf[..n].to_vec()).is_err() {
+                if !pipe.push(&buf[..n]) {
                     break;
                 }
-                notify_server_loop();
             }
             Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         }
     }
-    // EOF or read error: the channel sender is about to drop, which is how
-    // pane exit is detected — wake the loop so cleanup runs promptly.
-    notify_server_loop();
+    pipe.finish_producer();
 }
 
 impl PaneBackend for PtyPaneBackend {
@@ -294,18 +406,14 @@ impl PaneBackend for PtyPaneBackend {
     }
 
     fn poll_output(&mut self) -> Vec<Vec<u8>> {
-        let mut chunks = Vec::new();
-        loop {
-            match self.output_rx.try_recv() {
-                Ok(chunk) => chunks.push(chunk),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    self.output_channel_open = false;
-                    break;
-                }
+        match self.output_pipe.poll() {
+            PipePoll::Data(batch) => vec![batch],
+            PipePoll::Empty => Vec::new(),
+            PipePoll::Closed => {
+                self.output_channel_open = false;
+                Vec::new()
             }
         }
-        chunks
     }
 
     fn child_pid(&self) -> Option<u32> {
@@ -346,6 +454,9 @@ impl PaneBackend for PtyPaneBackend {
 
 impl Drop for PtyPaneBackend {
     fn drop(&mut self) {
+        // Unblock a reader thread waiting on the pipe's byte cap; killing
+        // the child only unblocks one waiting in read().
+        self.output_pipe.close_consumer();
         if self.kill_child_on_drop {
             let _ = self.child.kill();
             let _ = self.child.try_wait();
