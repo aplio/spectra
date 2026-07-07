@@ -10,12 +10,13 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
-use std::sync::Mutex;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::session::pane::PaneBackend;
-use crate::session::pty_backend::{PaneFactory, PaneSpawnConfig, pump_reader};
+use crate::session::pty_backend::{
+    OutputPipe, PaneFactory, PaneSpawnConfig, PipePoll, pump_reader,
+};
 
 /// One pane's transferable state received during a handoff.
 pub struct PaneHandoffSource {
@@ -73,7 +74,7 @@ impl PaneFactory for HandoffPaneFactory {
 pub struct FdPaneBackend {
     master: File,
     child_pid: Option<u32>,
-    output_rx: Receiver<Vec<u8>>,
+    output_pipe: Arc<OutputPipe>,
     output_channel_open: bool,
     exited: bool,
     kill_child_on_drop: bool,
@@ -85,18 +86,19 @@ impl FdPaneBackend {
     pub fn adopt(master: OwnedFd, child_pid: Option<u32>) -> io::Result<Self> {
         let master = File::from(master);
         let reader = master.try_clone()?;
-        let (tx, output_rx) = mpsc::channel();
+        let output_pipe = OutputPipe::new();
+        let pipe = Arc::clone(&output_pipe);
         thread::Builder::new()
             .name("spectra-handoff-pane-reader".to_string())
             .spawn(move || {
                 let mut reader = reader;
-                pump_reader(&mut reader, tx);
+                pump_reader(&mut reader, &pipe);
             })?;
 
         Ok(Self {
             master,
             child_pid,
-            output_rx,
+            output_pipe,
             output_channel_open: true,
             exited: false,
             kill_child_on_drop: true,
@@ -125,18 +127,14 @@ impl PaneBackend for FdPaneBackend {
     }
 
     fn poll_output(&mut self) -> Vec<Vec<u8>> {
-        let mut chunks = Vec::new();
-        loop {
-            match self.output_rx.try_recv() {
-                Ok(chunk) => chunks.push(chunk),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    self.output_channel_open = false;
-                    break;
-                }
+        match self.output_pipe.poll() {
+            PipePoll::Data(batch) => vec![batch],
+            PipePoll::Empty => Vec::new(),
+            PipePoll::Closed => {
+                self.output_channel_open = false;
+                Vec::new()
             }
         }
-        chunks
     }
 
     fn child_pid(&self) -> Option<u32> {
@@ -167,6 +165,8 @@ impl PaneBackend for FdPaneBackend {
 
 impl Drop for FdPaneBackend {
     fn drop(&mut self) {
+        // Unblock a reader thread waiting on the pipe's byte cap.
+        self.output_pipe.close_consumer();
         // Parity with `PtyPaneBackend`: closing a pane kills its process.
         // Skipped once the pane is known-exited (best-effort guard against
         // signalling a recycled pid) or after a handoff disarm.
