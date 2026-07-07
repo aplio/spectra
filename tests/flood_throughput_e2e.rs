@@ -155,6 +155,13 @@ impl TestClient {
                     volume.renders += 1;
                     volume.bytes += ansi.len() as u64;
                     if ansi.contains(marker) {
+                        if std::env::var("SPECTRA_FLOOD_DEBUG").is_ok() {
+                            eprintln!(
+                                "FLOOD_DEBUG marker={marker} frame_len={} frame={:?}",
+                                ansi.len(),
+                                &ansi[..ansi.len().min(600)]
+                            );
+                        }
                         return Ok(volume);
                     }
                 }
@@ -170,6 +177,21 @@ impl TestClient {
                 ));
             }
             thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Drains messages until none arrive for `quiet`, so late renders from
+    /// one run can never bleed into the next run's timing window.
+    fn drain_until_quiet(&mut self, quiet: Duration) -> io::Result<()> {
+        let mut last_message = Instant::now();
+        loop {
+            if !self.read_messages()?.is_empty() {
+                last_message = Instant::now();
+            }
+            if last_message.elapsed() >= quiet {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(5));
         }
     }
 
@@ -296,14 +318,12 @@ fn env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-fn marker_for(seed: u64, index: usize) -> String {
-    let mut value = (index as u64).wrapping_add(seed);
-    value ^= value >> 33;
-    value = value.wrapping_mul(0xff51afd7ed558ccd);
-    value ^= value >> 33;
-    value = value.wrapping_mul(0xc4ceb9fe1a85ec53);
-    value ^= value >> 33;
-    format!("FLOOD_DONE_{value:016x}")
+/// Markers embed the scenario name and run index verbatim: hashing
+/// scenario+index into one integer collided across scenarios (ascii run N
+/// and sgr run N-2 hashed identically), so a leftover marker from the
+/// previous scenario still on screen matched instantly.
+fn marker_for(scenario: &str, index: usize) -> String {
+    format!("FLOOD_DONE_{scenario}_{index}_end")
 }
 
 struct Scenario {
@@ -375,11 +395,11 @@ fn measure_scenario(
     warmup: usize,
     measured: usize,
 ) -> io::Result<Vec<FloodRun>> {
-    let seed = 0x5EC7_12A4_55EE_91C3u64 ^ (scenario.name.len() as u64);
     let mut runs = Vec::with_capacity(measured);
     for index in 0..(warmup + measured) {
-        let marker = marker_for(seed, index);
+        let marker = marker_for(scenario.name, index);
         let run = run_flood(client, scenario, &marker)?;
+        client.drain_until_quiet(Duration::from_millis(300))?;
         if index >= warmup {
             runs.push(run);
         }
