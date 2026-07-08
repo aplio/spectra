@@ -141,6 +141,12 @@ fn configure_interactive_shell(command: &mut CommandBuilder, config: &PaneSpawnC
             command.arg("prompt_sp");
         }
         if let Some(zdotdir) = ensure_zsh_integration_zdotdir() {
+            // The integration .zshenv restores this before zsh loads the
+            // remaining startup files, so users who keep their config under
+            // a custom ZDOTDIR still get it.
+            if let Some(original) = std::env::var_os("ZDOTDIR") {
+                command.env("SPECTRA_ZSH_ZDOTDIR", original);
+            }
             command.env("ZDOTDIR", zdotdir);
         }
     }
@@ -151,28 +157,31 @@ fn configure_interactive_shell(command: &mut CommandBuilder, config: &PaneSpawnC
 fn ensure_zsh_integration_zdotdir() -> Option<PathBuf> {
     let dir = shell_integration_base_dir().join("zsh");
     std::fs::create_dir_all(&dir).ok()?;
+    // Earlier versions shimmed every startup file with $HOME hardcoded,
+    // which lost the config of users keeping theirs under a custom ZDOTDIR.
+    // .zshenv now restores the real ZDOTDIR so zsh loads the remaining
+    // startup files from the right place itself; drop the stale shims so
+    // nothing shadows that.
+    for stale in [".zprofile", ".zshrc", ".zlogin"] {
+        let _ = std::fs::remove_file(dir.join(stale));
+    }
     write_if_changed(
         &dir.join(".zshenv"),
-        "if [ -r \"$HOME/.zshenv\" ]; then source \"$HOME/.zshenv\"; fi\n",
-    )
-    .ok()?;
-    write_if_changed(
-        &dir.join(".zprofile"),
-        "if [ -r \"$HOME/.zprofile\" ]; then source \"$HOME/.zprofile\"; fi\n",
-    )
-    .ok()?;
-    write_if_changed(
-        &dir.join(".zlogin"),
-        "if [ -r \"$HOME/.zlogin\" ]; then source \"$HOME/.zlogin\"; fi\n",
-    )
-    .ok()?;
-    write_if_changed(
-        &dir.join(".zshrc"),
-        r#"if [ -r "$HOME/.zshrc" ]; then
-  source "$HOME/.zshrc"
+        r#"# Spectra points ZDOTDIR here so this file runs first. Restore the
+# user's ZDOTDIR immediately: zsh resolves each remaining startup file
+# (.zprofile/.zshrc/.zlogin) against $ZDOTDIR at load time, so after the
+# restore they come from the user's real location.
+if [[ -n "${SPECTRA_ZSH_ZDOTDIR+X}" ]]; then
+  ZDOTDIR="$SPECTRA_ZSH_ZDOTDIR"
+  unset SPECTRA_ZSH_ZDOTDIR
+else
+  unset ZDOTDIR
+fi
+if [ -r "${ZDOTDIR:-$HOME}/.zshenv" ]; then
+  source "${ZDOTDIR:-$HOME}/.zshenv"
 fi
 
-if [[ -z "${_SPECTRA_TITLE_HOOK_INSTALLED:-}" ]]; then
+if [[ -o interactive && -z "${_SPECTRA_TITLE_HOOK_INSTALLED:-}" ]]; then
   typeset -g _SPECTRA_TITLE_HOOK_INSTALLED=1
   _spectra_precmd() {
     print -Pn '\e]2;%~\a'
@@ -534,6 +543,12 @@ mod tests {
         );
     }
 
+    fn find_zsh() -> Option<&'static str> {
+        ["/bin/zsh", "/usr/bin/zsh"]
+            .into_iter()
+            .find(|path| std::path::Path::new(path).exists())
+    }
+
     /// The zsh hook must emit the pane's real cwd with zsh's default options,
     /// where PROMPT_SUBST is unset. It used `print -P` with a `${PWD}` payload,
     /// which prompt expansion only substitutes under PROMPT_SUBST — stock zsh
@@ -541,10 +556,7 @@ mod tests {
     /// server never learned the cwd, breaking split/new-window cwd inheritance.
     #[test]
     fn zsh_integration_emits_osc7_without_prompt_subst() {
-        let Some(zsh) = ["/bin/zsh", "/usr/bin/zsh"]
-            .iter()
-            .find(|path| std::path::Path::new(path).exists())
-        else {
+        let Some(zsh) = find_zsh() else {
             return; // no zsh on this machine (e.g. minimal CI image)
         };
         let zdotdir = ensure_zsh_integration_zdotdir().expect("zdotdir");
@@ -552,12 +564,13 @@ mod tests {
         let cwd = tempfile::tempdir().expect("cwd tempdir");
         let canonical = std::fs::canonicalize(cwd.path()).expect("canonicalize cwd");
 
-        // `-f` skips all rc files, so the integration .zshrc is sourced
+        // `-f` skips all rc files, so the integration .zshenv is sourced
         // explicitly and nothing can enable PROMPT_SUBST behind our back;
-        // HOME points at an empty dir so no user .zshrc is pulled in either.
+        // `-i` is required because the hook only installs in interactive
+        // shells; HOME points at an empty dir so no user config is pulled in.
         let output = std::process::Command::new(zsh)
-            .arg("-fc")
-            .arg("source \"$ZDOTDIR/.zshrc\"; _spectra_precmd")
+            .arg("-fic")
+            .arg("source \"$ZDOTDIR/.zshenv\"; _spectra_precmd")
             .env("ZDOTDIR", &zdotdir)
             .env("HOME", home.path())
             .current_dir(&canonical)
@@ -573,6 +586,68 @@ mod tests {
             stdout.contains(&format!("{}\x07", canonical.display())),
             "OSC 7 should carry the expanded cwd, saw: {stdout:?}"
         );
+    }
+
+    /// The integration .zshenv must hand back the user's ZDOTDIR (stashed in
+    /// SPECTRA_ZSH_ZDOTDIR by the spawn path) before zsh loads the remaining
+    /// startup files, so custom-ZDOTDIR configs keep working; without a stash
+    /// it must unset the integration dir so zsh falls back to $HOME.
+    #[test]
+    fn zsh_integration_restores_user_zdotdir() {
+        let Some(zsh) = find_zsh() else {
+            return; // no zsh on this machine (e.g. minimal CI image)
+        };
+        let zdotdir = ensure_zsh_integration_zdotdir().expect("zdotdir");
+        let home = tempfile::tempdir().expect("home tempdir");
+
+        let run = |stash: Option<&str>| {
+            let mut command = std::process::Command::new(zsh);
+            command
+                .arg("-fc")
+                .arg("source \"$ZDOTDIR/.zshenv\"; print -r -- \"restored=[${ZDOTDIR:-}]\"")
+                .env("ZDOTDIR", &zdotdir)
+                .env("HOME", home.path());
+            match stash {
+                Some(value) => command.env("SPECTRA_ZSH_ZDOTDIR", value),
+                None => command.env_remove("SPECTRA_ZSH_ZDOTDIR"),
+            };
+            let output = command.output().expect("run zsh");
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        };
+
+        let restored = run(Some("/custom/zdotdir"));
+        assert!(
+            restored.contains("restored=[/custom/zdotdir]"),
+            "stashed ZDOTDIR should be restored, saw: {restored:?}"
+        );
+        let unset = run(None);
+        assert!(
+            unset.contains("restored=[]"),
+            "without a stash ZDOTDIR should be unset, saw: {unset:?}"
+        );
+    }
+
+    /// Older binaries shimmed .zprofile/.zshrc/.zlogin with $HOME hardcoded;
+    /// they must be cleaned up or they would shadow the user's real startup
+    /// files now that .zshenv restores ZDOTDIR before zsh resolves them.
+    #[test]
+    fn zsh_integration_removes_stale_startup_shims() {
+        let dir = super::shell_integration_base_dir().join("zsh");
+        std::fs::create_dir_all(&dir).expect("create zsh integration dir");
+        for stale in [".zprofile", ".zshrc", ".zlogin"] {
+            std::fs::write(dir.join(stale), "# stale shim\n").expect("write stale shim");
+        }
+
+        let ensured = ensure_zsh_integration_zdotdir().expect("zdotdir");
+
+        assert_eq!(ensured, dir);
+        for stale in [".zprofile", ".zshrc", ".zlogin"] {
+            assert!(
+                !dir.join(stale).exists(),
+                "stale {stale} shim should be removed"
+            );
+        }
+        assert!(dir.join(".zshenv").exists(), ".zshenv shim should exist");
     }
 
     #[test]
