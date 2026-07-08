@@ -117,6 +117,58 @@ fn split_inherits_focused_pane_cwd() {
     assert_pane_pwd_is(&mut session, new_pane, target_str);
 }
 
+/// Full-path variant with a real bash: the OSC 7 comes from the shell
+/// integration's prompt hook, not from a hand-written escape sequence. This
+/// covers the emission half the other tests skip — it fails if the
+/// integration rcfile stops being loaded (e.g. bash spawned as a login
+/// shell, which ignores --rcfile) or if the hook stops reporting $PWD.
+#[test]
+fn split_inherits_cwd_reported_by_real_bash_prompt_hook() {
+    let Some(bash) = ["/bin/bash", "/usr/bin/bash"]
+        .iter()
+        .find(|path| std::path::Path::new(path).exists())
+    else {
+        return; // no bash on this machine (e.g. minimal CI image)
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = std::fs::canonicalize(dir.path()).expect("canonicalize target");
+    let target_str = target.to_str().expect("utf8 target");
+
+    let options = SessionOptions::from_cli(Some(bash.to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options, Arc::new(PtyPaneFactory), COLS, ROWS)
+        .expect("create session");
+    let focused = session.focused_pane_id().expect("focused pane");
+
+    // cd and wait until the prompt hook's OSC 7 lands in the tracked cwd.
+    // The session started in the test process's directory, so seeing
+    // `target` here proves the hook emitted and the server parsed it.
+    session
+        .send_to_pane(focused, format!("cd {target_str}\n").as_bytes())
+        .expect("send cd");
+    let start = Instant::now();
+    let tracked = loop {
+        session.poll_output();
+        let tracked = session.runtime_snapshot().pane_cwds.get(&focused).cloned();
+        if tracked.as_deref() == Some(target.as_path()) || start.elapsed() >= TIMEOUT {
+            break tracked;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(
+        tracked.as_deref(),
+        Some(target.as_path()),
+        "bash prompt hook should report the cwd via OSC 7"
+    );
+
+    session
+        .split_focused(SplitAxis::Vertical, COLS, ROWS)
+        .expect("split");
+    let new_pane = newest_pane_id(&session);
+    assert_ne!(new_pane, focused, "split should create a distinct pane");
+
+    assert_pane_pwd_is(&mut session, new_pane, target_str);
+}
+
 #[test]
 fn new_window_inherits_focused_pane_cwd() {
     // The `prefix + c` path: a brand-new window's pane should also start in the

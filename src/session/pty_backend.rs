@@ -124,7 +124,10 @@ fn configure_interactive_shell(command: &mut CommandBuilder, config: &PaneSpawnC
     if is_bash_shell(&config.shell)
         && let Some(rcfile) = ensure_bash_integration_rcfile()
     {
-        command.arg("--login");
+        // Deliberately not --login: a login bash reads only the profile
+        // files and silently ignores --rcfile (see INVOCATION in bash(1)),
+        // which would drop the prompt integration entirely. The rcfile
+        // replays the login startup sequence itself instead.
         command.arg("--rcfile");
         command.arg(rcfile);
         command.arg("-i");
@@ -192,9 +195,20 @@ fn ensure_bash_integration_rcfile() -> Option<PathBuf> {
     let rcfile = dir.join("bashrc");
     write_if_changed(
         &rcfile,
-        r#"if [ -r "$HOME/.bashrc" ]; then
-  . "$HOME/.bashrc"
+        r#"# Sourced by an interactive non-login bash (--rcfile). The pane is meant
+# to behave like a login shell, but bash ignores --rcfile when started with
+# --login, so the login startup sequence (see INVOCATION in bash(1)) is
+# replayed here instead, before the prompt hook is installed.
+if [ -r /etc/profile ]; then
+  . /etc/profile
 fi
+for _spectra_profile in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+  if [ -r "$_spectra_profile" ]; then
+    . "$_spectra_profile"
+    break
+  fi
+done
+unset _spectra_profile
 
 if [ -z "${_SPECTRA_TITLE_HOOK_INSTALLED:-}" ]; then
   _SPECTRA_TITLE_HOOK_INSTALLED=1
@@ -676,6 +690,10 @@ mod tests {
         assert!(command.get_env("ZDOTDIR").is_some());
     }
 
+    /// Bash must NOT be spawned with --login: a login bash reads only the
+    /// profile files and silently ignores --rcfile (INVOCATION in bash(1)),
+    /// so the integration rcfile — and with it the OSC 7 cwd hook — never
+    /// loaded, breaking split/new-window cwd inheritance.
     #[test]
     fn interactive_bash_uses_rcfile_for_prompt_integration() {
         let config = PaneSpawnConfig {
@@ -691,13 +709,70 @@ mod tests {
 
         let argv = argv(&config);
         assert_eq!(argv[0], "/bin/bash");
-        assert_eq!(argv[1], "--login");
-        assert_eq!(argv[2], "--rcfile");
+        assert_eq!(argv[1], "--rcfile");
         assert!(
-            argv[3].contains("spectra-shell-integration"),
+            argv[2].contains("spectra-shell-integration"),
             "expected integration rcfile path, got {}",
-            argv[3]
+            argv[2]
         );
-        assert_eq!(argv[4], "-i");
+        assert_eq!(argv[3], "-i");
+        assert!(
+            !argv.contains(&"--login".to_string()),
+            "--login makes bash ignore --rcfile, argv: {argv:?}"
+        );
+    }
+
+    /// Spawn a real interactive bash exactly the way a pane does (`--rcfile
+    /// <integration> -i`) and assert the prompt hook emits an OSC 7 carrying
+    /// the actual cwd. This is the emission half the cwd-inheritance e2e
+    /// tests don't cover (they emit OSC 7 by hand): it fails if --login is
+    /// ever reintroduced (bash would ignore --rcfile) and if the hook stops
+    /// reporting the real $PWD.
+    #[test]
+    fn bash_integration_emits_osc7_from_prompt_hook() {
+        use std::io::Write as _;
+
+        let Some(bash) = ["/bin/bash", "/usr/bin/bash"]
+            .iter()
+            .find(|path| std::path::Path::new(path).exists())
+        else {
+            return; // no bash on this machine (e.g. minimal CI image)
+        };
+        let rcfile = super::ensure_bash_integration_rcfile().expect("rcfile");
+        let home = tempfile::tempdir().expect("home tempdir");
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let canonical = std::fs::canonicalize(cwd.path()).expect("canonicalize cwd");
+
+        // HOME points at an empty dir so no user profile interferes; the
+        // prompt hook's printf goes to stdout, prompts/noise go to stderr.
+        let mut child = std::process::Command::new(bash)
+            .arg("--rcfile")
+            .arg(&rcfile)
+            .arg("-i")
+            .env("HOME", home.path())
+            .env_remove("PROMPT_COMMAND")
+            .current_dir(&canonical)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn bash");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(b"exit\n")
+            .expect("write exit");
+        let output = child.wait_with_output().expect("wait for bash");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(
+            stdout.contains("\x1b]7;file://"),
+            "hook should emit an OSC 7, saw: {stdout:?}"
+        );
+        assert!(
+            stdout.contains(&format!("{}\x07", canonical.display())),
+            "OSC 7 should carry the pane cwd, saw: {stdout:?}"
+        );
     }
 }
