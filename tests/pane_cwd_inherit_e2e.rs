@@ -43,6 +43,14 @@ fn poll_until(
     }
 }
 
+/// Screen text with all whitespace removed. Split panes are narrow enough
+/// that a long path (e.g. a macOS `/private/var/folders/...` tempdir) hard-
+/// wraps across rows; dropping whitespace rejoins the fragments so a
+/// `contains` check on the path works regardless of pane width.
+fn normalized(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
 /// The pane id created most recently (the highest id present).
 fn newest_pane_id(session: &SessionManager) -> PaneId {
     session
@@ -85,9 +93,9 @@ fn session_with_focused_cwd(target_str: &str) -> (SessionManager, PaneId) {
 /// was actually spawned in the inherited directory.
 fn assert_pane_pwd_is(session: &mut SessionManager, pane_id: PaneId, target_str: &str) {
     session.send_to_pane(pane_id, b"pwd\n").expect("send pwd");
-    let text = poll_until(session, pane_id, |t| t.contains(target_str));
+    let text = poll_until(session, pane_id, |t| normalized(t).contains(target_str));
     assert!(
-        text.contains(target_str),
+        normalized(&text).contains(target_str),
         "pane {pane_id} should start in {target_str:?}, saw:\n{text}"
     );
 }
