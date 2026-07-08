@@ -183,11 +183,17 @@ fi
 
 if [[ -o interactive && -z "${_SPECTRA_TITLE_HOOK_INSTALLED:-}" ]]; then
   typeset -g _SPECTRA_TITLE_HOOK_INSTALLED=1
+  typeset -g _spectra_last_reported_cwd=''
   _spectra_precmd() {
     print -Pn '\e]2;%~\a'
     # printf, not `print -P`: prompt expansion only substitutes ${PWD}
     # under PROMPT_SUBST, and would mangle paths containing `%`.
-    printf '\033]7;file://%s%s\007' "${HOST:-localhost}" "$PWD"
+    # Deduped: the cwd rarely changes between prompts and every report
+    # lands in the pane's replay buffer.
+    if [[ "$_spectra_last_reported_cwd" != "$PWD" ]]; then
+      _spectra_last_reported_cwd="$PWD"
+      printf '\033]7;file://%s%s\007' "${HOST:-localhost}" "$PWD"
+    fi
   }
   autoload -Uz add-zsh-hook
   add-zsh-hook precmd _spectra_precmd
@@ -221,10 +227,16 @@ unset _spectra_profile
 
 if [ -z "${_SPECTRA_TITLE_HOOK_INSTALLED:-}" ]; then
   _SPECTRA_TITLE_HOOK_INSTALLED=1
+  _spectra_last_reported_cwd=''
   __spectra_prompt_command() {
     local spectra_title="${PWD/#$HOME/~}"
     printf '\033]2;%s\007' "$spectra_title"
-    printf '\033]7;file://%s%s\007' "${HOSTNAME:-localhost}" "$PWD"
+    # Deduped: the cwd rarely changes between prompts and every report
+    # lands in the pane's replay buffer.
+    if [ "$_spectra_last_reported_cwd" != "$PWD" ]; then
+      _spectra_last_reported_cwd="$PWD"
+      printf '\033]7;file://%s%s\007' "${HOSTNAME:-localhost}" "$PWD"
+    fi
   }
   if [ -n "${PROMPT_COMMAND:-}" ]; then
     PROMPT_COMMAND="__spectra_prompt_command;${PROMPT_COMMAND}"
@@ -585,6 +597,68 @@ mod tests {
         assert!(
             stdout.contains(&format!("{}\x07", canonical.display())),
             "OSC 7 should carry the expanded cwd, saw: {stdout:?}"
+        );
+    }
+
+    /// Consecutive prompts in the same directory must report the cwd once:
+    /// every OSC 7 lands in the pane's replay buffer, so an unconditional
+    /// per-prompt report is pure noise. A cd must trigger a fresh report.
+    #[test]
+    fn zsh_integration_dedupes_osc7_until_cwd_changes() {
+        let Some(zsh) = find_zsh() else {
+            return; // no zsh on this machine (e.g. minimal CI image)
+        };
+        let zdotdir = ensure_zsh_integration_zdotdir().expect("zdotdir");
+        let home = tempfile::tempdir().expect("home tempdir");
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+
+        let output = std::process::Command::new(zsh)
+            .arg("-fic")
+            .arg("source \"$ZDOTDIR/.zshenv\"; _spectra_precmd; _spectra_precmd; cd /; _spectra_precmd")
+            .env("ZDOTDIR", &zdotdir)
+            .env("HOME", home.path())
+            .current_dir(cwd.path())
+            .output()
+            .expect("run zsh");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert_eq!(
+            stdout.matches("\x1b]7;").count(),
+            2,
+            "expected one OSC 7 per distinct cwd, saw: {stdout:?}"
+        );
+    }
+
+    /// Bash flavor of [`zsh_integration_dedupes_osc7_until_cwd_changes`].
+    #[test]
+    fn bash_integration_dedupes_osc7_until_cwd_changes() {
+        let Some(bash) = ["/bin/bash", "/usr/bin/bash"]
+            .iter()
+            .find(|path| std::path::Path::new(path).exists())
+        else {
+            return; // no bash on this machine (e.g. minimal CI image)
+        };
+        let rcfile = super::ensure_bash_integration_rcfile().expect("rcfile");
+        let home = tempfile::tempdir().expect("home tempdir");
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+
+        let output = std::process::Command::new(bash)
+            .arg("-c")
+            .arg(format!(
+                ". {}; __spectra_prompt_command; __spectra_prompt_command; cd /; __spectra_prompt_command",
+                rcfile.display()
+            ))
+            .env("HOME", home.path())
+            .env_remove("PROMPT_COMMAND")
+            .current_dir(cwd.path())
+            .output()
+            .expect("run bash");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert_eq!(
+            stdout.matches("\x1b]7;").count(),
+            2,
+            "expected one OSC 7 per distinct cwd, saw: {stdout:?}"
         );
     }
 
