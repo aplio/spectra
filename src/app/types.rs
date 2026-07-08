@@ -385,6 +385,19 @@ pub(super) struct TextSelectionState {
     pub dragging: bool,
 }
 
+/// Active edge auto-scroll during a text-selection drag: the pointer is
+/// resting on (or past) the pane's top or bottom row, so the view keeps
+/// scrolling on a timer and the selection extends to each newly revealed row.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct SelectionAutoscroll {
+    /// Scroll direction in [`crate::session::Session::scroll_focused_pane`]
+    /// convention: `1` toward history (pointer at top), `-1` toward the
+    /// live tail (pointer at bottom).
+    pub direction: isize,
+    /// Next instant a one-line scroll step is due.
+    pub next_at: Instant,
+}
+
 /// Rapid-click chain for smart multi-click selection (word/line expansion).
 /// Mirrors gargo's expand chain: successive clicks near the same cell within
 /// the multi-click window grow the selection to the next larger unit.
@@ -731,6 +744,7 @@ pub(super) struct ClientViewState {
     pub locked_input: bool,
     pub mouse_drag: Option<MouseDragState>,
     pub text_selection: Option<TextSelectionState>,
+    pub selection_autoscroll: Option<SelectionAutoscroll>,
     pub click_chain: Option<ClickChainState>,
     pub pending_clipboard_ansi: Vec<String>,
     pub pending_passthrough_ansi: Vec<String>,

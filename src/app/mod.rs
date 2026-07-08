@@ -226,6 +226,7 @@ impl App {
                 locked_input: false,
                 mouse_drag: None,
                 text_selection: None,
+                selection_autoscroll: None,
                 click_chain: None,
                 pending_clipboard_ansi: Vec::new(),
                 pending_passthrough_ansi: Vec::new(),
@@ -428,6 +429,7 @@ impl App {
                 locked_input: false,
                 mouse_drag: None,
                 text_selection: None,
+                selection_autoscroll: None,
                 click_chain: None,
                 pending_clipboard_ansi: Vec::new(),
                 pending_passthrough_ansi: Vec::new(),
@@ -593,6 +595,8 @@ impl App {
         if expired {
             self.needs_render = true;
         }
+
+        self.tick_selection_autoscroll(now);
     }
 
     /// Earliest future instant at which [`Self::tick`] has time-based work
@@ -636,6 +640,9 @@ impl App {
 
         if let Some(message) = &self.view.status_message {
             consider(message.expires_at);
+        }
+        if let Some(autoscroll) = &self.view.selection_autoscroll {
+            consider(autoscroll.next_at);
         }
         for state in self.inactive_client_states.values() {
             if let Some(message) = &state.status_message {

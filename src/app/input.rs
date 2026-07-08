@@ -143,6 +143,7 @@ impl App {
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) {
         if self.view.locked_input {
             self.view.mouse_drag = None;
+            self.view.selection_autoscroll = None;
             return;
         }
 
@@ -184,6 +185,7 @@ impl App {
 
         if !self.mouse_enabled {
             self.view.mouse_drag = None;
+            self.view.selection_autoscroll = None;
             return;
         }
 
@@ -216,6 +218,7 @@ impl App {
 
         if !matches!(self.view.input_mode, InputMode::Normal) {
             self.view.mouse_drag = None;
+            self.view.selection_autoscroll = None;
             return;
         }
 
@@ -225,6 +228,7 @@ impl App {
                 let prev_chain = self.view.click_chain.take();
                 self.view.mouse_drag = None;
                 self.view.text_selection = None;
+                self.view.selection_autoscroll = None;
                 let side_window_tree = self.side_window_tree_overlay();
                 if let Some(side) = side_window_tree.as_ref()
                     && let Some((session_index, window_number)) =
@@ -363,6 +367,7 @@ impl App {
                     let Some(pane) = frame.panes.iter().find(|pane| pane.pane_id == sel.pane_id)
                     else {
                         self.view.text_selection = None;
+                        self.view.selection_autoscroll = None;
                         return;
                     };
                     sel.pane_x = pane.rect.x;
@@ -395,6 +400,26 @@ impl App {
                     sel.end_col = col;
                     sel.end_abs_row = abs_row;
                     self.view.text_selection = Some(sel);
+                    // A pointer resting on (or past) the pane's top/bottom
+                    // row arms edge auto-scroll; tick() then steps the view
+                    // on a timer and extends the selection to each newly
+                    // revealed row, so history can be selected beyond the
+                    // visible viewport.
+                    let pointer_row = usize::from(mouse.row);
+                    let at_top = pointer_row <= pane.rect.y;
+                    let at_bottom = pointer_row >= pane.rect.y + pane.rect.height.saturating_sub(1);
+                    let direction = if at_top { 1 } else { -1 };
+                    self.view.selection_autoscroll = (at_top || at_bottom).then(|| {
+                        match self.view.selection_autoscroll {
+                            // Keep the running cadence when the pointer stays
+                            // on the same edge across drag events.
+                            Some(existing) if existing.direction == direction => existing,
+                            _ => SelectionAutoscroll {
+                                direction,
+                                next_at: Instant::now(),
+                            },
+                        }
+                    });
                     return;
                 }
 
@@ -455,6 +480,7 @@ impl App {
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 self.view.mouse_drag = None;
+                self.view.selection_autoscroll = None;
                 // Releasing the button completes the gesture but keeps the
                 // selection visible (copy it with the copy-selection binding).
                 // A plain click that never grew a range selects nothing; a
@@ -474,6 +500,50 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// One timer step of selection-drag edge auto-scroll: scroll the pane a
+    /// line toward the armed direction and extend the selection to the row
+    /// that scrolled into view. Disarms itself once the drag is over (button
+    /// released, selection dropped, mode or focus changed).
+    pub(super) fn tick_selection_autoscroll(&mut self, now: Instant) {
+        const STEP_INTERVAL: Duration = Duration::from_millis(40);
+        let Some(auto) = self.view.selection_autoscroll else {
+            return;
+        };
+        let Some(mut sel) = self.view.text_selection else {
+            self.view.selection_autoscroll = None;
+            return;
+        };
+        if !sel.dragging
+            || !matches!(self.view.input_mode, InputMode::Normal)
+            || self.current_session().focused_pane_id() != Some(sel.pane_id)
+        {
+            self.view.selection_autoscroll = None;
+            return;
+        }
+        if now < auto.next_at {
+            return;
+        }
+
+        let view_rows = self.focused_pane_view_rows();
+        self.current_session_mut()
+            .scroll_focused_pane(auto.direction, view_rows);
+        let Some(origin) = self.current_session().focused_view_row_origin(view_rows) else {
+            self.view.selection_autoscroll = None;
+            return;
+        };
+        sel.end_abs_row = if auto.direction > 0 {
+            origin
+        } else {
+            origin + view_rows.saturating_sub(1)
+        };
+        self.view.text_selection = Some(sel);
+        self.view.selection_autoscroll = Some(SelectionAutoscroll {
+            next_at: now + STEP_INTERVAL,
+            ..auto
+        });
+        self.needs_render = true;
     }
 
     /// Try to deliver a mouse event to the guest program in the pane under

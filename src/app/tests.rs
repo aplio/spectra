@@ -299,6 +299,7 @@ fn build_app_for_resize_test() -> App {
             locked_input: false,
             mouse_drag: None,
             text_selection: None,
+            selection_autoscroll: None,
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
@@ -427,6 +428,7 @@ fn build_app_with_history() -> App {
             locked_input: false,
             mouse_drag: None,
             text_selection: None,
+            selection_autoscroll: None,
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
@@ -548,6 +550,7 @@ fn build_app_with_write_behavior(behavior: WriteBehavior) -> App {
             locked_input: false,
             mouse_drag: None,
             text_selection: None,
+            selection_autoscroll: None,
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
@@ -626,6 +629,7 @@ fn build_app_with_close_on_write_behavior(behavior: CloseOnWriteBehavior) -> App
             locked_input: false,
             mouse_drag: None,
             text_selection: None,
+            selection_autoscroll: None,
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
@@ -743,6 +747,7 @@ fn build_recording_app_one_session() -> (App, RecordedWrites) {
             locked_input: false,
             mouse_drag: None,
             text_selection: None,
+            selection_autoscroll: None,
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
@@ -842,6 +847,7 @@ fn build_recording_app_with_history() -> (App, RecordedWrites) {
             locked_input: false,
             mouse_drag: None,
             text_selection: None,
+            selection_autoscroll: None,
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
@@ -919,6 +925,7 @@ fn build_recording_app_with_output(output: Vec<Vec<u8>>) -> (App, RecordedWrites
             locked_input: false,
             mouse_drag: None,
             text_selection: None,
+            selection_autoscroll: None,
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
@@ -1018,6 +1025,7 @@ fn build_recording_app_multi_session() -> (App, RecordedWrites) {
             locked_input: false,
             mouse_drag: None,
             text_selection: None,
+            selection_autoscroll: None,
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
@@ -1169,6 +1177,7 @@ fn build_editor_command_app() -> (App, RecordedSpawnConfigs, BackendClosedFlags)
             locked_input: false,
             mouse_drag: None,
             text_selection: None,
+            selection_autoscroll: None,
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
@@ -6235,6 +6244,103 @@ fn mouse_selection_anchor_remains_fixed_while_scrolling_and_dragging() {
     assert!(
         updated.end_abs_row < expected_anchor_abs_row,
         "expected drag after scroll-up to move selection end above original anchor"
+    );
+}
+
+#[test]
+fn drag_to_top_edge_autoscrolls_selection_into_history() {
+    let (mut app, _writes) = build_recording_app_with_history();
+    app.mouse_enabled = true;
+
+    let frame = app.current_session().frame(app.view.cols, app.view.rows);
+    let pane = frame.panes.first().expect("pane frame");
+    let (pane_x, pane_y) = (pane.rect.x as u16, pane.rect.y as u16);
+
+    app.handle_mouse_event(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        pane_x,
+        pane_y + 5,
+    ))
+    .expect("start selection");
+    app.handle_mouse_event(mouse_event(
+        MouseEventKind::Drag(MouseButton::Left),
+        pane_x,
+        pane_y,
+    ))
+    .expect("drag to top edge");
+
+    let armed = app
+        .view
+        .selection_autoscroll
+        .expect("top-edge drag must arm auto-scroll");
+    assert_eq!(armed.direction, 1, "top edge scrolls toward history");
+
+    let view_rows = app.focused_pane_view_rows();
+    let origin_before = app
+        .current_session()
+        .focused_view_row_origin(view_rows)
+        .expect("view origin");
+    assert!(origin_before > 0, "history must extend above the viewport");
+
+    // Two due ticks scroll two lines; an early tick in between is throttled.
+    let start = Instant::now();
+    app.tick_selection_autoscroll(start);
+    app.tick_selection_autoscroll(start + Duration::from_millis(10));
+    app.tick_selection_autoscroll(start + Duration::from_millis(80));
+
+    let origin_after = app
+        .current_session()
+        .focused_view_row_origin(view_rows)
+        .expect("view origin");
+    assert_eq!(
+        origin_after,
+        origin_before - 2,
+        "each due tick scrolls one line into history"
+    );
+    let sel = app.view.text_selection.expect("selection while dragging");
+    assert!(sel.dragging);
+    assert_eq!(
+        sel.end_abs_row, origin_after,
+        "selection end must follow the newly revealed top row"
+    );
+
+    // Dragging back inside the pane disarms without ending the selection.
+    app.handle_mouse_event(mouse_event(
+        MouseEventKind::Drag(MouseButton::Left),
+        pane_x,
+        pane_y + 3,
+    ))
+    .expect("drag back inside");
+    assert!(
+        app.view.selection_autoscroll.is_none(),
+        "leaving the edge must disarm auto-scroll"
+    );
+
+    // Dragging to the bottom edge arms the opposite direction; release stops.
+    let bottom_row = (pane.rect.y + pane.rect.height - 1) as u16;
+    app.handle_mouse_event(mouse_event(
+        MouseEventKind::Drag(MouseButton::Left),
+        pane_x,
+        bottom_row,
+    ))
+    .expect("drag to bottom edge");
+    assert_eq!(
+        app.view
+            .selection_autoscroll
+            .expect("bottom-edge drag must arm auto-scroll")
+            .direction,
+        -1,
+        "bottom edge scrolls toward the live tail"
+    );
+    app.handle_mouse_event(mouse_event(
+        MouseEventKind::Up(MouseButton::Left),
+        pane_x,
+        bottom_row,
+    ))
+    .expect("release");
+    assert!(
+        app.view.selection_autoscroll.is_none(),
+        "button release must disarm auto-scroll"
     );
 }
 
