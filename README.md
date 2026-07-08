@@ -15,9 +15,10 @@ curl -fsSL https://github.com/aplio/spectra/raw/refs/heads/master/install.sh | s
 
 - pin a version: `SPECTRA_VERSION=v0.2.0 sh`
 - custom directory: `SPECTRA_BIN_DIR=$HOME/.bin sh`
-- upgrade later with `spectra --update`; then `spectra server-handoff` moves a
-  running server onto the new binary without killing any pane process
-  (see [docs/upgrade.md](docs/upgrade.md))
+- upgrade later with `spectra --update`; a live handoff then automatically
+  moves a running server onto the new binary without killing any pane
+  process (refused while clients are attached — detach and run
+  `spectra server-handoff` manually; see [docs/upgrade.md](docs/upgrade.md))
 
 Or build from source: `cargo install --path .`
 
@@ -79,6 +80,9 @@ prefix = "C-j"
 
 [mouse]
 enabled = true
+
+[terminal]
+scrollback_lines = 10000
 
 [prefix_bindings]
 N = "run: notify-send 'hello from spectra'"

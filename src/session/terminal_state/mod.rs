@@ -179,6 +179,12 @@ impl TerminalState {
         }
     }
 
+    /// Cap scrollback retention (visual rows). Lowering the cap trims the
+    /// oldest history immediately.
+    pub fn set_max_scrollback(&mut self, lines: usize) {
+        self.grid.set_max_scrollback(lines);
+    }
+
     pub fn allow_passthrough(&self) -> bool {
         self.grid.allow_passthrough
     }
@@ -430,9 +436,12 @@ struct TerminalGrid {
     /// so a fullscreen app enabling the protocol cannot leak flags back to
     /// the shell when it exits.
     kitty_kbd_alt: KittyKeyboardStack,
+    /// Scrollback retention cap in visual rows (`[terminal] scrollback_lines`).
+    max_scrollback: usize,
 }
 
-const MAX_SCROLLBACK_LINES: usize = 10_000;
+/// Default scrollback retention (`[terminal] scrollback_lines`).
+pub const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
 
 /// Upper bound on how long a synchronized-output hold (DECSET 2026) may
 /// suppress rendering. Mirrors the ~150 ms cap used by other terminals so a

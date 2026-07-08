@@ -1359,6 +1359,31 @@ fn csi_j_mode_3_clears_scrollback_only() {
 }
 
 #[test]
+fn scrollback_cap_is_configurable() {
+    let mut state = TerminalState::new(8, 2);
+    state.set_max_scrollback(5);
+    for i in 0..20 {
+        state.feed(format!("line {i}\r\n").as_bytes());
+    }
+    assert_eq!(state.history_len(), 5);
+    // Only the newest history rows survive.
+    let text = state.scrollback_text();
+    let first = text.lines().next().unwrap_or_default();
+    assert_eq!(first, "line 14");
+
+    // Lowering the cap trims the oldest lines immediately.
+    state.set_max_scrollback(2);
+    assert_eq!(state.history_len(), 2);
+    let text = state.scrollback_text();
+    assert_eq!(text.lines().next().unwrap_or_default(), "line 17");
+
+    // A zero cap disables scrollback entirely.
+    state.set_max_scrollback(0);
+    state.feed(b"more\r\nrows\r\n");
+    assert_eq!(state.history_len(), 0);
+}
+
+#[test]
 fn pending_wrap_preserved_across_sgr() {
     let mut state = TerminalState::new(4, 2);
     // Write exactly 4 chars (pending wrap)

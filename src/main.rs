@@ -21,6 +21,9 @@ fn main() {
         // then moves the server onto the new binary without killing panes.
         let server_active =
             mode == spectra::cli::CliMode::Update && spectra::runtime::client::server_is_active();
+        // Resolve the binary path before the update: the swap unlinks the
+        // running inode, after which /proc/self/exe reads as "... (deleted)".
+        let exe_path = std::env::current_exe().ok();
 
         let command = if mode == spectra::cli::CliMode::Update {
             spectra::upgrade::UpdateCommand::Update
@@ -30,7 +33,12 @@ fn main() {
         match spectra::upgrade::run(command) {
             Ok(outcome) => {
                 println!("{}", outcome.message);
-                if outcome.installed && server_active {
+                if outcome.installed
+                    && server_active
+                    && let Err(err) =
+                        spectra::runtime::handoff::run_post_update_handoff(exe_path.as_deref())
+                {
+                    eprintln!("{err}");
                     println!(
                         "A spectra server is still running the old binary. Run `spectra server-handoff` to switch it to the new one without killing panes (all clients must be detached)."
                     );

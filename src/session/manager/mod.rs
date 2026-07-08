@@ -34,6 +34,12 @@ pub struct SessionOptions {
     pub session_id: String,
     pub suppress_prompt_eol_marker: bool,
     pub allow_passthrough: bool,
+    /// Scrollback retained per pane, in visual rows
+    /// (`[terminal] scrollback_lines`).
+    pub scrollback_lines: usize,
+    /// Raw output bytes retained per pane for live-handoff replay
+    /// (`[pane] handoff_replay_bytes`).
+    pub handoff_replay_bytes: usize,
     /// Host terminal default fg/bg colors applied to new panes so guests
     /// can query them via OSC 10/11 (unknown by default).
     pub host_colors: HostColors,
@@ -59,6 +65,8 @@ impl SessionOptions {
             session_id: String::new(),
             suppress_prompt_eol_marker: false,
             allow_passthrough: true,
+            scrollback_lines: crate::session::terminal_state::DEFAULT_SCROLLBACK_LINES,
+            handoff_replay_bytes: crate::session::pane::DEFAULT_REPLAY_BYTES_PER_PANE,
             host_colors: HostColors::default(),
             undo_close_timeout: DEFAULT_UNDO_CLOSE_TIMEOUT,
             new_cwd: NewCwdPolicy::default(),
@@ -307,6 +315,20 @@ impl SessionManager {
 
     pub fn allow_passthrough(&self) -> bool {
         self.options.allow_passthrough
+    }
+
+    pub fn set_scrollback_lines(&mut self, lines: usize) {
+        self.options.scrollback_lines = lines;
+        for pane in self.panes.values_mut() {
+            pane.set_max_scrollback(lines);
+        }
+    }
+
+    pub fn set_handoff_replay_bytes(&mut self, bytes: usize) {
+        self.options.handoff_replay_bytes = bytes;
+        for pane in self.panes.values_mut() {
+            pane.set_handoff_replay_bytes(bytes);
+        }
     }
 
     /// Update the host terminal default colors on every pane (and on the
@@ -818,6 +840,8 @@ pub(super) fn spawn_pane(
         session_id: options.session_id.clone(),
     })?;
     let mut pane = Pane::new(width, height, options.allow_passthrough, backend);
+    pane.set_max_scrollback(options.scrollback_lines);
+    pane.set_handoff_replay_bytes(options.handoff_replay_bytes);
     pane.set_host_colors(options.host_colors);
     pane.set_cwd(options.cwd.clone());
     Ok(pane)

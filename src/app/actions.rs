@@ -678,6 +678,10 @@ impl App {
         self.session_template.suppress_prompt_eol_marker = suppress_prompt_eol_marker;
         let allow_passthrough = loaded.terminal.allow_passthrough;
         self.session_template.allow_passthrough = allow_passthrough;
+        let scrollback_lines = loaded.terminal.scrollback_lines;
+        self.session_template.scrollback_lines = scrollback_lines;
+        let handoff_replay_bytes = loaded.pane.handoff_replay_bytes;
+        self.session_template.handoff_replay_bytes = handoff_replay_bytes;
         let undo_close_timeout = Duration::from_secs(loaded.pane.undo_close_seconds);
         self.session_template.undo_close_timeout = undo_close_timeout;
         let new_cwd = loaded.shell.new_cwd.clone();
@@ -687,6 +691,10 @@ impl App {
                 .session
                 .set_suppress_prompt_eol_marker(suppress_prompt_eol_marker);
             managed.session.set_allow_passthrough(allow_passthrough);
+            managed.session.set_scrollback_lines(scrollback_lines);
+            managed
+                .session
+                .set_handoff_replay_bytes(handoff_replay_bytes);
             managed.session.set_undo_close_timeout(undo_close_timeout);
             managed.session.set_new_cwd_policy(new_cwd.clone());
         }

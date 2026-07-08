@@ -10,13 +10,19 @@ spectra --update
 
 - `--update` checks GitHub releases and replaces the current binary if a newer version exists.
 - The command exits without starting a terminal session or server.
-- `--update` is blocked while any spectra server socket is active.
+- Updating while a server runs is safe: the swap replaces the file, the
+  running server keeps its old inode.
 
-When a server is active, `spectra --update` prints an error similar to:
+When a server is active and a new binary was installed, `--update`
+automatically attempts a live handoff (`spectra server-handoff`) to move the
+running server onto the new binary without killing panes. The server refuses
+the handoff while any client is attached; in that case `--update` prints the
+refusal and a hint to rerun `spectra server-handoff` manually after
+detaching all clients.
 
-```
---update cannot run while a spectra server is active
-```
+Each pane carries its last `[pane] handoff_replay_bytes` (default 256 KiB)
+of raw output across the handoff; scrollback older than that tail does not
+survive.
 
 ## Release source
 

@@ -14,8 +14,8 @@
 //!    disarms kill-on-drop for every pane child, unlinks its listener
 //!    sockets, sends the completion line, and exits.
 //! 5. successor binds fresh listener sockets, rebuilds the `App` around the
-//!    adopted fds, replays each pane's ≤8 KiB output tail, and runs the
-//!    normal server loop.
+//!    adopted fds, replays each pane's retained output tail
+//!    (`[pane] handoff_replay_bytes`), and runs the normal server loop.
 //!
 //! Any failure before step 4 leaves the old server fully functional — it
 //! logs the abort and keeps serving; nothing is disarmed or unbound.
@@ -58,6 +58,29 @@ pub(crate) const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(10);
 const COORDINATOR_TIMEOUT: Duration = Duration::from_secs(30);
 /// Upper bound on the JSON header line (guards a byte-wise line reader).
 const MAX_HEADER_LINE_BYTES: usize = 32 * 1024 * 1024;
+
+/// Post-update hook: run the live handoff through the freshly installed
+/// binary (the calling process still executes the old code, so it must not
+/// perform the takeover itself). The server-side pre-flight refuses while
+/// clients are attached, so this succeeds exactly when a handoff is safe;
+/// any failure leaves the old server fully serving.
+pub fn run_post_update_handoff(installed_exe: Option<&std::path::Path>) -> io::Result<()> {
+    let exe = installed_exe.ok_or_else(|| {
+        io::Error::other("could not determine the installed binary path for the live handoff")
+    })?;
+    println!("Attempting live handoff to move the running server onto the new binary...");
+    let status = Command::new(exe)
+        .arg("server-handoff")
+        .stdin(Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(
+            "the live handoff did not complete (see the message above)",
+        ))
+    }
+}
 
 pub fn run(cli: Cli) -> io::Result<()> {
     let foreground = match &cli.subcommand {

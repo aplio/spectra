@@ -4,10 +4,11 @@ use std::path::{Path, PathBuf};
 use crate::io::host_colors::HostColors;
 use crate::session::terminal_state::{StyledCell, TerminalEvent, TerminalState};
 
-/// Raw output retained per pane for replay across a live server handoff.
-/// Kept small on purpose: enough to repaint the visible screen, not the
-/// scrollback (herdr uses the same 8 KiB budget).
-pub const MAX_REPLAY_BYTES_PER_PANE: usize = 8 * 1024;
+/// Default raw output retained per pane for replay across a live server
+/// handoff (`[pane] handoff_replay_bytes`). 256 KiB repaints the screen
+/// plus a useful chunk of recent scrollback (~3000 80-col rows); history
+/// beyond the retained tail does not survive a handoff.
+pub const DEFAULT_REPLAY_BYTES_PER_PANE: usize = 256 * 1024;
 
 pub trait PaneBackend: Send {
     fn write(&mut self, bytes: &[u8]) -> io::Result<()>;
@@ -39,9 +40,11 @@ pub struct Pane {
     view_scroll_offset: usize,
     pending_passthrough: Vec<Vec<u8>>,
     pending_terminal_events: Vec<TerminalEvent>,
-    /// Last ≤[`MAX_REPLAY_BYTES_PER_PANE`] raw output bytes, kept so a live
+    /// Last ≤[`Self::max_replay_bytes`] raw output bytes, kept so a live
     /// server handoff can repaint the pane in the successor process.
     replay_tail: Vec<u8>,
+    /// Replay-tail retention budget (`[pane] handoff_replay_bytes`).
+    max_replay_bytes: usize,
     /// Working directory reported by the guest via OSC 7 (or seeded from the
     /// spawn cwd). New splits/windows spawn here so they inherit the focused
     /// pane's directory. `None` until the shell emits its first OSC 7 and no
@@ -63,7 +66,22 @@ impl Pane {
             pending_passthrough: Vec::new(),
             pending_terminal_events: Vec::new(),
             replay_tail: Vec::new(),
+            max_replay_bytes: DEFAULT_REPLAY_BYTES_PER_PANE,
             cwd: None,
+        }
+    }
+
+    /// Cap scrollback retention (visual rows); lowering trims immediately.
+    pub fn set_max_scrollback(&mut self, lines: usize) {
+        self.terminal.set_max_scrollback(lines);
+    }
+
+    /// Set the replay-tail budget; lowering trims the retained tail.
+    pub fn set_handoff_replay_bytes(&mut self, bytes: usize) {
+        self.max_replay_bytes = bytes;
+        let overflow = self.replay_tail.len().saturating_sub(bytes);
+        if overflow > 0 {
+            self.replay_tail.drain(..overflow);
         }
     }
 
@@ -380,7 +398,7 @@ impl Pane {
         self.backend.disarm_child_kill();
     }
 
-    /// Last ≤[`MAX_REPLAY_BYTES_PER_PANE`] raw output bytes seen by this pane.
+    /// Last ≤[`Self::max_replay_bytes`] raw output bytes seen by this pane.
     pub fn replay_tail(&self) -> &[u8] {
         &self.replay_tail
     }
@@ -398,14 +416,13 @@ impl Pane {
     }
 
     fn push_replay_tail(&mut self, bytes: &[u8]) {
-        if bytes.len() >= MAX_REPLAY_BYTES_PER_PANE {
+        if bytes.len() >= self.max_replay_bytes {
             self.replay_tail.clear();
             self.replay_tail
-                .extend_from_slice(&bytes[bytes.len() - MAX_REPLAY_BYTES_PER_PANE..]);
+                .extend_from_slice(&bytes[bytes.len() - self.max_replay_bytes..]);
             return;
         }
-        let overflow =
-            (self.replay_tail.len() + bytes.len()).saturating_sub(MAX_REPLAY_BYTES_PER_PANE);
+        let overflow = (self.replay_tail.len() + bytes.len()).saturating_sub(self.max_replay_bytes);
         if overflow > 0 {
             self.replay_tail.drain(..overflow);
         }
@@ -447,7 +464,7 @@ impl PaneBackend for FakeBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::{FakeBackend, MAX_REPLAY_BYTES_PER_PANE, Pane};
+    use super::{DEFAULT_REPLAY_BYTES_PER_PANE, FakeBackend, Pane};
 
     fn pane_with_output(chunks: Vec<Vec<u8>>) -> Pane {
         Pane::new(80, 24, false, Box::new(FakeBackend::new(chunks)))
@@ -471,20 +488,42 @@ mod tests {
 
     #[test]
     fn replay_tail_is_capped_at_the_replay_budget() {
-        let big = vec![b'x'; MAX_REPLAY_BYTES_PER_PANE + 100];
+        let big = vec![b'x'; DEFAULT_REPLAY_BYTES_PER_PANE + 100];
         let mut pane = pane_with_output(vec![big]);
         assert!(pane.poll_output());
-        assert_eq!(pane.replay_tail().len(), MAX_REPLAY_BYTES_PER_PANE);
+        assert_eq!(pane.replay_tail().len(), DEFAULT_REPLAY_BYTES_PER_PANE);
 
         // Small chunks after a full tail keep only the newest bytes.
         let mut pane = pane_with_output(vec![
-            vec![b'a'; MAX_REPLAY_BYTES_PER_PANE],
+            vec![b'a'; DEFAULT_REPLAY_BYTES_PER_PANE],
             b"tail-marker".to_vec(),
         ]);
         assert!(pane.poll_output());
         let tail = pane.replay_tail();
-        assert_eq!(tail.len(), MAX_REPLAY_BYTES_PER_PANE);
+        assert_eq!(tail.len(), DEFAULT_REPLAY_BYTES_PER_PANE);
         assert!(tail.ends_with(b"tail-marker"));
+    }
+
+    #[test]
+    fn replay_budget_setter_applies_and_trims() {
+        let mut pane = pane_with_output(vec![vec![b'a'; 100], b"tail-marker".to_vec()]);
+        assert!(pane.poll_output());
+        pane.set_handoff_replay_bytes(16);
+        let tail = pane.replay_tail();
+        assert_eq!(tail.len(), 16);
+        assert!(tail.ends_with(b"tail-marker"));
+    }
+
+    #[test]
+    fn scrollback_cap_setter_limits_history() {
+        let mut feed = Vec::new();
+        for i in 0..500 {
+            feed.extend_from_slice(format!("line {i}\r\n").as_bytes());
+        }
+        let mut pane = pane_with_output(vec![feed]);
+        assert!(pane.poll_output());
+        pane.set_max_scrollback(100);
+        assert_eq!(pane.total_lines() - pane.screen_rows(), 100);
     }
 
     #[test]

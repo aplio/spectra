@@ -141,7 +141,7 @@ impl TerminalGrid {
                 boundary_to_next: *boundary,
             });
         }
-        let overflow = new_scrollback.len().saturating_sub(MAX_SCROLLBACK_LINES);
+        let overflow = new_scrollback.len().saturating_sub(self.max_scrollback);
         if overflow > 0 {
             new_scrollback.drain(0..overflow);
         }

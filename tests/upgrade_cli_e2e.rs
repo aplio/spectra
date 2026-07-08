@@ -176,8 +176,15 @@ fn update_reports_failure_in_mock_mode() {
     assert!(stderr.contains("mock"), "unexpected stderr: {}", stderr);
 }
 
+/// Pid printed by the handoff coordinator: "... new server (pid N); ...".
+fn parse_successor_pid(stdout: &str) -> Option<u32> {
+    let rest = stdout.split("(pid ").nth(1)?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
 #[test]
-fn update_succeeds_while_server_is_active_and_prints_handoff_hint() {
+fn update_succeeds_while_server_is_active_and_hands_off_automatically() {
     let dir = tempfile::tempdir().expect("tempdir");
     let runtime_dir = dir.path().join("runtime");
     let data_home = dir.path().join("data");
@@ -190,25 +197,39 @@ fn update_succeeds_while_server_is_active_and_prints_handoff_hint() {
     wait_for_socket(&socket).expect("socket exists");
 
     // Binary replacement is an inode swap, safe while the old server runs;
-    // --update therefore succeeds and points at the live handoff.
+    // --update therefore succeeds and, with no clients attached, moves the
+    // server onto the (mock-)installed binary via an automatic live handoff.
     let output = run_spectra(&bin, &runtime_dir, &data_home, &["--update"], "has_update")
         .expect("run --update");
 
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The handoff successor keeps running detached; kill it before asserting
+    // so a failure cannot leak the process.
+    if let Some(pid) = parse_successor_pid(&stdout) {
+        let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+    }
+
     assert!(
         output.status.success(),
-        "expected --update to succeed while server is active, stderr: {}",
+        "expected --update to succeed while server is active, stdout: {} stderr: {}",
+        stdout,
         format_output(&output.stderr)
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("Upgraded spectra from"),
         "unexpected stdout: {}",
         stdout
     );
     assert!(
-        stdout.contains("spectra server-handoff"),
-        "expected the handoff hint in stdout: {}",
+        stdout.contains("Attempting live handoff"),
+        "expected the auto-handoff attempt in stdout: {}",
         stdout
+    );
+    assert!(
+        stdout.contains("server handoff complete"),
+        "expected the handoff to complete with no clients attached: {} stderr: {}",
+        stdout,
+        format_output(&output.stderr)
     );
 }
 

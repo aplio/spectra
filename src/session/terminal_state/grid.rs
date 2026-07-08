@@ -42,6 +42,23 @@ impl TerminalGrid {
             active_link: None,
             kitty_kbd_main: KittyKeyboardStack::default(),
             kitty_kbd_alt: KittyKeyboardStack::default(),
+            max_scrollback: DEFAULT_SCROLLBACK_LINES,
+        }
+    }
+
+    pub(super) fn set_max_scrollback(&mut self, lines: usize) {
+        self.max_scrollback = lines;
+        // Shrink immediately when the cap drops: the push path only evicts
+        // one line per new row, which would drain a large excess slowly.
+        let excess = self.scrollback.len().saturating_sub(lines);
+        if excess > 0 {
+            self.scrollback.drain(0..excess);
+        }
+        if let Some(saved) = &mut self.saved_screen {
+            let excess = saved.scrollback.len().saturating_sub(lines);
+            if excess > 0 {
+                saved.scrollback.drain(0..excess);
+            }
         }
     }
 
@@ -634,8 +651,11 @@ impl TerminalGrid {
     /// for the new one, so steady-state bulk output pushes history lines
     /// with zero allocation.
     fn push_row_to_scrollback(&mut self, row: usize) {
+        if self.max_scrollback == 0 {
+            return;
+        }
         let boundary_to_next = self.row_boundary_to_next(row);
-        let mut line = if self.scrollback.len() >= MAX_SCROLLBACK_LINES {
+        let mut line = if self.scrollback.len() >= self.max_scrollback {
             self.scrollback.pop_front()
         } else {
             None

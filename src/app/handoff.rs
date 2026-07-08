@@ -64,7 +64,8 @@ struct HandoffPaneEntry {
     /// Index into the SCM_RIGHTS fd stream (order of transmission).
     fd_index: usize,
     child_pid: Option<u32>,
-    /// Last ≤8 KiB of raw pane output, base64 encoded.
+    /// Tail of the pane's raw output (≤`[pane] handoff_replay_bytes`,
+    /// further budgeted across panes at export), base64 encoded.
     replay_b64: String,
     terminal_title: Option<String>,
     cwd: Option<String>,
@@ -138,18 +139,26 @@ impl App {
         self.capture_active_client_focus_profile();
         let state = self.runtime_state_snapshot();
 
+        // The successor reads the header as one line with a fixed byte cap;
+        // budget the raw replay bytes across panes so the base64-encoded
+        // header stays under it even at the v1 pane maximum (16 MiB raw →
+        // ~21 MiB encoded, comfortably below the 32 MiB line cap).
+        const REPLAY_EXPORT_BUDGET: usize = 16 * 1024 * 1024;
+        let per_pane_replay_cap = REPLAY_EXPORT_BUDGET / self.total_pane_count().max(1);
+
         let mut fds: Vec<OwnedFd> = Vec::new();
         let mut panes = Vec::new();
         for managed in &self.sessions {
             for pane_id in managed.session.all_pane_ids() {
                 let export = managed.session.pane_handoff_export(pane_id)?;
                 let duplicated = crate::ipc::fdpass::dup_fd_cloexec(export.master_fd)?;
+                let replay_start = export.replay.len().saturating_sub(per_pane_replay_cap);
                 panes.push(HandoffPaneEntry {
                     session_id: managed.session_id.clone(),
                     pane_id,
                     fd_index: fds.len(),
                     child_pid: export.child_pid,
-                    replay_b64: BASE64.encode(&export.replay),
+                    replay_b64: BASE64.encode(&export.replay[replay_start..]),
                     terminal_title: managed.terminal_titles.get(&pane_id).cloned(),
                     cwd: managed.cwd_fallbacks.get(&pane_id).cloned(),
                     agent_kind: managed

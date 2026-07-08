@@ -293,6 +293,8 @@ impl App {
         }
         options.suppress_prompt_eol_marker = app_config.shell.suppress_prompt_eol_marker;
         options.allow_passthrough = app_config.terminal.allow_passthrough;
+        options.scrollback_lines = app_config.terminal.scrollback_lines;
+        options.handoff_replay_bytes = app_config.pane.handoff_replay_bytes;
         options.undo_close_timeout = Duration::from_secs(app_config.pane.undo_close_seconds);
         options.new_cwd = app_config.shell.new_cwd.clone();
 

@@ -131,14 +131,23 @@ fn default_true() -> bool {
 pub struct TerminalConfig {
     #[serde(default = "default_true")]
     pub allow_passthrough: bool,
+    /// Scrollback retained per pane, in visual rows (soft-wrapped lines
+    /// count per row). 0 disables scrollback. (default: 10000)
+    #[serde(default = "default_scrollback_lines")]
+    pub scrollback_lines: usize,
 }
 
 impl Default for TerminalConfig {
     fn default() -> Self {
         Self {
             allow_passthrough: true,
+            scrollback_lines: default_scrollback_lines(),
         }
     }
+}
+
+fn default_scrollback_lines() -> usize {
+    crate::session::terminal_state::DEFAULT_SCROLLBACK_LINES
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -147,18 +156,28 @@ pub struct PaneConfig {
     /// the close (ghostty-style undo close). 0 disables retention.
     #[serde(default = "default_undo_close_seconds")]
     pub undo_close_seconds: u64,
+    /// Raw output bytes retained per pane and replayed across a live server
+    /// handoff (`spectra server-handoff`); history beyond this tail does not
+    /// survive a handoff. (default: 262144)
+    #[serde(default = "default_handoff_replay_bytes")]
+    pub handoff_replay_bytes: usize,
 }
 
 impl Default for PaneConfig {
     fn default() -> Self {
         Self {
             undo_close_seconds: default_undo_close_seconds(),
+            handoff_replay_bytes: default_handoff_replay_bytes(),
         }
     }
 }
 
 fn default_undo_close_seconds() -> u64 {
     10
+}
+
+fn default_handoff_replay_bytes() -> usize {
+    crate::session::pane::DEFAULT_REPLAY_BYTES_PER_PANE
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -314,6 +333,8 @@ mod tests {
         assert_eq!(config.shell.new_cwd, super::NewCwdPolicy::Follow);
         assert!(!config.mouse.enabled);
         assert!(config.terminal.allow_passthrough);
+        assert_eq!(config.terminal.scrollback_lines, 10_000);
+        assert_eq!(config.pane.handoff_replay_bytes, 256 * 1024);
         assert!(config.status.format.is_none());
         assert!(config.status.background.is_none());
         assert!(config.status.foreground.is_none());
@@ -380,6 +401,11 @@ enabled = true
 
 [terminal]
 allow_passthrough = false
+scrollback_lines = 50000
+
+[pane]
+undo_close_seconds = 5
+handoff_replay_bytes = 1048576
 
 [status]
 format = "session {session_index}"
@@ -422,6 +448,9 @@ C-w = "window-list"
         assert!(config.shell.suppress_prompt_eol_marker);
         assert!(config.mouse.enabled);
         assert!(!config.terminal.allow_passthrough);
+        assert_eq!(config.terminal.scrollback_lines, 50_000);
+        assert_eq!(config.pane.undo_close_seconds, 5);
+        assert_eq!(config.pane.handoff_replay_bytes, 1_048_576);
         assert_eq!(
             config.status.format.as_deref(),
             Some("session {session_index}")
