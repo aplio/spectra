@@ -195,6 +195,11 @@ fn update_succeeds_while_server_is_active_and_hands_off_automatically() {
     let _server = spawn_server(&bin, &runtime_dir, &data_home).expect("start server");
     let socket = socket_path(&runtime_dir);
     wait_for_socket(&socket).expect("socket exists");
+    // The handoff request goes through the API socket, which the server
+    // binds after the client socket — wait for it too or a cold-cache start
+    // races the auto-handoff into a connection-refused failure.
+    let api_socket = runtime_dir.join("spectra").join("spectra-api.sock");
+    wait_for_socket(&api_socket).expect("api socket exists");
 
     // Binary replacement is an inode swap, safe while the old server runs;
     // --update therefore succeeds and, with no clients attached, moves the
