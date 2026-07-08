@@ -318,6 +318,18 @@ impl TerminalState {
             .collect()
     }
 
+    /// Per-row soft-wrap flags matching [`Self::history_lines`]: `true` when
+    /// that row soft-wraps into the next one (no real LF between them).
+    pub fn history_soft_wraps(&self) -> Vec<bool> {
+        self.grid.history_soft_wraps()
+    }
+
+    /// Whether the row at `absolute_row` continues onto the next row via a
+    /// soft wrap.
+    pub fn absolute_row_soft_wrapped(&self, absolute_row: usize) -> bool {
+        self.grid.absolute_row_soft_wrapped(absolute_row)
+    }
+
     pub fn history_tail_lines(&self, max_lines: usize) -> Vec<String> {
         self.grid.history_tail_lines(max_lines)
     }

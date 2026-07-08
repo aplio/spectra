@@ -214,6 +214,9 @@ pub(super) struct CursorModeState {
     pub pane_id: usize,
     pub lines: Vec<String>,
     pub styled_lines: Vec<Vec<StyledCell>>,
+    /// Per-line soft-wrap flags: `true` when `lines[i]` continues onto
+    /// `lines[i + 1]` without a real LF, so copies rejoin the fragments.
+    pub soft_wraps: Vec<bool>,
     pub cursor: CursorModePoint,
     pub selection_anchor: Option<CursorModePoint>,
     /// True while a `v` visual selection is active: movement then extends

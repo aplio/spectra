@@ -586,6 +586,13 @@ impl SessionManager {
         self.panes.get(&pane_id).map(Pane::history_cells)
     }
 
+    /// Per-row soft-wrap flags matching [`Self::focused_history_lines`]:
+    /// `true` when that row soft-wraps into the next one (no real LF).
+    pub fn focused_history_soft_wraps(&self) -> Option<Vec<bool>> {
+        let pane_id = self.focused_pane_id()?;
+        self.panes.get(&pane_id).map(Pane::history_soft_wraps)
+    }
+
     pub fn focused_view_row_origin(&self, view_rows: usize) -> Option<usize> {
         let pane_id = self.focused_pane_id()?;
         self.panes
@@ -687,6 +694,17 @@ impl SessionManager {
         self.panes
             .get(&pane_id)
             .map(|pane| pane.absolute_row_cells(absolute_row))
+    }
+
+    /// Whether the pane row at `absolute_row` soft-wraps into the next row.
+    pub fn pane_absolute_row_soft_wrapped(
+        &self,
+        pane_id: PaneId,
+        absolute_row: usize,
+    ) -> Option<bool> {
+        self.panes
+            .get(&pane_id)
+            .map(|pane| pane.absolute_row_soft_wrapped(absolute_row))
     }
 
     pub fn scroll_focused_pane(&mut self, lines: isize, view_rows: usize) {

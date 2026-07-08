@@ -282,6 +282,16 @@ impl Pane {
         self.terminal.history_cells()
     }
 
+    /// Per-row soft-wrap flags matching [`Self::history_lines`].
+    pub fn history_soft_wraps(&self) -> Vec<bool> {
+        self.terminal.history_soft_wraps()
+    }
+
+    /// Whether the row at `absolute_row` soft-wraps into the next row.
+    pub fn absolute_row_soft_wrapped(&self, absolute_row: usize) -> bool {
+        self.terminal.absolute_row_soft_wrapped(absolute_row)
+    }
+
     pub fn history_tail_lines(&self, max_lines: usize) -> Vec<String> {
         self.terminal.history_tail_lines(max_lines)
     }

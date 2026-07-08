@@ -251,6 +251,10 @@ impl App {
             self.set_message("no focused pane", Duration::from_secs(2));
             return;
         };
+        let mut soft_wraps = self
+            .current_session()
+            .focused_history_soft_wraps()
+            .unwrap_or_default();
         if lines.is_empty() {
             lines.push(String::new());
         }
@@ -262,6 +266,7 @@ impl App {
         } else if styled_lines.len() > lines.len() {
             styled_lines.truncate(lines.len());
         }
+        soft_wraps.resize(lines.len(), false);
 
         let view_rows = focused_pane.rect.height.max(1);
         let viewport_top = self
@@ -284,6 +289,7 @@ impl App {
             pane_id: focused_pane.pane_id,
             lines,
             styled_lines,
+            soft_wraps,
             cursor: CursorModePoint {
                 line: cursor_line,
                 col: cursor_col,
@@ -310,7 +316,7 @@ impl App {
         let mut cursor = state.cursor;
         Self::cursor_mode_clamp_point(state, &mut cursor);
         let Some(mut anchor) = state.selection_anchor else {
-            return state.lines.get(cursor.line).cloned().unwrap_or_default();
+            return Self::cursor_mode_logical_line(state, cursor.line);
         };
         Self::cursor_mode_clamp_point(state, &mut anchor);
 
@@ -327,7 +333,7 @@ impl App {
             );
         }
 
-        let mut parts = Vec::new();
+        let mut out = String::new();
         for line_idx in start.line..=end.line {
             let line = state.lines.get(line_idx).map(String::as_str).unwrap_or("");
             let text = if line_idx == start.line {
@@ -338,9 +344,32 @@ impl App {
             } else {
                 line.to_string()
             };
-            parts.push(text);
+            out.push_str(&text);
+            // A soft-wrapped row continues on the next one without a real
+            // LF; only hard line ends contribute a newline to the copy.
+            if line_idx < end.line && !state.soft_wraps.get(line_idx).copied().unwrap_or(false) {
+                out.push('\n');
+            }
         }
-        parts.join("\n")
+        out
+    }
+
+    /// The full logical line containing display row `line`: soft-wrapped
+    /// fragments above and below are rejoined without separators, so a `y`
+    /// on any row of a wrapped line copies the whole unwrapped line.
+    fn cursor_mode_logical_line(state: &CursorModeState, line: usize) -> String {
+        let mut start = line;
+        while start > 0 && state.soft_wraps.get(start - 1).copied().unwrap_or(false) {
+            start -= 1;
+        }
+        let mut out = String::new();
+        for idx in start..state.lines.len() {
+            out.push_str(state.lines.get(idx).map(String::as_str).unwrap_or(""));
+            if !state.soft_wraps.get(idx).copied().unwrap_or(false) {
+                break;
+            }
+        }
+        out
     }
 
     /// Copies the current selection (or line) and returns `true` when the

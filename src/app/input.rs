@@ -722,7 +722,7 @@ impl App {
             start_abs_row = start_abs_row.min(last_row);
             end_abs_row = end_abs_row.min(last_row);
 
-            let mut lines = Vec::new();
+            let mut text = String::new();
             for abs_row in start_abs_row..=end_abs_row {
                 let cells = session
                     .pane_absolute_row_cells(sel.pane_id, abs_row)
@@ -742,16 +742,25 @@ impl App {
                 } else {
                     cells.len()
                 };
-                let text: String = cells
+                let row_text: String = cells
                     .get(from..to)
                     .unwrap_or(&[])
                     .iter()
                     .filter(|cell| cell.ch != '\0')
                     .map(|cell| cell.ch)
                     .collect();
-                lines.push(text.trim_end().to_string());
+                text.push_str(row_text.trim_end());
+                // A soft-wrapped row continues on the next one without a
+                // real LF; only hard line ends contribute a newline.
+                if abs_row < end_abs_row
+                    && !session
+                        .pane_absolute_row_soft_wrapped(sel.pane_id, abs_row)
+                        .unwrap_or(false)
+                {
+                    text.push('\n');
+                }
             }
-            lines.join("\n")
+            text
         };
 
         if text.trim().is_empty() {

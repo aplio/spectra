@@ -3901,6 +3901,7 @@ fn cursor_mode_movement_and_word_navigation() {
             pane_id: 1,
             lines: vec!["alpha beta gamma".to_string()],
             styled_lines: Vec::new(),
+            soft_wraps: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 0 },
             selection_anchor: None,
             visual: false,
@@ -3975,6 +3976,7 @@ fn cursor_mode_goto_chord_jumps_like_gargo() {
                 "third line here".to_string(),
             ],
             styled_lines: Vec::new(),
+            soft_wraps: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 2 },
             selection_anchor: None,
             visual: false,
@@ -4058,6 +4060,7 @@ fn cursor_mode_goto_chord_extends_visual_selection() {
             pane_id: 1,
             lines: vec!["one".to_string(), "two".to_string(), "three".to_string()],
             styled_lines: Vec::new(),
+            soft_wraps: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 0 },
             selection_anchor: Some(super::CursorModePoint { line: 0, col: 0 }),
             visual: true,
@@ -4090,6 +4093,7 @@ fn cursor_mode_word_navigation_crosses_lines_like_gargo() {
             pane_id: 1,
             lines: vec!["alpha".to_string(), "beta gamma".to_string()],
             styled_lines: Vec::new(),
+            soft_wraps: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 0 },
             selection_anchor: None,
             visual: false,
@@ -4139,6 +4143,7 @@ fn cursor_mode_word_navigation_handles_punctuation_blocks_like_gargo() {
             pane_id: 1,
             lines: vec!["aplio@test z".to_string()],
             styled_lines: Vec::new(),
+            soft_wraps: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 0 },
             selection_anchor: None,
             visual: false,
@@ -4191,6 +4196,7 @@ fn cursor_mode_word_end_navigation_crosses_lines_like_gargo() {
             pane_id: 1,
             lines: vec!["alpha".to_string(), "beta gamma".to_string()],
             styled_lines: Vec::new(),
+            soft_wraps: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 4 },
             selection_anchor: None,
             visual: false,
@@ -4224,6 +4230,7 @@ fn cursor_mode_word_end_navigation_handles_punctuation_blocks_like_gargo() {
             pane_id: 1,
             lines: vec!["aplio@test z".to_string()],
             styled_lines: Vec::new(),
+            soft_wraps: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 0 },
             selection_anchor: None,
             visual: false,
@@ -4269,6 +4276,7 @@ fn cursor_mode_v_toggles_selection_anchor() {
             pane_id: 1,
             lines: vec!["alpha beta gamma".to_string()],
             styled_lines: Vec::new(),
+            soft_wraps: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 4 },
             selection_anchor: None,
             visual: false,
@@ -4303,6 +4311,7 @@ fn cursor_mode_space_does_not_toggle_selection_anchor() {
             pane_id: 1,
             lines: vec!["alpha beta gamma".to_string()],
             styled_lines: Vec::new(),
+            soft_wraps: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 4 },
             selection_anchor: Some(super::CursorModePoint { line: 0, col: 1 }),
             visual: false,
@@ -4331,6 +4340,7 @@ fn cursor_mode_x_selects_current_line() {
             pane_id: 1,
             lines: vec!["alpha beta".to_string(), "gamma".to_string()],
             styled_lines: Vec::new(),
+            soft_wraps: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 3 },
             selection_anchor: None,
             visual: false,
@@ -4360,6 +4370,7 @@ fn cursor_mode_x_extends_line_selection_down() {
             pane_id: 1,
             lines: vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
             styled_lines: Vec::new(),
+            soft_wraps: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 2 },
             selection_anchor: None,
             visual: false,
@@ -4391,6 +4402,7 @@ fn cursor_mode_x_at_last_line_does_not_move_past_buffer_end() {
             pane_id: 1,
             lines: vec!["alpha".to_string(), "beta".to_string()],
             styled_lines: Vec::new(),
+            soft_wraps: Vec::new(),
             cursor: super::CursorModePoint { line: 1, col: 1 },
             selection_anchor: None,
             visual: false,
@@ -4420,6 +4432,7 @@ fn cursor_mode_selection_extracts_multiline_text() {
         pane_id: 1,
         lines: vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
         styled_lines: Vec::new(),
+        soft_wraps: Vec::new(),
         cursor: super::CursorModePoint { line: 2, col: 2 },
         selection_anchor: Some(super::CursorModePoint { line: 0, col: 1 }),
         visual: false,
@@ -4431,6 +4444,73 @@ fn cursor_mode_selection_extracts_multiline_text() {
         App::cursor_mode_selected_text(&state),
         "lpha\nbeta\ngam".to_string()
     );
+}
+
+#[test]
+fn cursor_mode_selection_rejoins_soft_wrapped_lines() {
+    let state = super::CursorModeState {
+        pane_id: 1,
+        lines: vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
+        styled_lines: Vec::new(),
+        // "alpha" soft-wraps into "beta": copying must not invent an LF at
+        // the visual wrap, only at the real line end after "beta".
+        soft_wraps: vec![true, false, false],
+        cursor: super::CursorModePoint { line: 2, col: 4 },
+        selection_anchor: Some(super::CursorModePoint { line: 0, col: 0 }),
+        visual: false,
+        viewport_top: 0,
+        pending_goto: false,
+    };
+
+    assert_eq!(App::cursor_mode_selected_text(&state), "alphabeta\ngamma");
+}
+
+#[test]
+fn cursor_mode_line_copy_without_selection_rejoins_logical_line() {
+    // "alpha" wraps into "beta": with no selection, `y` on any of the
+    // fragments copies the whole unwrapped logical line.
+    let mut state = super::CursorModeState {
+        pane_id: 1,
+        lines: vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
+        styled_lines: Vec::new(),
+        soft_wraps: vec![true, false, false],
+        cursor: super::CursorModePoint { line: 0, col: 2 },
+        selection_anchor: None,
+        visual: false,
+        viewport_top: 0,
+        pending_goto: false,
+    };
+    assert_eq!(App::cursor_mode_selected_text(&state), "alphabeta");
+
+    // Same result from the continuation row.
+    state.cursor.line = 1;
+    assert_eq!(App::cursor_mode_selected_text(&state), "alphabeta");
+
+    // An unwrapped line copies just itself.
+    state.cursor.line = 2;
+    assert_eq!(App::cursor_mode_selected_text(&state), "gamma");
+}
+
+#[test]
+fn open_cursor_mode_captures_soft_wrap_flags() {
+    let mut wrapped = vec![b'a'; 85];
+    wrapped.extend_from_slice(b"\r\ntail");
+    let (mut app, _writes) = build_recording_app_with_output(vec![wrapped]);
+    assert!(
+        app.current_session_mut().poll_output(),
+        "expected pane output"
+    );
+
+    app.open_cursor_mode();
+    let InputMode::CursorMode { state } = &app.view.input_mode else {
+        panic!("expected cursor mode");
+    };
+    assert_eq!(state.soft_wraps.len(), state.lines.len());
+    assert_eq!(state.lines[0], "a".repeat(80));
+    assert_eq!(state.lines[1], "aaaaa");
+    assert_eq!(state.lines[2], "tail");
+    assert!(state.soft_wraps[0], "row 0 soft-wraps into row 1");
+    assert!(!state.soft_wraps[1], "row 1 ends with a real LF");
 }
 
 #[test]
@@ -6187,6 +6267,37 @@ fn mouse_drag_release_keeps_selection_without_copying() {
     assert!(
         app.view.text_selection.is_none(),
         "key press must clear the completed selection"
+    );
+}
+
+#[test]
+fn drag_copy_rejoins_soft_wrapped_rows() {
+    let mut wrapped = vec![b'a'; 85];
+    wrapped.extend_from_slice(b"\r\ntail");
+    let (mut app, _writes) = build_recording_app_with_output(vec![wrapped]);
+    assert!(
+        app.current_session_mut().poll_output(),
+        "expected pane output"
+    );
+    app.mouse_enabled = true;
+
+    app.handle_mouse_event(mouse_event(MouseEventKind::Down(MouseButton::Left), 0, 0))
+        .expect("mouse down");
+    app.handle_mouse_event(mouse_event(MouseEventKind::Drag(MouseButton::Left), 3, 2))
+        .expect("mouse drag");
+    app.handle_mouse_event(mouse_event(MouseEventKind::Up(MouseButton::Left), 3, 2))
+        .expect("mouse up");
+    // Remote client: the copy is queued as OSC52 instead of spawning a
+    // native clipboard tool, which is unavailable in headless tests.
+    app.active_client_id = super::LOCAL_CLIENT_ID + 1;
+    app.copy_active_text_selection();
+
+    // Row 0 (80 a's) soft-wraps into row 1 (5 a's); the LF before "tail" is
+    // the only real line break in the selection.
+    let expected = format!("{}\ntail", "a".repeat(85));
+    assert_eq!(
+        app.view.pending_clipboard_ansi,
+        vec![crate::clipboard::osc52_sequence(&expected)]
     );
 }
 
@@ -8983,6 +9094,7 @@ fn cursor_mode_word_navigation_over_japanese_text_stops_at_class_transitions() {
             pane_id: 1,
             lines: vec!["吾輩は猫である。名前はまだ無い".to_string()],
             styled_lines: Vec::new(),
+            soft_wraps: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 0 },
             selection_anchor: None,
             visual: false,
@@ -9031,6 +9143,7 @@ fn cursor_mode_word_end_over_mixed_ascii_and_cjk() {
             pane_id: 1,
             lines: vec!["hello世界です".to_string()],
             styled_lines: Vec::new(),
+            soft_wraps: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 0 },
             selection_anchor: None,
             visual: false,
@@ -9079,6 +9192,7 @@ fn cursor_mode_treats_katakana_with_prolonged_sound_mark_as_one_word() {
             pane_id: 1,
             lines: vec!["ラーメンを食べる".to_string()],
             styled_lines: Vec::new(),
+            soft_wraps: Vec::new(),
             cursor: super::CursorModePoint { line: 0, col: 0 },
             selection_anchor: None,
             visual: false,

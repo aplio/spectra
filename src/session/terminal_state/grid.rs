@@ -152,6 +152,32 @@ impl TerminalGrid {
         self.height + self.scrollback.len()
     }
 
+    /// Whether the row at `absolute_row` continues onto the next row via a
+    /// soft wrap (no real LF between them). Rows past the end never wrap.
+    pub(super) fn absolute_row_soft_wrapped(&self, absolute_row: usize) -> bool {
+        let history_len = self.scrollback.len();
+        if absolute_row < history_len {
+            return self.scrollback[absolute_row].boundary_to_next == RowBoundary::SoftWrap;
+        }
+        let visible_row = absolute_row - history_len;
+        visible_row < self.height && self.row_boundary_to_next(visible_row) == RowBoundary::SoftWrap
+    }
+
+    /// Per-row soft-wrap flags matching [`Self::history_lines`] /
+    /// [`Self::history_cells`]: `true` when that row soft-wraps into the
+    /// next one.
+    pub(super) fn history_soft_wraps(&self) -> Vec<bool> {
+        let mut flags = self
+            .scrollback
+            .iter()
+            .map(|line| line.boundary_to_next == RowBoundary::SoftWrap)
+            .collect::<Vec<_>>();
+        flags.extend(
+            (0..self.height).map(|row| self.row_boundary_to_next(row) == RowBoundary::SoftWrap),
+        );
+        flags
+    }
+
     pub(super) fn absolute_row_cells(&self, absolute_row: usize) -> Vec<StyledCell> {
         if self.total_lines() <= absolute_row {
             return vec![StyledCell::default(); self.width];
