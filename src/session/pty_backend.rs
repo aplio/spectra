@@ -173,7 +173,9 @@ if [[ -z "${_SPECTRA_TITLE_HOOK_INSTALLED:-}" ]]; then
   typeset -g _SPECTRA_TITLE_HOOK_INSTALLED=1
   _spectra_precmd() {
     print -Pn '\e]2;%~\a'
-    print -Pn '\e]7;file://${HOST:-localhost}${PWD}\a'
+    # printf, not `print -P`: prompt expansion only substitutes ${PWD}
+    # under PROMPT_SUBST, and would mangle paths containing `%`.
+    printf '\033]7;file://%s%s\007' "${HOST:-localhost}" "$PWD"
   }
   autoload -Uz add-zsh-hook
   add-zsh-hook precmd _spectra_precmd
@@ -466,7 +468,7 @@ impl Drop for PtyPaneBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::{PaneSpawnConfig, build_command};
+    use super::{PaneSpawnConfig, build_command, ensure_zsh_integration_zdotdir};
 
     fn argv(config: &PaneSpawnConfig) -> Vec<String> {
         build_command(config)
@@ -515,6 +517,47 @@ mod tests {
         assert_eq!(
             command.get_env("PROMPT_EOL_MARK").and_then(|v| v.to_str()),
             Some("")
+        );
+    }
+
+    /// The zsh hook must emit the pane's real cwd with zsh's default options,
+    /// where PROMPT_SUBST is unset. It used `print -P` with a `${PWD}` payload,
+    /// which prompt expansion only substitutes under PROMPT_SUBST — stock zsh
+    /// setups (e.g. macOS defaults) sent the literal string `${PWD}` and the
+    /// server never learned the cwd, breaking split/new-window cwd inheritance.
+    #[test]
+    fn zsh_integration_emits_osc7_without_prompt_subst() {
+        let Some(zsh) = ["/bin/zsh", "/usr/bin/zsh"]
+            .iter()
+            .find(|path| std::path::Path::new(path).exists())
+        else {
+            return; // no zsh on this machine (e.g. minimal CI image)
+        };
+        let zdotdir = ensure_zsh_integration_zdotdir().expect("zdotdir");
+        let home = tempfile::tempdir().expect("home tempdir");
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let canonical = std::fs::canonicalize(cwd.path()).expect("canonicalize cwd");
+
+        // `-f` skips all rc files, so the integration .zshrc is sourced
+        // explicitly and nothing can enable PROMPT_SUBST behind our back;
+        // HOME points at an empty dir so no user .zshrc is pulled in either.
+        let output = std::process::Command::new(zsh)
+            .arg("-fc")
+            .arg("source \"$ZDOTDIR/.zshrc\"; _spectra_precmd")
+            .env("ZDOTDIR", &zdotdir)
+            .env("HOME", home.path())
+            .current_dir(&canonical)
+            .output()
+            .expect("run zsh");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(
+            stdout.contains("\x1b]7;file://"),
+            "hook should emit an OSC 7, saw: {stdout:?}"
+        );
+        assert!(
+            stdout.contains(&format!("{}\x07", canonical.display())),
+            "OSC 7 should carry the expanded cwd, saw: {stdout:?}"
         );
     }
 
