@@ -599,6 +599,19 @@ impl App {
         }
 
         self.tick_selection_autoscroll(now);
+        // A drag in a remote client lives in that client's stashed view
+        // state (event handling swaps it in per event and back out again),
+        // so the active view above never sees it; step those in their own
+        // client context.
+        let autoscroll_clients: Vec<ClientId> = self
+            .inactive_client_states
+            .iter()
+            .filter(|(_, state)| state.selection_autoscroll.is_some())
+            .map(|(client_id, _)| *client_id)
+            .collect();
+        for client_id in autoscroll_clients {
+            self.with_client_context(client_id, |app| app.tick_selection_autoscroll(now));
+        }
     }
 
     /// Earliest future instant at which [`Self::tick`] has time-based work
@@ -649,6 +662,9 @@ impl App {
         for state in self.inactive_client_states.values() {
             if let Some(message) = &state.status_message {
                 consider(message.expires_at);
+            }
+            if let Some(autoscroll) = &state.selection_autoscroll {
+                consider(autoscroll.next_at);
             }
         }
 
