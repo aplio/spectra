@@ -29,7 +29,7 @@ Two directions exist and must not be confused:
 | 52 | clipboard write | base64 payload broadcast to attached clients as OSC 52; query (`?`) not answered |
 | 104 | palette reset | no parameters resets all overrides, otherwise the listed indices |
 | 110 / 111 / 112 | reset default fg / bg / cursor color | clears the per-pane override |
-| 133 | semantic prompt (shell integration) | A (prompt start), B (input start), C (output start), D (command end + exit code) tracked per pane |
+| 133 | semantic prompt (shell integration) | A (prompt start), B (input start), C (output start), D (command end + exit code) tracked per pane; a C→D pair also drives the optional command-finish bell (`[command_finish]`), delivered to attached clients as a BEL |
 | 777 | rxvt extension | `notify` only; title/body forwarded as an OSC 9 notification |
 
 Color specs accepted by OSC 4/10/11/12: `rgb:R/G/B` with 1–4 hex digits

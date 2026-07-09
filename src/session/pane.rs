@@ -50,6 +50,10 @@ pub struct Pane {
     /// pane's directory. `None` until the shell emits its first OSC 7 and no
     /// spawn cwd was set.
     cwd: Option<PathBuf>,
+    /// When the most recent OSC 133;C (command output start) was drained,
+    /// so the matching 133;D event can carry a wall-clock duration. The
+    /// grid itself is clock-free.
+    command_started_at: Option<std::time::Instant>,
 }
 
 impl Pane {
@@ -68,6 +72,7 @@ impl Pane {
             replay_tail: Vec::new(),
             max_replay_bytes: DEFAULT_REPLAY_BYTES_PER_PANE,
             cwd: None,
+            command_started_at: None,
         }
     }
 
@@ -155,10 +160,24 @@ impl Pane {
             self.push_replay_tail(bytes);
             self.pending_passthrough
                 .extend(self.terminal.drain_passthrough());
-            let events = self.terminal.drain_events();
-            for event in &events {
-                if let TerminalEvent::CwdChanged { cwd } = event {
-                    self.cwd = Some(PathBuf::from(cwd));
+            let mut events = self.terminal.drain_events();
+            for event in &mut events {
+                match event {
+                    TerminalEvent::CwdChanged { cwd } => {
+                        self.cwd = Some(PathBuf::from(cwd.as_str()));
+                    }
+                    TerminalEvent::CommandStarted => {
+                        self.command_started_at = Some(std::time::Instant::now());
+                    }
+                    TerminalEvent::CommandFinished { duration, .. } => {
+                        // A C and D drained in the same poll stamp a ~zero
+                        // duration; a D with no prior C keeps `None`.
+                        *duration = self
+                            .command_started_at
+                            .take()
+                            .map(|started| started.elapsed());
+                    }
+                    _ => {}
                 }
             }
             self.pending_terminal_events.extend(events);

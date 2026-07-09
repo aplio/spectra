@@ -36,6 +36,21 @@ undo_close_seconds = 10
 # Scrollback beyond this tail does not survive a handoff. (default: 262144)
 handoff_replay_bytes = 262144
 
+[command_finish]
+# Ring the host terminal's bell when a command in a pane finishes
+# (ghostty's notify-on-command-finish). The sound/urgency/badge itself
+# comes from the host terminal's own bell handling. Requires OSC 133
+# semantic prompt marks: spectra's bash/zsh integration emits them
+# automatically; a remote shell (ssh) works too once it emits the marks,
+# since escape sequences pass through unchanged.
+#   "off"       - never ring (default)
+#   "unfocused" - ring only clients not currently viewing the pane
+#   "always"    - ring every attached client
+notify = "off"
+# Only commands that ran at least this long ring the bell, so quick
+# interactive commands (ls, cd) stay silent. (default: 5000)
+min_duration_ms = 5000
+
 [sidebar]
 # Show the window-tree sidebar by default on session start. (default: true)
 default_open = true

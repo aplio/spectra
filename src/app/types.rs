@@ -545,6 +545,7 @@ pub(super) struct RuntimeUiConfig {
     pub hooks: config::HooksConfig,
     pub editor_command: Option<String>,
     pub agent_notify: config::AgentNotifyMode,
+    pub command_finish: config::CommandFinishConfig,
     /// Whether the window-tree sidebar starts open on session start.
     pub sidebar_default_open: bool,
     pub sidebar_formats: SidebarFormats,

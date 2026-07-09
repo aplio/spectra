@@ -1287,15 +1287,23 @@ impl Perform for TerminalGrid {
                     Some(b'C') => {
                         self.semantic_prompt.output_abs_row = Some(abs_row);
                         self.semantic_prompt.command_running = true;
+                        self.terminal_events.push(TerminalEvent::CommandStarted);
                     }
                     Some(b'D') => {
                         self.semantic_prompt.command_running = false;
                         // `133;D` without a code means "ended, code
                         // unknown"; a stale code must not survive it.
-                        self.semantic_prompt.last_exit_code = params
+                        let exit_code = params
                             .get(2)
                             .and_then(|code| std::str::from_utf8(code).ok())
                             .and_then(|code| code.parse::<i32>().ok());
+                        self.semantic_prompt.last_exit_code = exit_code;
+                        // The grid is clock-free; the pane stamps `duration`
+                        // when it drains this event.
+                        self.terminal_events.push(TerminalEvent::CommandFinished {
+                            exit_code,
+                            duration: None,
+                        });
                     }
                     _ => {}
                 }

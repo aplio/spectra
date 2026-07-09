@@ -47,6 +47,10 @@ use types::*;
 pub type ClientId = u64;
 pub const LOCAL_CLIENT_ID: ClientId = 0;
 
+/// BEL byte sent to a client's host terminal over the passthrough channel
+/// when a guest command finishes (`[command_finish]`).
+const BELL: &str = "\x07";
+
 fn parse_hex_color(value: &str) -> Option<Color> {
     let hex = value.trim().strip_prefix('#').unwrap_or(value.trim());
     if hex.len() != 6 {
@@ -134,6 +138,7 @@ pub struct App {
     hooks: config::HooksConfig,
     editor_command: Option<String>,
     agent_notify: config::AgentNotifyMode,
+    command_finish: config::CommandFinishConfig,
     ime: config::ImeConfig,
     /// Whether the `[ime]` prefix input-source switch currently considers
     /// the prefix pending (the ascii command has run, restore has not).
@@ -246,6 +251,7 @@ impl App {
             hooks: runtime_ui.hooks,
             editor_command: runtime_ui.editor_command,
             agent_notify: runtime_ui.agent_notify,
+            command_finish: runtime_ui.command_finish,
             ime: runtime_ui.ime,
             prefix_input_source_switched: false,
             editor_pane_close_targets: Vec::new(),
@@ -318,6 +324,7 @@ impl App {
             hooks: app_config.hooks.clone(),
             editor_command: normalize_editor_command(app_config.editor.clone()),
             agent_notify: app_config.agent.notify,
+            command_finish: app_config.command_finish,
             sidebar_default_open: app_config.sidebar.default_open,
             sidebar_formats: SidebarFormats::from_config(&app_config.sidebar),
             ime: app_config.ime.clone(),
@@ -451,6 +458,7 @@ impl App {
             hooks: runtime_ui.hooks,
             editor_command: runtime_ui.editor_command,
             agent_notify: runtime_ui.agent_notify,
+            command_finish: runtime_ui.command_finish,
             ime: runtime_ui.ime,
             prefix_input_source_switched: false,
             editor_pane_close_targets: Vec::new(),
@@ -900,6 +908,7 @@ impl App {
         let mut clipboard_texts = Vec::new();
         let mut notifications = Vec::new();
         let mut progress_updates = Vec::new();
+        let mut finished_commands = Vec::new();
         for pane_event in events {
             let pane_id = pane_event.pane_id;
             match pane_event.event {
@@ -921,6 +930,11 @@ impl App {
                     progress_updates.push(progress);
                     continue;
                 }
+                TerminalEvent::CommandStarted => continue,
+                TerminalEvent::CommandFinished { duration, .. } => {
+                    finished_commands.push((pane_id, duration));
+                    continue;
+                }
             }
 
             let auto_name = Self::resolve_auto_pane_name(managed, pane_id);
@@ -939,8 +953,64 @@ impl App {
         for progress in progress_updates {
             self.broadcast_progress_to_clients(progress);
         }
+        for (pane_id, duration) in finished_commands {
+            self.ring_bell_on_command_finished(session_index, pane_id, duration);
+        }
 
         changed
+    }
+
+    /// Ghostty-style notify-on-command-finish: when a guest command marked
+    /// by OSC 133;C→D ran at least `[command_finish] min_duration_ms`, ring
+    /// the host terminal bell of attached clients. Only a BEL is sent — the
+    /// host terminal's own bell features (sound, urgency hint, title badge)
+    /// take it from there. `duration` is `None` for a 133;D without a
+    /// matching 133;C (e.g. integrations that emit D on empty prompts);
+    /// those never ring. In `unfocused` mode a client viewing the pane is
+    /// skipped: the active client's viewed pane is the session's focused
+    /// pane, an inactive client's is the head of its per-session focus
+    /// history (captured when it was last active — focus can't move while
+    /// a client is inactive).
+    fn ring_bell_on_command_finished(
+        &mut self,
+        session_index: usize,
+        pane_id: usize,
+        duration: Option<Duration>,
+    ) {
+        use config::CommandFinishNotifyMode as Mode;
+
+        if self.command_finish.notify == Mode::Off {
+            return;
+        }
+        let Some(duration) = duration else {
+            return;
+        };
+        if duration < Duration::from_millis(self.command_finish.min_duration_ms) {
+            return;
+        }
+        let Some(managed) = self.sessions.get(session_index) else {
+            return;
+        };
+        let session_id = managed.session_id.clone();
+        let focused_pane = managed.session.focused_pane_id();
+        let ring_all = self.command_finish.notify == Mode::Always;
+
+        let active_viewing =
+            self.view.active_session == session_index && focused_pane == Some(pane_id);
+        if ring_all || !active_viewing {
+            self.view.pending_passthrough_ansi.push(BELL.to_string());
+        }
+        for state in self.inactive_client_states.values_mut() {
+            let viewing = state.active_session == session_index
+                && state
+                    .pane_histories_by_session
+                    .get(&session_id)
+                    .and_then(|history| history.current_pane())
+                    == Some(pane_id);
+            if ring_all || !viewing {
+                state.pending_passthrough_ansi.push(BELL.to_string());
+            }
+        }
     }
 
     /// Queue an OSC 52 clipboard frame for every attached client so a

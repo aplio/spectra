@@ -90,6 +90,17 @@ pub enum TerminalEvent {
     ProgressChanged {
         progress: Option<ProgressReport>,
     },
+    /// The guest shell marked the start of command output (OSC 133;C).
+    CommandStarted,
+    /// The guest shell marked a command as finished (OSC 133;D). The grid
+    /// is deliberately clock-free, so it emits `duration: None` and the
+    /// pane stamps the wall-clock time since the matching `CommandStarted`
+    /// while draining events; `None` survives when no start mark was seen
+    /// (e.g. a shell that emits 133;D on every prompt, even empty ones).
+    CommandFinished {
+        exit_code: Option<i32>,
+        duration: Option<std::time::Duration>,
+    },
 }
 
 /// Semantic prompt / shell integration state reported via OSC 133. Rows are

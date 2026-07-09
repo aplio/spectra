@@ -246,4 +246,105 @@ fn osc133_marks_survive_the_pane_pipeline() {
     assert_eq!(prompt.output_abs_row, Some(1));
     assert!(!prompt.command_running);
     assert_eq!(prompt.last_exit_code, Some(3));
+
+    let events = pane.take_terminal_events();
+    assert!(
+        events.contains(&TerminalEvent::CommandStarted),
+        "133;C should surface as CommandStarted, got {events:?}"
+    );
+    let finished = events
+        .iter()
+        .find_map(|event| match event {
+            TerminalEvent::CommandFinished {
+                exit_code,
+                duration,
+            } => Some((*exit_code, *duration)),
+            _ => None,
+        })
+        .expect("133;D should surface as CommandFinished");
+    assert_eq!(finished.0, Some(3));
+    assert!(
+        finished.1.is_some(),
+        "a C→D pair drained together still stamps a (near-zero) duration"
+    );
+}
+
+/// The C→D wall-clock gap must be measured across polls: the grid emits
+/// clock-free events and the pane stamps `Instant`s while draining them.
+#[test]
+fn osc133_command_duration_is_stamped_across_polls() {
+    use std::collections::VecDeque;
+    use std::time::Duration;
+
+    use spectra::session::pane::Pane;
+
+    struct ChunkPerPollBackend {
+        chunks: VecDeque<Vec<u8>>,
+    }
+
+    impl PaneBackend for ChunkPerPollBackend {
+        fn write(&mut self, _bytes: &[u8]) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn resize(&mut self, _cols: u16, _rows: u16) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn poll_output(&mut self) -> Vec<Vec<u8>> {
+            self.chunks
+                .pop_front()
+                .map(|chunk| vec![chunk])
+                .unwrap_or_default()
+        }
+    }
+
+    let mut pane = Pane::new(
+        usize::from(COLS),
+        usize::from(ROWS),
+        false,
+        Box::new(ChunkPerPollBackend {
+            chunks: [
+                b"\x1b]133;C\x07building...\r\n".to_vec(),
+                b"done\r\n\x1b]133;D;0\x07".to_vec(),
+            ]
+            .into(),
+        }),
+    );
+
+    assert!(pane.poll_output());
+    std::thread::sleep(Duration::from_millis(30));
+    assert!(pane.poll_output());
+
+    let events = pane.take_terminal_events();
+    let duration = events
+        .iter()
+        .find_map(|event| match event {
+            TerminalEvent::CommandFinished { duration, .. } => Some(*duration),
+            _ => None,
+        })
+        .expect("a CommandFinished event")
+        .expect("duration stamped from the earlier C mark");
+    assert!(
+        duration >= Duration::from_millis(25),
+        "expected the C→D wall-clock gap, got {duration:?}"
+    );
+
+    // A D with no prior C (the backend is drained) keeps duration = None.
+    let mut unmatched = Pane::new(
+        usize::from(COLS),
+        usize::from(ROWS),
+        false,
+        Box::new(ChunkPerPollBackend {
+            chunks: [b"\x1b]133;D;0\x07".to_vec()].into(),
+        }),
+    );
+    assert!(unmatched.poll_output());
+    let events = unmatched.take_terminal_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, TerminalEvent::CommandFinished { duration: None, .. })),
+        "an unmatched D must not carry a duration, got {events:?}"
+    );
 }

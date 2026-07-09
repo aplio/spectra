@@ -27,6 +27,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub agent: AgentConfig,
     #[serde(default)]
+    pub command_finish: CommandFinishConfig,
+    #[serde(default)]
     pub sidebar: SidebarConfig,
     #[serde(default)]
     pub ime: ImeConfig,
@@ -56,6 +58,7 @@ impl Default for AppConfig {
             pane: PaneConfig::default(),
             status: StatusConfig::default(),
             agent: AgentConfig::default(),
+            command_finish: CommandFinishConfig::default(),
             sidebar: SidebarConfig::default(),
             ime: ImeConfig::default(),
             hooks: HooksConfig::default(),
@@ -211,6 +214,49 @@ pub enum AgentNotifyMode {
     Blocked,
     /// Also notify when a pane's agent becomes `done` (unseen idle).
     All,
+}
+
+/// Ring the host terminal's bell when a command in a pane finishes
+/// (ghostty's notify-on-command-finish). Requires the guest shell to emit
+/// OSC 133 semantic prompt marks; spectra's own bash/zsh integration emits
+/// them, and marks arriving from a remote shell (e.g. over ssh) work the
+/// same because escape sequences pass through unchanged.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub struct CommandFinishConfig {
+    #[serde(default)]
+    pub notify: CommandFinishNotifyMode,
+    /// Only commands that ran at least this long ring the bell, so quick
+    /// interactive commands (ls, cd) stay silent. (default: 5000)
+    #[serde(default = "default_command_finish_min_duration_ms")]
+    pub min_duration_ms: u64,
+}
+
+impl Default for CommandFinishConfig {
+    fn default() -> Self {
+        Self {
+            notify: CommandFinishNotifyMode::default(),
+            min_duration_ms: default_command_finish_min_duration_ms(),
+        }
+    }
+}
+
+fn default_command_finish_min_duration_ms() -> u64 {
+    5000
+}
+
+/// When to ring an attached client's host terminal bell after a command
+/// finishes (`[command_finish] notify`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CommandFinishNotifyMode {
+    /// Never ring.
+    #[default]
+    Off,
+    /// Ring only clients that are not currently viewing the pane the
+    /// command finished in.
+    Unfocused,
+    /// Ring every attached client.
+    Always,
 }
 
 /// Behavior of the window-tree sidebar (the "side window tree" overlay).

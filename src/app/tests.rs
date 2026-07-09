@@ -319,6 +319,7 @@ fn build_app_for_resize_test() -> App {
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
+        command_finish: crate::config::CommandFinishConfig::default(),
         ime: crate::config::ImeConfig::default(),
         prefix_input_source_switched: false,
         editor_pane_close_targets: Vec::new(),
@@ -448,6 +449,7 @@ fn build_app_with_history() -> App {
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
+        command_finish: crate::config::CommandFinishConfig::default(),
         ime: crate::config::ImeConfig::default(),
         prefix_input_source_switched: false,
         editor_pane_close_targets: Vec::new(),
@@ -570,6 +572,7 @@ fn build_app_with_write_behavior(behavior: WriteBehavior) -> App {
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
+        command_finish: crate::config::CommandFinishConfig::default(),
         ime: crate::config::ImeConfig::default(),
         prefix_input_source_switched: false,
         editor_pane_close_targets: Vec::new(),
@@ -649,6 +652,7 @@ fn build_app_with_close_on_write_behavior(behavior: CloseOnWriteBehavior) -> App
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
+        command_finish: crate::config::CommandFinishConfig::default(),
         ime: crate::config::ImeConfig::default(),
         prefix_input_source_switched: false,
         editor_pane_close_targets: Vec::new(),
@@ -767,6 +771,7 @@ fn build_recording_app_one_session() -> (App, RecordedWrites) {
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
+        command_finish: crate::config::CommandFinishConfig::default(),
         ime: crate::config::ImeConfig::default(),
         prefix_input_source_switched: false,
         editor_pane_close_targets: Vec::new(),
@@ -867,6 +872,7 @@ fn build_recording_app_with_history() -> (App, RecordedWrites) {
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
+        command_finish: crate::config::CommandFinishConfig::default(),
         ime: crate::config::ImeConfig::default(),
         prefix_input_source_switched: false,
         editor_pane_close_targets: Vec::new(),
@@ -945,6 +951,7 @@ fn build_recording_app_with_output(output: Vec<Vec<u8>>) -> (App, RecordedWrites
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
+        command_finish: crate::config::CommandFinishConfig::default(),
         ime: crate::config::ImeConfig::default(),
         prefix_input_source_switched: false,
         editor_pane_close_targets: Vec::new(),
@@ -1045,6 +1052,7 @@ fn build_recording_app_multi_session() -> (App, RecordedWrites) {
         hooks: crate::config::HooksConfig::default(),
         editor_command: None,
         agent_notify: crate::config::AgentNotifyMode::default(),
+        command_finish: crate::config::CommandFinishConfig::default(),
         ime: crate::config::ImeConfig::default(),
         prefix_input_source_switched: false,
         editor_pane_close_targets: Vec::new(),
@@ -1197,6 +1205,7 @@ fn build_editor_command_app() -> (App, RecordedSpawnConfigs, BackendClosedFlags)
         hooks: crate::config::HooksConfig::default(),
         editor_command: Some("vim".to_string()),
         agent_notify: crate::config::AgentNotifyMode::default(),
+        command_finish: crate::config::CommandFinishConfig::default(),
         ime: crate::config::ImeConfig::default(),
         prefix_input_source_switched: false,
         editor_pane_close_targets: Vec::new(),
@@ -1310,6 +1319,7 @@ fn restore_from_runtime_state_recovers_multi_session_layout_and_focus() {
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
             agent_notify: app.agent_notify,
+            command_finish: app.command_finish,
             sidebar_default_open: app.side_window_tree_is_open(),
             ime: app.ime.clone(),
         },
@@ -1397,6 +1407,7 @@ fn restore_from_runtime_state_returns_none_on_corrupt_json() {
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
             agent_notify: app.agent_notify,
+            command_finish: app.command_finish,
             sidebar_default_open: app.side_window_tree_is_open(),
             ime: app.ime.clone(),
         },
@@ -1430,6 +1441,7 @@ fn restore_from_runtime_state_honors_sidebar_default_open() {
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
             agent_notify: app.agent_notify,
+            command_finish: app.command_finish,
             sidebar_default_open: true,
             ime: app.ime.clone(),
         },
@@ -1468,6 +1480,7 @@ fn restore_from_runtime_state_returns_none_on_invalid_snapshot() {
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
             agent_notify: app.agent_notify,
+            command_finish: app.command_finish,
             sidebar_default_open: app.side_window_tree_is_open(),
             ime: app.ime.clone(),
         },
@@ -1848,6 +1861,7 @@ fn restore_from_runtime_state_restores_client_focus_profiles() {
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
             agent_notify: app.agent_notify,
+            command_finish: app.command_finish,
             sidebar_default_open: app.side_window_tree_is_open(),
             ime: app.ime.clone(),
         },
@@ -1889,6 +1903,7 @@ fn attach_target_overrides_restored_profile_for_client() {
             hooks: app.hooks.clone(),
             editor_command: app.editor_command.clone(),
             agent_notify: app.agent_notify,
+            command_finish: app.command_finish,
             sidebar_default_open: app.side_window_tree_is_open(),
             ime: app.ime.clone(),
         },
@@ -5140,6 +5155,123 @@ fn osc_title_updates_auto_pane_and_window_names() {
     assert!(changed);
     assert_eq!(app.effective_pane_name(0, pane_id), Some("build"));
     assert_eq!(app.effective_window_name(0, window_id), Some("build"));
+}
+
+fn command_finished_event(pane_id: usize, duration_ms: Option<u64>) -> PaneTerminalEvent {
+    PaneTerminalEvent {
+        pane_id,
+        event: TerminalEvent::CommandFinished {
+            exit_code: Some(0),
+            duration: duration_ms.map(Duration::from_millis),
+        },
+    }
+}
+
+#[test]
+fn command_finish_bell_rings_every_client_in_always_mode() {
+    let mut app = build_app_for_resize_test();
+    app.command_finish = crate::config::CommandFinishConfig {
+        notify: crate::config::CommandFinishNotifyMode::Always,
+        min_duration_ms: 0,
+    };
+    app.register_client(7, 80, 24);
+    let pane_id = app.current_session().window_entries()[0].pane_id;
+
+    app.apply_terminal_events_for_session(0, vec![command_finished_event(pane_id, Some(1))]);
+
+    assert_eq!(app.view.pending_passthrough_ansi, vec!["\x07".to_string()]);
+    assert_eq!(
+        app.inactive_client_states[&7].pending_passthrough_ansi,
+        vec!["\x07".to_string()],
+        "always mode must ring clients that are viewing the pane too"
+    );
+}
+
+#[test]
+fn command_finish_bell_skips_short_commands_unmatched_marks_and_off_mode() {
+    let mut app = build_app_for_resize_test();
+    let pane_id = app.current_session().window_entries()[0].pane_id;
+
+    // Off: silent no matter how long the command ran.
+    app.apply_terminal_events_for_session(0, vec![command_finished_event(pane_id, Some(60_000))]);
+    assert!(app.view.pending_passthrough_ansi.is_empty());
+
+    // Below the min-duration threshold: silent.
+    app.command_finish = crate::config::CommandFinishConfig {
+        notify: crate::config::CommandFinishNotifyMode::Always,
+        min_duration_ms: 5000,
+    };
+    app.apply_terminal_events_for_session(0, vec![command_finished_event(pane_id, Some(4999))]);
+    assert!(app.view.pending_passthrough_ansi.is_empty());
+
+    // 133;D with no matching 133;C (duration unknown): silent even with a
+    // zero threshold — bash integration emits these on every empty prompt.
+    app.command_finish.min_duration_ms = 0;
+    app.apply_terminal_events_for_session(0, vec![command_finished_event(pane_id, None)]);
+    assert!(app.view.pending_passthrough_ansi.is_empty());
+
+    // A bare 133;C (command still running): silent.
+    app.apply_terminal_events_for_session(
+        0,
+        vec![PaneTerminalEvent {
+            pane_id,
+            event: TerminalEvent::CommandStarted,
+        }],
+    );
+    assert!(app.view.pending_passthrough_ansi.is_empty());
+
+    // Meeting the threshold rings.
+    app.apply_terminal_events_for_session(0, vec![command_finished_event(pane_id, Some(5000))]);
+    assert_eq!(app.view.pending_passthrough_ansi, vec!["\x07".to_string()]);
+}
+
+#[test]
+fn command_finish_bell_unfocused_skips_clients_viewing_the_pane() {
+    let mut app = build_app_for_resize_test();
+    app.command_finish = crate::config::CommandFinishConfig {
+        notify: crate::config::CommandFinishNotifyMode::Unfocused,
+        min_duration_ms: 0,
+    };
+    let pane_id = app.current_session().window_entries()[0].pane_id;
+    let session_id = app.sessions[0].session_id.clone();
+
+    // Client 7 is inactive but was last looking at the finishing pane
+    // (head of its focus history); client 8 never visited this session.
+    app.register_client(7, 80, 24);
+    app.register_client(8, 80, 24);
+    let mut history = super::PaneFocusHistory::default();
+    history.record_focus(pane_id);
+    app.inactive_client_states
+        .get_mut(&7)
+        .expect("client 7 state")
+        .pane_histories_by_session
+        .insert(session_id, history);
+
+    app.apply_terminal_events_for_session(0, vec![command_finished_event(pane_id, Some(1))]);
+
+    assert!(
+        app.view.pending_passthrough_ansi.is_empty(),
+        "the active client is viewing the pane and must not be rung"
+    );
+    assert!(
+        app.inactive_client_states[&7]
+            .pending_passthrough_ansi
+            .is_empty(),
+        "an inactive client viewing the pane must not be rung"
+    );
+    assert_eq!(
+        app.inactive_client_states[&8].pending_passthrough_ansi,
+        vec!["\x07".to_string()],
+        "a client viewing something else must be rung"
+    );
+
+    // A command finishing in a pane nobody views rings everyone.
+    app.apply_terminal_events_for_session(0, vec![command_finished_event(pane_id + 999, Some(1))]);
+    assert_eq!(app.view.pending_passthrough_ansi, vec!["\x07".to_string()]);
+    assert_eq!(
+        app.inactive_client_states[&7].pending_passthrough_ansi,
+        vec!["\x07".to_string()]
+    );
 }
 
 #[test]

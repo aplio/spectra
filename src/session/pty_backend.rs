@@ -181,10 +181,27 @@ if [ -r "${ZDOTDIR:-$HOME}/.zshenv" ]; then
   source "${ZDOTDIR:-$HOME}/.zshenv"
 fi
 
-if [[ -o interactive && -z "${_SPECTRA_TITLE_HOOK_INSTALLED:-}" ]]; then
-  typeset -g _SPECTRA_TITLE_HOOK_INSTALLED=1
+if [[ -o interactive && -z "${_SPECTRA_SHELL_HOOKS_INSTALLED:-}" ]]; then
+  typeset -g _SPECTRA_SHELL_HOOKS_INSTALLED=1
   typeset -g _spectra_last_reported_cwd=''
+  typeset -g _spectra_command_ran=''
+  _spectra_preexec() {
+    # OSC 133;C: command output starts here (semantic prompt mark).
+    _spectra_command_ran=1
+    printf '\033]133;C\007'
+  }
   _spectra_precmd() {
+    # $? still holds the finished command's status: this hook was
+    # registered from .zshenv, before any user hook, so it runs first.
+    local spectra_ret=$?
+    # OSC 133;D closes the C mark with the exit code; only emitted when a
+    # command actually ran (preexec fired), so empty prompts stay silent.
+    # OSC 133;A marks the next prompt start.
+    if [[ -n "$_spectra_command_ran" ]]; then
+      _spectra_command_ran=''
+      printf '\033]133;D;%s\007' "$spectra_ret"
+    fi
+    printf '\033]133;A\007'
     print -Pn '\e]2;%~\a'
     # printf, not `print -P`: prompt expansion only substitutes ${PWD}
     # under PROMPT_SUBST, and would mangle paths containing `%`.
@@ -197,6 +214,7 @@ if [[ -o interactive && -z "${_SPECTRA_TITLE_HOOK_INSTALLED:-}" ]]; then
   }
   autoload -Uz add-zsh-hook
   add-zsh-hook precmd _spectra_precmd
+  add-zsh-hook preexec _spectra_preexec
 fi
 "#,
     )
@@ -225,10 +243,18 @@ for _spectra_profile in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profil
 done
 unset _spectra_profile
 
-if [ -z "${_SPECTRA_TITLE_HOOK_INSTALLED:-}" ]; then
-  _SPECTRA_TITLE_HOOK_INSTALLED=1
+if [ -z "${_SPECTRA_SHELL_HOOKS_INSTALLED:-}" ]; then
+  _SPECTRA_SHELL_HOOKS_INSTALLED=1
   _spectra_last_reported_cwd=''
   __spectra_prompt_command() {
+    local spectra_ret=$?
+    # OSC 133 semantic prompt marks. PS0 (below) emits C when a command
+    # starts; D closes it with the exit code and A marks the next prompt
+    # start. bash has no preexec hook, so D is emitted on every prompt —
+    # including the first and after empty enters, where no C preceded it.
+    # The server treats such an unmatched D as "no command ran" and never
+    # rings the finish bell for it.
+    printf '\033]133;D;%s\007\033]133;A\007' "$spectra_ret"
     local spectra_title="${PWD/#$HOME/~}"
     printf '\033]2;%s\007' "$spectra_title"
     # Deduped: the cwd rarely changes between prompts and every report
@@ -243,6 +269,10 @@ if [ -z "${_SPECTRA_TITLE_HOOK_INSTALLED:-}" ]; then
   else
     PROMPT_COMMAND="__spectra_prompt_command"
   fi
+  # PS0 expands after a command line is read and before it runs (bash 4.4+),
+  # with the same prompt escapes as PS1 — the closest thing bash has to a
+  # preexec hook. Older bash ignores PS0, leaving only the D/A marks above.
+  PS0="\e]133;C\a${PS0:-}"
 fi
 "#,
     )
@@ -698,6 +728,121 @@ mod tests {
         assert!(
             unset.contains("restored=[]"),
             "without a stash ZDOTDIR should be unset, saw: {unset:?}"
+        );
+    }
+
+    /// The zsh hooks must bracket a command with OSC 133 marks: C at
+    /// preexec, D carrying the real exit code plus A at the next precmd.
+    /// The finish bell (`[command_finish]`) keys off the C→D pair.
+    #[test]
+    fn zsh_integration_emits_osc133_marks_with_exit_code() {
+        let Some(zsh) = find_zsh() else {
+            return; // no zsh on this machine (e.g. minimal CI image)
+        };
+        let zdotdir = ensure_zsh_integration_zdotdir().expect("zdotdir");
+        let home = tempfile::tempdir().expect("home tempdir");
+
+        let output = std::process::Command::new(zsh)
+            .arg("-fic")
+            .arg(
+                "source \"$ZDOTDIR/.zshenv\"; \
+                 _spectra_preexec; (exit 3); _spectra_precmd",
+            )
+            .env("ZDOTDIR", &zdotdir)
+            .env("HOME", home.path())
+            .output()
+            .expect("run zsh");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(
+            stdout.contains("\x1b]133;C\x07"),
+            "preexec should emit 133;C, saw: {stdout:?}"
+        );
+        assert!(
+            stdout.contains("\x1b]133;D;3\x07"),
+            "precmd should emit 133;D with the exit code, saw: {stdout:?}"
+        );
+        assert!(
+            stdout.contains("\x1b]133;A\x07"),
+            "precmd should emit 133;A for the next prompt, saw: {stdout:?}"
+        );
+        let d_pos = stdout.find("\x1b]133;D").expect("D mark");
+        let a_pos = stdout.find("\x1b]133;A").expect("A mark");
+        assert!(
+            d_pos < a_pos,
+            "D must close the command before A opens the prompt"
+        );
+    }
+
+    /// A precmd with no preceding preexec (empty enter, the very first
+    /// prompt) must not emit a 133;D: an unmatched D would report a stale
+    /// exit code and, in integrations that pair C→D, break duration
+    /// tracking for the finish bell.
+    #[test]
+    fn zsh_integration_skips_osc133_d_when_no_command_ran() {
+        let Some(zsh) = find_zsh() else {
+            return; // no zsh on this machine (e.g. minimal CI image)
+        };
+        let zdotdir = ensure_zsh_integration_zdotdir().expect("zdotdir");
+        let home = tempfile::tempdir().expect("home tempdir");
+
+        let output = std::process::Command::new(zsh)
+            .arg("-fic")
+            .arg("source \"$ZDOTDIR/.zshenv\"; _spectra_precmd")
+            .env("ZDOTDIR", &zdotdir)
+            .env("HOME", home.path())
+            .output()
+            .expect("run zsh");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(
+            !stdout.contains("\x1b]133;D"),
+            "no command ran, so no D mark expected, saw: {stdout:?}"
+        );
+        assert!(
+            stdout.contains("\x1b]133;A\x07"),
+            "the prompt-start mark is still expected, saw: {stdout:?}"
+        );
+    }
+
+    /// Bash flavor: the prompt hook emits 133;D with the previous command's
+    /// exit code plus 133;A, and PS0 is armed with the 133;C mark so it
+    /// fires when a command line starts executing (bash 4.4+).
+    #[test]
+    fn bash_integration_emits_osc133_marks_with_exit_code() {
+        let Some(bash) = ["/bin/bash", "/usr/bin/bash"]
+            .iter()
+            .find(|path| std::path::Path::new(path).exists())
+        else {
+            return; // no bash on this machine (e.g. minimal CI image)
+        };
+        let rcfile = super::ensure_bash_integration_rcfile().expect("rcfile");
+        let home = tempfile::tempdir().expect("home tempdir");
+
+        let output = std::process::Command::new(bash)
+            .arg("-c")
+            .arg(format!(
+                ". {}; (exit 3); __spectra_prompt_command; printf 'PS0=%s' \"$PS0\"",
+                rcfile.display()
+            ))
+            .env("HOME", home.path())
+            .env_remove("PROMPT_COMMAND")
+            .env_remove("PS0")
+            .output()
+            .expect("run bash");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(
+            stdout.contains("\x1b]133;D;3\x07"),
+            "prompt hook should emit 133;D with the exit code, saw: {stdout:?}"
+        );
+        assert!(
+            stdout.contains("\x1b]133;A\x07"),
+            "prompt hook should emit 133;A, saw: {stdout:?}"
+        );
+        assert!(
+            stdout.contains("PS0=\\e]133;C\\a"),
+            "PS0 should be armed with the 133;C prompt escape, saw: {stdout:?}"
         );
     }
 
