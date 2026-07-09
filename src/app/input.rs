@@ -6,6 +6,27 @@ const MULTI_CLICK_WINDOW: Duration = Duration::from_millis(400);
 /// continue the chain (double-clicks rarely land on the exact same cell).
 const MULTI_CLICK_RADIUS_CELLS: usize = 1;
 
+/// Character class for multi-click word selection, mirroring gargo's
+/// `char_class`: Unicode alphanumerics and `_` form one word (so accented
+/// words and mixed kanji/kana runs select whole), whitespace separates, and
+/// punctuation/symbols group with each other.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ClickWordClass {
+    Word,
+    Whitespace,
+    Other,
+}
+
+fn click_word_class(ch: char) -> ClickWordClass {
+    if ch.is_alphanumeric() || ch == '_' {
+        ClickWordClass::Word
+    } else if ch.is_whitespace() {
+        ClickWordClass::Whitespace
+    } else {
+        ClickWordClass::Other
+    }
+}
+
 impl App {
     pub(super) fn handle_key(&mut self, key: KeyEvent) -> io::Result<AppSignal> {
         let result = self.handle_key_inner(key);
@@ -659,14 +680,14 @@ impl App {
     fn click_cell_class(
         cells: &[crate::session::terminal_state::StyledCell],
         col: usize,
-    ) -> super::copy_mode::CursorModeWordClass {
+    ) -> ClickWordClass {
         let mut index = col;
         while index > 0 && cells.get(index).is_some_and(|cell| cell.ch == '\0') {
             index -= 1;
         }
         match cells.get(index) {
-            Some(cell) => Self::cursor_mode_word_class(cell.ch),
-            None => super::copy_mode::CursorModeWordClass::Whitespace,
+            Some(cell) => click_word_class(cell.ch),
+            None => ClickWordClass::Whitespace,
         }
     }
 
@@ -674,7 +695,7 @@ impl App {
     fn click_class_run(
         cells: &[crate::session::terminal_state::StyledCell],
         origin: usize,
-        matches: impl Fn(super::copy_mode::CursorModeWordClass) -> bool,
+        matches: impl Fn(ClickWordClass) -> bool,
     ) -> (usize, usize) {
         let mut start = origin;
         while start > 0 && matches(Self::click_cell_class(cells, start - 1)) {
@@ -687,18 +708,46 @@ impl App {
         (start, end)
     }
 
+    /// All `()` / `[]` / `{}` pairs on the row that contain `origin`
+    /// (inclusive of the brackets themselves). Depth counting only, with no
+    /// awareness of strings or comments, mirroring gargo's expand engine.
+    fn click_enclosing_brackets(
+        cells: &[crate::session::terminal_state::StyledCell],
+        origin: usize,
+    ) -> Vec<(usize, usize)> {
+        let mut stacks: [Vec<usize>; 3] = Default::default();
+        let mut pairs = Vec::new();
+        for (col, cell) in cells.iter().enumerate() {
+            let (stack, open) = match cell.ch {
+                '(' | ')' => (&mut stacks[0], cell.ch == '('),
+                '[' | ']' => (&mut stacks[1], cell.ch == '['),
+                '{' | '}' => (&mut stacks[2], cell.ch == '{'),
+                _ => continue,
+            };
+            if open {
+                stack.push(col);
+            } else if let Some(open_col) = stack.pop()
+                && open_col <= origin
+                && origin <= col
+            {
+                pairs.push((open_col, col));
+            }
+        }
+        pairs
+    }
+
     /// Pick the next selection step for a multi-click chain, gargo-style:
     /// candidates are every unit we can derive at `origin` (word-class run,
-    /// non-whitespace run, whole line), filtered to those containing `origin`
-    /// and strictly containing `current`, smallest first. Successive clicks
-    /// climb word -> WORD -> line. Returns `None` when nothing larger exists.
+    /// non-whitespace run, enclosing bracket pairs, whole line), filtered to
+    /// those containing `origin` and strictly containing `current`, smallest
+    /// first. Successive clicks climb the tightest available enclosure —
+    /// word, bracket, WORD or line, whichever is closest but broader —
+    /// rather than a fixed ladder. Returns `None` when nothing larger exists.
     pub(super) fn expand_click_selection(
         cells: &[crate::session::terminal_state::StyledCell],
         origin: usize,
         current: Option<(usize, usize)>,
     ) -> Option<(usize, usize)> {
-        use super::copy_mode::CursorModeWordClass;
-
         if cells.is_empty() {
             return None;
         }
@@ -709,9 +758,13 @@ impl App {
         candidates.push(Self::click_class_run(cells, origin, |class| {
             class == origin_class
         }));
-        if origin_class != CursorModeWordClass::Whitespace {
+        // Brackets come before the non-whitespace run so an equally-sized
+        // bracket pair wins the tie (min_by_key keeps the first minimum):
+        // a balanced `(a, b)` beats a lopsided `f(g(a,`.
+        candidates.extend(Self::click_enclosing_brackets(cells, origin));
+        if origin_class != ClickWordClass::Whitespace {
             candidates.push(Self::click_class_run(cells, origin, |class| {
-                class != CursorModeWordClass::Whitespace
+                class != ClickWordClass::Whitespace
             }));
         }
         // Whole line, trimmed of trailing blanks but always containing origin.

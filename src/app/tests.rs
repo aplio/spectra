@@ -6489,7 +6489,7 @@ fn double_click_on_single_char_word_keeps_selection_after_release() {
 }
 
 #[test]
-fn expand_click_selection_walks_word_then_bracket_run_then_line() {
+fn expand_click_selection_walks_word_bracket_word_run_then_line() {
     let cells: Vec<crate::session::terminal_state::StyledCell> = "foo(bar) baz"
         .chars()
         .map(|ch| crate::session::terminal_state::StyledCell {
@@ -6501,18 +6501,66 @@ fn expand_click_selection_walks_word_then_bracket_run_then_line() {
     // Origin on 'a' in "bar".
     let word = App::expand_click_selection(&cells, 5, None);
     assert_eq!(word, Some((4, 6)), "first step selects the word");
-    let non_ws = App::expand_click_selection(&cells, 5, word);
+    let bracket = App::expand_click_selection(&cells, 5, word);
+    assert_eq!(
+        bracket,
+        Some((3, 7)),
+        "second step grows to the enclosing bracket pair"
+    );
+    let non_ws = App::expand_click_selection(&cells, 5, bracket);
     assert_eq!(
         non_ws,
         Some((0, 7)),
-        "second step grows to the non-whitespace run"
+        "third step grows to the non-whitespace run"
     );
     let line = App::expand_click_selection(&cells, 5, non_ws);
-    assert_eq!(line, Some((0, 11)), "third step grows to the line");
+    assert_eq!(line, Some((0, 11)), "fourth step grows to the line");
     assert_eq!(
         App::expand_click_selection(&cells, 5, line),
         None,
         "nothing larger than the line exists"
+    );
+}
+
+#[test]
+fn expand_click_selection_climbs_nested_brackets() {
+    let cells: Vec<crate::session::terminal_state::StyledCell> = "x = f(g(a, b), c)"
+        .chars()
+        .map(|ch| crate::session::terminal_state::StyledCell {
+            ch,
+            ..Default::default()
+        })
+        .collect();
+
+    // Origin on 'a' inside the inner call.
+    let word = App::expand_click_selection(&cells, 8, None);
+    assert_eq!(word, Some((8, 8)), "first step selects the word");
+    let inner = App::expand_click_selection(&cells, 8, word);
+    assert_eq!(inner, Some((7, 12)), "second step selects (a, b)");
+    let outer = App::expand_click_selection(&cells, 8, inner);
+    assert_eq!(outer, Some((5, 16)), "third step selects (g(a, b), c)");
+}
+
+#[test]
+fn expand_click_selection_treats_unicode_words_as_one_run() {
+    // Accented latin and mixed kanji/kana runs are single words, gargo-style.
+    let cells: Vec<crate::session::terminal_state::StyledCell> = "café 日本語のテキスト!"
+        .chars()
+        .map(|ch| crate::session::terminal_state::StyledCell {
+            ch,
+            ..Default::default()
+        })
+        .collect();
+
+    assert_eq!(
+        App::expand_click_selection(&cells, 1, None),
+        Some((0, 3)),
+        "double-click selects the whole accented word"
+    );
+    assert_eq!(
+        App::expand_click_selection(&cells, 7, None),
+        Some((5, 12)),
+        "double-click selects the whole kanji/kana run"
     );
 }
 
