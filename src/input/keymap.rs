@@ -222,7 +222,20 @@ impl KeyMapper {
                     return InputAction::Ignore;
                 }
 
-                if let Some(action) = self.bindings.prefix_bindings.get(key_name).cloned() {
+                // Exact match first so explicit ctrl bindings (`C-s`,
+                // `C-Left`) keep their own meaning; otherwise `C-x` falls
+                // back to the bare `x` binding, screen-style, so ctrl can
+                // stay held through the whole sequence (e.g. `C-j C-n`).
+                let action = self
+                    .bindings
+                    .prefix_bindings
+                    .get(key_name)
+                    .or_else(|| {
+                        let bare = ctrl_fallback_key(&key)?;
+                        self.bindings.prefix_bindings.get(&bare)
+                    })
+                    .cloned();
+                if let Some(action) = action {
                     if action.should_exit_prefix_mode(self.bindings.prefix_sticky) {
                         self.prefix_active = false;
                     }
@@ -589,6 +602,24 @@ fn normalize_binding_key(spec: &str) -> Option<String> {
     }
 }
 
+/// The bare key name a ctrl-modified text key falls back to in the prefix
+/// map (`C-n` → `n`). Only plain ctrl+char qualifies: alt/super combos and
+/// non-text keys keep their exact spelling, and shift-cased bindings are
+/// unreachable anyway because ctrl'd chars canonicalize to lowercase.
+fn ctrl_fallback_key(key: &KeyEvent) -> Option<String> {
+    if !key.modifiers.contains(KeyModifiers::CONTROL)
+        || key
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::SUPER)
+    {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char(c) => Some(c.to_ascii_lowercase().to_string()),
+        _ => None,
+    }
+}
+
 fn canonical_key_event(key: &KeyEvent) -> Option<String> {
     let key_name = match key.code {
         KeyCode::Char(c) => {
@@ -927,6 +958,45 @@ mod tests {
         mapper.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
         let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
         assert_eq!(action, InputAction::Command(CommandAction::NewSession));
+    }
+
+    #[test]
+    fn prefix_ctrl_char_falls_back_to_bare_binding() {
+        // screen-style: ctrl held through the whole sequence still triggers
+        // the bare-letter binding (`C-j C-n` == `C-j n`).
+        for (key, expected) in [
+            (KeyCode::Char('n'), CommandAction::NewSession),
+            (KeyCode::Char('c'), CommandAction::NewWindow),
+            (KeyCode::Char('x'), CommandAction::ClosePane),
+        ] {
+            let mut mapper = KeyMapper::new();
+            mapper.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+            let action = mapper.handle_key(KeyEvent::new(key, KeyModifiers::CONTROL));
+            assert_eq!(action, InputAction::Command(expected), "key {key:?}");
+        }
+    }
+
+    #[test]
+    fn prefix_ctrl_fallback_does_not_shadow_explicit_ctrl_binding() {
+        // `C-s` is explicitly bound (save-layout); it must not fall back to
+        // the bare `s` binding (system tree).
+        let mut mapper = KeyMapper::new();
+        mapper.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert_eq!(action, InputAction::Command(CommandAction::SaveLayout));
+    }
+
+    #[test]
+    fn prefix_ctrl_alt_char_does_not_fall_back() {
+        let mut mapper = KeyMapper::new();
+        mapper.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        let action = mapper.handle_key(KeyEvent::new(
+            KeyCode::Char('n'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
+        // Unbound: passes through to the pane (ESC + ctrl byte).
+        assert_eq!(action, InputAction::SendBytes(vec![0x1b, 0x0e]));
+        assert!(!mapper.prefix_active());
     }
 
     #[test]
