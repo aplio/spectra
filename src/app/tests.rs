@@ -309,6 +309,7 @@ fn build_app_for_resize_test() -> App {
             active_session: 0,
             pane_histories_by_session: HashMap::new(),
             side_window_tree_open: false,
+            search_history: Vec::new(),
         },
         next_session_ordinal: 2,
         session_template: options,
@@ -439,6 +440,7 @@ fn build_app_with_history() -> App {
             active_session: 0,
             pane_histories_by_session: HashMap::new(),
             side_window_tree_open: false,
+            search_history: Vec::new(),
         },
         next_session_ordinal: 2,
         session_template: options,
@@ -562,6 +564,7 @@ fn build_app_with_write_behavior(behavior: WriteBehavior) -> App {
             active_session: 0,
             pane_histories_by_session: HashMap::new(),
             side_window_tree_open: false,
+            search_history: Vec::new(),
         },
         next_session_ordinal: 2,
         session_template: options,
@@ -642,6 +645,7 @@ fn build_app_with_close_on_write_behavior(behavior: CloseOnWriteBehavior) -> App
             active_session: 0,
             pane_histories_by_session: HashMap::new(),
             side_window_tree_open: false,
+            search_history: Vec::new(),
         },
         next_session_ordinal: 2,
         session_template: options,
@@ -761,6 +765,7 @@ fn build_recording_app_one_session() -> (App, RecordedWrites) {
             active_session: 0,
             pane_histories_by_session: HashMap::new(),
             side_window_tree_open: false,
+            search_history: Vec::new(),
         },
         next_session_ordinal: 2,
         session_template: options,
@@ -862,6 +867,7 @@ fn build_recording_app_with_history() -> (App, RecordedWrites) {
             active_session: 0,
             pane_histories_by_session: HashMap::new(),
             side_window_tree_open: false,
+            search_history: Vec::new(),
         },
         next_session_ordinal: 2,
         session_template: options,
@@ -941,6 +947,7 @@ fn build_recording_app_with_output(output: Vec<Vec<u8>>) -> (App, RecordedWrites
             active_session: 0,
             pane_histories_by_session: HashMap::new(),
             side_window_tree_open: false,
+            search_history: Vec::new(),
         },
         next_session_ordinal: 2,
         session_template: options,
@@ -1042,6 +1049,7 @@ fn build_recording_app_multi_session() -> (App, RecordedWrites) {
             active_session: 0,
             pane_histories_by_session: HashMap::new(),
             side_window_tree_open: false,
+            search_history: Vec::new(),
         },
         next_session_ordinal: 3,
         session_template: options,
@@ -1195,6 +1203,7 @@ fn build_editor_command_app() -> (App, RecordedSpawnConfigs, BackendClosedFlags)
             active_session: 0,
             pane_histories_by_session: HashMap::new(),
             side_window_tree_open: false,
+            search_history: Vec::new(),
         },
         next_session_ordinal: 2,
         session_template: options,
@@ -3931,6 +3940,7 @@ fn cursor_mode_movement_and_word_navigation() {
             visual: false,
             viewport_top: 0,
             pending_goto: false,
+            search: super::CursorModeSearchState::default(),
         },
     };
 
@@ -4006,6 +4016,7 @@ fn cursor_mode_goto_chord_jumps_like_gargo() {
             visual: false,
             viewport_top: 0,
             pending_goto: false,
+            search: super::CursorModeSearchState::default(),
         },
     };
 
@@ -4090,6 +4101,7 @@ fn cursor_mode_goto_chord_extends_visual_selection() {
             visual: true,
             viewport_top: 0,
             pending_goto: false,
+            search: super::CursorModeSearchState::default(),
         },
     };
 
@@ -4123,6 +4135,7 @@ fn cursor_mode_word_navigation_crosses_lines_like_gargo() {
             visual: false,
             viewport_top: 0,
             pending_goto: false,
+            search: super::CursorModeSearchState::default(),
         },
     };
 
@@ -4173,6 +4186,7 @@ fn cursor_mode_word_navigation_handles_punctuation_blocks_like_gargo() {
             visual: false,
             viewport_top: 0,
             pending_goto: false,
+            search: super::CursorModeSearchState::default(),
         },
     };
 
@@ -4226,6 +4240,7 @@ fn cursor_mode_word_end_navigation_crosses_lines_like_gargo() {
             visual: false,
             viewport_top: 0,
             pending_goto: false,
+            search: super::CursorModeSearchState::default(),
         },
     };
 
@@ -4260,6 +4275,7 @@ fn cursor_mode_word_end_navigation_handles_punctuation_blocks_like_gargo() {
             visual: false,
             viewport_top: 0,
             pending_goto: false,
+            search: super::CursorModeSearchState::default(),
         },
     };
 
@@ -4306,6 +4322,7 @@ fn cursor_mode_v_toggles_selection_anchor() {
             visual: false,
             viewport_top: 0,
             pending_goto: false,
+            search: super::CursorModeSearchState::default(),
         },
     };
 
@@ -4341,6 +4358,7 @@ fn cursor_mode_space_does_not_toggle_selection_anchor() {
             visual: false,
             viewport_top: 0,
             pending_goto: false,
+            search: super::CursorModeSearchState::default(),
         },
     };
 
@@ -4370,6 +4388,7 @@ fn cursor_mode_x_selects_current_line() {
             visual: false,
             viewport_top: 0,
             pending_goto: false,
+            search: super::CursorModeSearchState::default(),
         },
     };
 
@@ -4400,6 +4419,7 @@ fn cursor_mode_x_extends_line_selection_down() {
             visual: false,
             viewport_top: 0,
             pending_goto: false,
+            search: super::CursorModeSearchState::default(),
         },
     };
 
@@ -4432,6 +4452,7 @@ fn cursor_mode_x_at_last_line_does_not_move_past_buffer_end() {
             visual: false,
             viewport_top: 0,
             pending_goto: false,
+            search: super::CursorModeSearchState::default(),
         },
     };
 
@@ -4462,6 +4483,7 @@ fn cursor_mode_selection_extracts_multiline_text() {
         visual: false,
         viewport_top: 0,
         pending_goto: false,
+        search: super::CursorModeSearchState::default(),
     };
 
     assert_eq!(
@@ -4484,6 +4506,7 @@ fn cursor_mode_selection_rejoins_soft_wrapped_lines() {
         visual: false,
         viewport_top: 0,
         pending_goto: false,
+        search: super::CursorModeSearchState::default(),
     };
 
     assert_eq!(App::cursor_mode_selected_text(&state), "alphabeta\ngamma");
@@ -4503,6 +4526,7 @@ fn cursor_mode_line_copy_without_selection_rejoins_logical_line() {
         visual: false,
         viewport_top: 0,
         pending_goto: false,
+        search: super::CursorModeSearchState::default(),
     };
     assert_eq!(App::cursor_mode_selected_text(&state), "alphabeta");
 
@@ -9386,6 +9410,7 @@ fn cursor_mode_word_navigation_over_japanese_text_stops_at_class_transitions() {
             visual: false,
             viewport_top: 0,
             pending_goto: false,
+            search: super::CursorModeSearchState::default(),
         },
     };
 
@@ -9435,6 +9460,7 @@ fn cursor_mode_word_end_over_mixed_ascii_and_cjk() {
             visual: false,
             viewport_top: 0,
             pending_goto: false,
+            search: super::CursorModeSearchState::default(),
         },
     };
 
@@ -9484,6 +9510,7 @@ fn cursor_mode_treats_katakana_with_prolonged_sound_mark_as_one_word() {
             visual: false,
             viewport_top: 0,
             pending_goto: false,
+            search: super::CursorModeSearchState::default(),
         },
     };
 
@@ -9570,4 +9597,241 @@ fn mouse_selection_starting_on_wide_char_continuation_copies_whole_char() {
         crate::clipboard::osc52_sequence("日本語abc"),
         "a selection starting on a continuation cell must include the owner char"
     );
+}
+
+fn cursor_mode_app_with_lines(lines: &[&str]) -> super::App {
+    let mut app = build_app_for_resize_test();
+    app.view.input_mode = InputMode::CursorMode {
+        state: super::CursorModeState {
+            pane_id: 1,
+            lines: lines.iter().map(|line| line.to_string()).collect(),
+            styled_lines: Vec::new(),
+            soft_wraps: Vec::new(),
+            cursor: super::CursorModePoint { line: 0, col: 0 },
+            selection_anchor: None,
+            visual: false,
+            viewport_top: 0,
+            pending_goto: false,
+            search: super::CursorModeSearchState::default(),
+        },
+    };
+    app
+}
+
+fn cursor_mode_state(app: &super::App) -> &super::CursorModeState {
+    let InputMode::CursorMode { state } = &app.view.input_mode else {
+        panic!("expected cursor mode");
+    };
+    state
+}
+
+fn cursor_mode_type(app: &mut super::App, text: &str) {
+    for ch in text.chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE))
+            .expect("type into search bar");
+    }
+}
+
+#[test]
+fn cursor_mode_search_incremental_matches_case_insensitively_from_anchor() {
+    let mut app = cursor_mode_app_with_lines(&["alpha", "Beta", "gamma beta"]);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+        .expect("open search bar");
+    assert!(cursor_mode_state(&app).search.input.is_some());
+
+    cursor_mode_type(&mut app, "bet");
+    let state = cursor_mode_state(&app);
+    // Case-insensitive: "bet" finds "Beta" on line 1, not "beta" on line 2.
+    assert_eq!(state.cursor, super::CursorModePoint { line: 1, col: 0 });
+    assert!(state.search.last_found);
+
+    // Refining the pattern re-searches from the anchor, not from the
+    // current cursor, so the hit stays on the earliest match.
+    cursor_mode_type(&mut app, "a");
+    let state = cursor_mode_state(&app);
+    assert_eq!(state.cursor, super::CursorModePoint { line: 1, col: 0 });
+    assert_eq!(state.search.pattern, "beta");
+}
+
+#[test]
+fn cursor_mode_search_wraps_to_matches_before_the_anchor() {
+    let mut app = cursor_mode_app_with_lines(&["needle here", "middle", "tail"]);
+    if let InputMode::CursorMode { state } = &mut app.view.input_mode {
+        state.cursor = super::CursorModePoint { line: 2, col: 0 };
+    }
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+        .expect("open search bar");
+    cursor_mode_type(&mut app, "needle");
+    let state = cursor_mode_state(&app);
+    assert_eq!(state.cursor, super::CursorModePoint { line: 0, col: 0 });
+    assert!(state.search.last_found);
+}
+
+#[test]
+fn cursor_mode_search_confirm_keeps_pattern_and_n_steps_through_matches() {
+    let mut app = cursor_mode_app_with_lines(&["foo bar foo", "baz", "foo"]);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+        .expect("open search bar");
+    cursor_mode_type(&mut app, "foo");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .expect("confirm search");
+
+    let state = cursor_mode_state(&app);
+    assert!(state.search.input.is_none(), "bar closes on Enter");
+    assert_eq!(state.search.pattern, "foo");
+    assert_eq!(state.cursor, super::CursorModePoint { line: 0, col: 0 });
+    assert_eq!(app.view.search_history, vec!["foo".to_string()]);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
+        .expect("next match");
+    assert_eq!(
+        cursor_mode_state(&app).cursor,
+        super::CursorModePoint { line: 0, col: 8 }
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
+        .expect("next match");
+    assert_eq!(
+        cursor_mode_state(&app).cursor,
+        super::CursorModePoint { line: 2, col: 0 }
+    );
+
+    // Wrap back around to the first match.
+    app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
+        .expect("wrap to first match");
+    assert_eq!(
+        cursor_mode_state(&app).cursor,
+        super::CursorModePoint { line: 0, col: 0 }
+    );
+
+    // N steps backward, wrapping to the tail.
+    app.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT))
+        .expect("previous match wraps to tail");
+    assert_eq!(
+        cursor_mode_state(&app).cursor,
+        super::CursorModePoint { line: 2, col: 0 }
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT))
+        .expect("previous match");
+    assert_eq!(
+        cursor_mode_state(&app).cursor,
+        super::CursorModePoint { line: 0, col: 8 }
+    );
+}
+
+#[test]
+fn cursor_mode_search_esc_restores_cursor_and_viewport_and_clears_pattern() {
+    let mut app = cursor_mode_app_with_lines(&["first", "second", "third target"]);
+    if let InputMode::CursorMode { state } = &mut app.view.input_mode {
+        state.cursor = super::CursorModePoint { line: 1, col: 3 };
+    }
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+        .expect("open search bar");
+    cursor_mode_type(&mut app, "target");
+    assert_eq!(
+        cursor_mode_state(&app).cursor,
+        super::CursorModePoint { line: 2, col: 6 }
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .expect("cancel search");
+    let state = cursor_mode_state(&app);
+    assert!(state.search.input.is_none());
+    assert!(state.search.pattern.is_empty());
+    assert_eq!(state.cursor, super::CursorModePoint { line: 1, col: 3 });
+}
+
+#[test]
+fn cursor_mode_search_history_recall_with_up_key() {
+    let mut app = cursor_mode_app_with_lines(&["alpha", "beta"]);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+        .expect("open search bar");
+    cursor_mode_type(&mut app, "beta");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .expect("confirm search");
+
+    // Reopen and recall the confirmed pattern from history.
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+        .expect("reopen search bar");
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+        .expect("history prev");
+    let state = cursor_mode_state(&app);
+    assert_eq!(
+        state.search.input.as_ref().map(|input| input.text.as_str()),
+        Some("beta")
+    );
+    assert_eq!(state.cursor, super::CursorModePoint { line: 1, col: 0 });
+
+    // Down past the newest entry restores the (empty) typed input.
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+        .expect("history next");
+    let state = cursor_mode_state(&app);
+    assert_eq!(
+        state.search.input.as_ref().map(|input| input.text.as_str()),
+        Some("")
+    );
+}
+
+#[test]
+fn cursor_mode_search_highlights_matches_in_frame() {
+    let (mut app, _writes) =
+        build_recording_app_with_output(vec![b"foo bar foo\r\nplain\r\n".to_vec()]);
+    assert!(
+        app.current_session_mut().poll_output(),
+        "expected pane output"
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
+        .expect("enter prefix");
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+        .expect("open cursor mode search via prefix + /");
+    assert!(
+        cursor_mode_state(&app).search.input.is_some(),
+        "prefix + / must open cursor mode with the search bar active"
+    );
+    cursor_mode_type(&mut app, "foo");
+    assert_eq!(
+        app.status_line(),
+        "/foo",
+        "search bar prompt replaces the status line while typing"
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .expect("confirm search");
+
+    let snapshot = app
+        .render_snapshot_for_client(super::LOCAL_CLIENT_ID)
+        .expect("cursor mode snapshot");
+    let pane = snapshot
+        .frame
+        .panes
+        .iter()
+        .find(|pane| pane.focused)
+        .expect("focused pane");
+    let match_row = pane
+        .rows
+        .iter()
+        .find(|row| {
+            row.iter()
+                .map(|cell| cell.ch)
+                .collect::<String>()
+                .starts_with("foo bar foo")
+        })
+        .expect("row containing matches");
+
+    // Current match (cursor sits on it) is Yellow-on-Black.
+    for cell in &match_row[0..3] {
+        assert_eq!(cell.style.bg, Some(Color::Yellow));
+        assert_eq!(cell.style.fg, Some(Color::Black));
+    }
+    // Other matches get the DarkYellow background.
+    for cell in &match_row[8..11] {
+        assert_eq!(cell.style.bg, Some(Color::DarkYellow));
+    }
+    // Non-match cells stay unstyled.
+    assert_eq!(match_row[4].style.bg, None);
 }

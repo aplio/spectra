@@ -1022,13 +1022,18 @@ impl App {
     pub(super) fn handle_paste(&mut self, text: String) -> io::Result<AppSignal> {
         self.needs_render = true;
         let palette_ctx = self.command_palette_context();
+        let pane_view_rows = self.focused_pane_view_rows();
         match &mut self.view.input_mode {
             InputMode::RenameTreeItem { buffer, .. } => {
                 buffer.push_str(&text);
                 Ok(AppSignal::None)
             }
             InputMode::SystemTree { .. } | InputMode::ConfirmDelete { .. } => Ok(AppSignal::None),
-            InputMode::CursorMode { .. } => Ok(AppSignal::None),
+            InputMode::CursorMode { state } => {
+                let text = text.trim_end_matches(['\r', '\n']).trim_end_matches('\0');
+                Self::cursor_mode_search_paste(state, text, pane_view_rows);
+                Ok(AppSignal::None)
+            }
             InputMode::CommandPalette { state } => {
                 let text = text.trim_end_matches(['\r', '\n']).trim_end_matches('\0');
                 if state.text_input.insert_text(text) {

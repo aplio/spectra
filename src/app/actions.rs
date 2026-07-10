@@ -321,6 +321,7 @@ impl App {
             CommandAction::SideWindowTree => self.toggle_side_window_tree(),
             CommandAction::PeekAllWindows => self.open_peek_all_windows(),
             CommandAction::EnterCursorMode => self.open_cursor_mode(),
+            CommandAction::SearchScrollback => self.open_cursor_mode_search(),
             CommandAction::LeaveCursorMode => {
                 if matches!(self.view.input_mode, InputMode::CursorMode { .. }) {
                     self.view.input_mode = InputMode::Normal;

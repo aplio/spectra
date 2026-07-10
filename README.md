@@ -58,7 +58,8 @@ The prefix is `Ctrl+j`. Press `prefix ?` for the full searchable cheat sheet.
 | `prefix H/J/K/L` (or `Shift+Arrow`) | swap pane in direction (split shape stays) |
 | `prefix !` | break the focused pane out into a new window |
 | `prefix R` | sticky resize mode (arrows/hjkl resize, Esc exits) |
-| `prefix [` | cursor mode (vi-style movement, `g` chords `gg`/`ge`/`gh`/`gl`, `v`/`y` select and copy) |
+| `prefix [` | cursor mode (vi-style movement, `g` chords `gg`/`ge`/`gh`/`gl`, `v`/`y` select and copy, `/` search) |
+| `prefix /` | search scrollback (cursor mode with the `/` bar open; type to search, Enter confirm, `n`/`N` next/prev, Esc cancel) |
 | `prefix y` | copy the mouse drag selection |
 | `prefix v` | paste the clipboard image as a temp-file path (bridged from the local clipboard over `--remote` too) |
 | `prefix d` | detach (server keeps running) |

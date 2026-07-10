@@ -47,6 +47,8 @@ pub enum CommandAction {
     NewWindow,
     EnterCursorMode,
     LeaveCursorMode,
+    /// Enter cursor mode with the scrollback search bar already open.
+    SearchScrollback,
     /// Copy the active mouse text selection to the clipboard.
     CopySelection,
     /// Copy the spectra version string to the clipboard.
@@ -116,6 +118,7 @@ impl CommandAction {
             Self::NewWindow => "New window".to_string(),
             Self::EnterCursorMode => "Enter cursor mode".to_string(),
             Self::LeaveCursorMode => "Leave cursor mode".to_string(),
+            Self::SearchScrollback => "Search scrollback".to_string(),
             Self::CopySelection => "Copy mouse selection".to_string(),
             Self::CopyVersion => "Copy spectra version".to_string(),
             Self::PasteImage => "Paste clipboard image as file path".to_string(),
@@ -340,6 +343,7 @@ fn default_prefix_bindings() -> HashMap<String, CommandAction> {
     map.insert("n".to_string(), CommandAction::NewSession);
     map.insert("c".to_string(), CommandAction::NewWindow);
     map.insert("[".to_string(), CommandAction::EnterCursorMode);
+    map.insert("/".to_string(), CommandAction::SearchScrollback);
     map.insert("y".to_string(), CommandAction::CopySelection);
     map.insert("v".to_string(), CommandAction::PasteImage);
     map.insert("p".to_string(), CommandAction::CommandPalette);
@@ -507,6 +511,9 @@ fn parse_action(spec: &str) -> Option<CommandAction> {
         "new-window" => Some(CommandAction::NewWindow),
         "copy-mode" | "enter-cursor-mode" | "cursor-mode" => Some(CommandAction::EnterCursorMode),
         "leave-cursor-mode" | "exit-cursor-mode" => Some(CommandAction::LeaveCursorMode),
+        "search-scrollback" | "scrollback-search" | "search" => {
+            Some(CommandAction::SearchScrollback)
+        }
         "copy-selection" | "copy-mouse-selection" => Some(CommandAction::CopySelection),
         "paste-image" | "image-paste" | "paste-clipboard-image" => Some(CommandAction::PasteImage),
         "command-palette" | "open-command-palette" => Some(CommandAction::CommandPalette),

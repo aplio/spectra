@@ -628,8 +628,11 @@ impl App {
             InputMode::ConfirmDelete { label, .. } => {
                 return format!("Delete {label}? (y/n, Esc cancel)");
             }
-            InputMode::CursorMode { .. } => {
-                return "cursor mode: h/j/k/l or arrows move (clear anchor), w/b/e word (set anchor), 0/$ line start/end (clear anchor), v toggle anchor, x linewise select/extend, y copy, Esc/q exit".to_string();
+            InputMode::CursorMode { state } => {
+                if let Some(input) = &state.search.input {
+                    return format!("/{}", input.text);
+                }
+                return "cursor mode: h/j/k/l or arrows move (clear anchor), w/b/e word (set anchor), 0/$ line start/end (clear anchor), v toggle anchor, x linewise select/extend, y copy, / search, n/N next/prev match, Esc/q exit".to_string();
             }
             InputMode::CommandPalette { .. } => {
                 return "command palette: type filter, Left/Right edit, Up/Down select, Enter run, Ctrl+n/p/j nav, Ctrl+f/b/a/e move, Ctrl+Left/Right word, Ctrl+w/k delete, Ctrl+c/q or Esc cancel".to_string();

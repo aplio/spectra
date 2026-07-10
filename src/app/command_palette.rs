@@ -515,6 +515,17 @@ impl App {
         );
         Self::push_command_palette_entry(
             &mut entries,
+            "cursor-mode.search",
+            CommandAction::SearchScrollback,
+            "Search scrollback",
+            "search scrollback find pattern cursor mode",
+            &[
+                "action: enter cursor mode with the / search bar open",
+                "keys: type to search, Enter confirm, n/N next/prev, Esc cancel",
+            ],
+        );
+        Self::push_command_palette_entry(
+            &mut entries,
             "session.rename",
             CommandAction::RenameSession,
             "Rename session",

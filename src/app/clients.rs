@@ -272,6 +272,7 @@ impl App {
             active_session: self.view.active_session,
             pane_histories_by_session: self.view.pane_histories_by_session.clone(),
             side_window_tree_open: self.view.side_window_tree_open,
+            search_history: Vec::new(),
         }
     }
 
@@ -299,6 +300,7 @@ impl App {
             active_session: 0,
             pane_histories_by_session: HashMap::new(),
             side_window_tree_open: false,
+            search_history: Vec::new(),
         }
     }
 

@@ -226,6 +226,35 @@ pub(super) struct CursorModeState {
     /// True after a bare `g` press, waiting for the second key of a `g`
     /// chord (`gg`, `ge`, `gh`, `gl`). Reset on the next key.
     pub pending_goto: bool,
+    pub search: CursorModeSearchState,
+}
+
+/// Scrollback search inside cursor mode, mirroring gargo's `/` search:
+/// incremental forward-from-anchor matching while the bar is open, `n`/`N`
+/// stepping and viewport match highlighting after confirm.
+#[derive(Debug, Clone, Default)]
+pub(super) struct CursorModeSearchState {
+    /// `Some` while the `/` search bar is open and capturing keys.
+    pub input: Option<TextInput>,
+    /// Pattern driving highlights and `n`/`N`: live while typing, kept after
+    /// Enter, cleared on Esc-cancel.
+    pub pattern: String,
+    /// `pattern` lowercased one char at a time (index-preserving) for
+    /// case-insensitive matching.
+    pub pattern_lower: Vec<char>,
+    /// Cursor when the bar opened; every incremental update searches forward
+    /// from here so editing the pattern doesn't drift through the buffer.
+    pub anchor: CursorModePoint,
+    /// Cursor/viewport captured at bar open, restored on Esc-cancel.
+    pub saved_cursor: CursorModePoint,
+    pub saved_viewport_top: usize,
+    /// Whether the most recent incremental update found a match; drives the
+    /// Found / "pattern not found" message on confirm.
+    pub last_found: bool,
+    /// Current position while browsing history (`None` = not browsing).
+    pub history_index: Option<usize>,
+    /// What the user had typed before starting to browse history.
+    pub input_before_history: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -758,4 +787,7 @@ pub(super) struct ClientViewState {
     pub active_session: usize,
     pub pane_histories_by_session: HashMap<String, PaneFocusHistory>,
     pub side_window_tree_open: bool,
+    /// Confirmed cursor-mode search patterns (oldest first), browsable with
+    /// Up/Down or Ctrl+p/n while the search bar is open.
+    pub search_history: Vec<String>,
 }

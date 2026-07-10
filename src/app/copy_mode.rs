@@ -2,10 +2,12 @@ use std::cmp::Ordering;
 use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::style::Color;
 use unicode_width::UnicodeWidthChar;
 
 use super::App;
 use super::types::*;
+use crate::input::text_input::TextInput;
 use crate::session::terminal_state::StyledCell;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +36,11 @@ impl App {
         }
 
         let view_rows = self.cursor_mode_view_rows(&state);
+
+        if state.search.input.is_some() {
+            return self.handle_cursor_mode_search_key(state, key, view_rows);
+        }
+
         let has_ctrl_or_alt = key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
@@ -152,6 +159,15 @@ impl App {
                 if self.cursor_mode_copy_selection(&state) {
                     return InputMode::Normal;
                 }
+            }
+            KeyCode::Char('/') if !has_ctrl_or_alt => {
+                Self::cursor_mode_open_search_bar(&mut state);
+            }
+            KeyCode::Char('n') if !has_ctrl_or_alt => {
+                self.cursor_mode_search_step(&mut state, true);
+            }
+            KeyCode::Char('N') if !has_ctrl_or_alt => {
+                self.cursor_mode_search_step(&mut state, false);
             }
             KeyCode::Enter if !has_ctrl_or_alt => return InputMode::Normal,
             _ => {}
@@ -298,6 +314,7 @@ impl App {
             visual: false,
             viewport_top,
             pending_goto: false,
+            search: CursorModeSearchState::default(),
         };
         Self::cursor_mode_clamp_cursor(&mut state);
         Self::cursor_mode_ensure_visible(&mut state, view_rows);
@@ -306,6 +323,440 @@ impl App {
         self.view.click_chain = None;
         self.view.mouse_drag = None;
         self.view.input_mode = InputMode::CursorMode { state };
+    }
+
+    /// Open cursor mode with the search bar already active (`prefix + /`).
+    pub(super) fn open_cursor_mode_search(&mut self) {
+        if !matches!(self.view.input_mode, InputMode::CursorMode { .. }) {
+            self.open_cursor_mode();
+        }
+        if let InputMode::CursorMode { state } = &mut self.view.input_mode {
+            Self::cursor_mode_open_search_bar(state);
+        }
+    }
+
+    /// Arm the `/` search bar: capture the anchor the incremental search
+    /// originates from and the cursor/viewport to restore on cancel. A
+    /// previous pattern keeps highlighting until the first keystroke
+    /// replaces it, mirroring gargo.
+    fn cursor_mode_open_search_bar(state: &mut CursorModeState) {
+        state.search.input = Some(TextInput::default());
+        state.search.anchor = state.cursor;
+        state.search.saved_cursor = state.cursor;
+        state.search.saved_viewport_top = state.viewport_top;
+        state.search.history_index = None;
+        state.search.input_before_history.clear();
+        state.pending_goto = false;
+    }
+
+    /// Keys while the search bar is open, mirroring gargo's search bar:
+    /// printable chars search incrementally from the anchor, Enter confirms,
+    /// Esc/Ctrl+q cancels and restores the pre-search view, Up/Down or
+    /// Ctrl+p/n browse history, and emacs-style Ctrl editing works on the
+    /// input.
+    fn handle_cursor_mode_search_key(
+        &mut self,
+        mut state: CursorModeState,
+        key: KeyEvent,
+        view_rows: usize,
+    ) -> InputMode {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('q') => Self::cursor_mode_search_cancel(&mut state),
+                KeyCode::Char('p') => self.cursor_mode_search_history_prev(&mut state),
+                KeyCode::Char('n') => self.cursor_mode_search_history_next(&mut state),
+                KeyCode::Char('a') => Self::cursor_mode_search_edit(&mut state, |input| {
+                    input.move_start();
+                    false
+                }),
+                KeyCode::Char('e') => Self::cursor_mode_search_edit(&mut state, |input| {
+                    input.move_end();
+                    false
+                }),
+                KeyCode::Char('f') => Self::cursor_mode_search_edit(&mut state, |input| {
+                    input.move_right();
+                    false
+                }),
+                KeyCode::Char('b') => Self::cursor_mode_search_edit(&mut state, |input| {
+                    input.move_left();
+                    false
+                }),
+                KeyCode::Char('k') => {
+                    Self::cursor_mode_search_edit(&mut state, TextInput::delete_to_end)
+                }
+                KeyCode::Char('w') => {
+                    Self::cursor_mode_search_edit(&mut state, TextInput::delete_prev_word)
+                }
+                _ => {}
+            }
+        } else {
+            match key.code {
+                KeyCode::Esc => Self::cursor_mode_search_cancel(&mut state),
+                KeyCode::Enter => self.cursor_mode_search_confirm(&mut state),
+                KeyCode::Up => self.cursor_mode_search_history_prev(&mut state),
+                KeyCode::Down => self.cursor_mode_search_history_next(&mut state),
+                KeyCode::Left => Self::cursor_mode_search_edit(&mut state, |input| {
+                    input.move_left();
+                    false
+                }),
+                KeyCode::Right => Self::cursor_mode_search_edit(&mut state, |input| {
+                    input.move_right();
+                    false
+                }),
+                KeyCode::Backspace => {
+                    Self::cursor_mode_search_edit(&mut state, TextInput::backspace)
+                }
+                KeyCode::Char(ch) => Self::cursor_mode_search_edit(&mut state, |input| {
+                    input.insert_char(ch);
+                    true
+                }),
+                _ => {}
+            }
+        }
+
+        Self::cursor_mode_clamp_cursor(&mut state);
+        Self::cursor_mode_ensure_visible(&mut state, view_rows);
+        InputMode::CursorMode { state }
+    }
+
+    /// Apply `edit` to the search input; a `true` return means the text
+    /// changed and the incremental search re-runs from the anchor.
+    fn cursor_mode_search_edit(
+        state: &mut CursorModeState,
+        edit: impl FnOnce(&mut TextInput) -> bool,
+    ) {
+        let Some(input) = state.search.input.as_mut() else {
+            return;
+        };
+        if edit(input) {
+            Self::cursor_mode_search_update(state);
+        }
+    }
+
+    /// Paste into an open search bar (no-op while the bar is closed).
+    pub(super) fn cursor_mode_search_paste(
+        state: &mut CursorModeState,
+        text: &str,
+        view_rows: usize,
+    ) {
+        if state.search.input.is_none() {
+            return;
+        }
+        Self::cursor_mode_search_edit(state, |input| input.insert_text(text));
+        Self::cursor_mode_clamp_cursor(state);
+        Self::cursor_mode_ensure_visible(state, view_rows);
+    }
+
+    /// Recompute the pattern from the bar input and jump to the first match
+    /// at or after the anchor (wrapping), so editing the pattern never
+    /// drifts the result through the buffer.
+    fn cursor_mode_search_update(state: &mut CursorModeState) {
+        state.search.pattern = state
+            .search
+            .input
+            .as_ref()
+            .map(|input| input.text.clone())
+            .unwrap_or_default();
+        state.search.pattern_lower = state
+            .search
+            .pattern
+            .chars()
+            .map(Self::cursor_mode_search_lower_char)
+            .collect();
+        state.search.last_found = false;
+        if state.search.pattern_lower.is_empty() {
+            return;
+        }
+        if let Some(hit) = Self::cursor_mode_search_find_forward(state, state.search.anchor) {
+            Self::cursor_mode_drop_transient_selection(state);
+            state.cursor = hit;
+            state.search.last_found = true;
+        }
+    }
+
+    /// Enter: close the bar keeping the pattern (and its highlights) live
+    /// for `n`/`N`, and record it in the client's search history.
+    fn cursor_mode_search_confirm(&mut self, state: &mut CursorModeState) {
+        let typed = state
+            .search
+            .input
+            .take()
+            .map(|input| input.text)
+            .unwrap_or_default();
+        state.search.history_index = None;
+        state.search.input_before_history.clear();
+        if typed.is_empty() {
+            return;
+        }
+        if self.view.search_history.last() != Some(&typed) {
+            self.view.search_history.push(typed);
+        }
+        if !state.search.last_found {
+            self.set_message("pattern not found", Duration::from_secs(2));
+        }
+    }
+
+    /// Esc/Ctrl+q: drop the pattern and put the cursor and viewport back
+    /// where they were when the bar opened.
+    fn cursor_mode_search_cancel(state: &mut CursorModeState) {
+        state.search.input = None;
+        state.search.pattern.clear();
+        state.search.pattern_lower.clear();
+        state.search.last_found = false;
+        state.search.history_index = None;
+        state.search.input_before_history.clear();
+        state.cursor = state.search.saved_cursor;
+        state.viewport_top = state.search.saved_viewport_top;
+    }
+
+    /// `n`/`N`: step to the next/previous match, wrapping around the buffer.
+    fn cursor_mode_search_step(&mut self, state: &mut CursorModeState, forward: bool) {
+        if state.search.pattern_lower.is_empty() {
+            self.set_message("no search pattern", Duration::from_secs(2));
+            return;
+        }
+        let hit = if forward {
+            let from = Self::cursor_mode_search_next_origin(state);
+            Self::cursor_mode_search_find_forward(state, from)
+        } else {
+            Self::cursor_mode_search_find_backward(state, state.cursor)
+        };
+        match hit {
+            Some(point) => {
+                Self::cursor_mode_drop_transient_selection(state);
+                state.cursor = point;
+            }
+            None => self.set_message("pattern not found", Duration::from_secs(2)),
+        }
+    }
+
+    /// Where a forward `n` starts scanning: just past the match under the
+    /// cursor, so consecutive presses step through non-overlapping hits.
+    fn cursor_mode_search_next_origin(state: &CursorModeState) -> CursorModePoint {
+        let pattern_len = state.search.pattern_lower.len().max(1);
+        let line_len = Self::cursor_mode_line_char_len(state, state.cursor.line);
+        let col = state.cursor.col.saturating_add(pattern_len);
+        if col < line_len {
+            CursorModePoint {
+                line: state.cursor.line,
+                col,
+            }
+        } else {
+            CursorModePoint {
+                line: state.cursor.line.saturating_add(1),
+                col: 0,
+            }
+        }
+    }
+
+    fn cursor_mode_search_history_prev(&mut self, state: &mut CursorModeState) {
+        if self.view.search_history.is_empty() {
+            return;
+        }
+        let index = match state.search.history_index {
+            None => {
+                state.search.input_before_history = state
+                    .search
+                    .input
+                    .as_ref()
+                    .map(|input| input.text.clone())
+                    .unwrap_or_default();
+                self.view.search_history.len() - 1
+            }
+            Some(0) => return,
+            Some(index) => index - 1,
+        };
+        state.search.history_index = Some(index);
+        let pattern = self.view.search_history[index].clone();
+        if let Some(input) = state.search.input.as_mut() {
+            input.set_text(pattern);
+        }
+        Self::cursor_mode_search_update(state);
+    }
+
+    fn cursor_mode_search_history_next(&mut self, state: &mut CursorModeState) {
+        let Some(index) = state.search.history_index else {
+            return;
+        };
+        let text = if index + 1 < self.view.search_history.len() {
+            state.search.history_index = Some(index + 1);
+            self.view.search_history[index + 1].clone()
+        } else {
+            // Past the newest entry: back to what the user had typed.
+            state.search.history_index = None;
+            std::mem::take(&mut state.search.input_before_history)
+        };
+        if let Some(input) = state.search.input.as_mut() {
+            input.set_text(text);
+        }
+        Self::cursor_mode_search_update(state);
+    }
+
+    /// Lowercase for matching, one char at a time so char indices stay 1:1
+    /// with the original line (multi-char expansions like ß→ss keep only
+    /// their first char).
+    fn cursor_mode_search_lower_char(ch: char) -> char {
+        ch.to_lowercase().next().unwrap_or(ch)
+    }
+
+    fn cursor_mode_search_line_lower(line: &str) -> Vec<char> {
+        line.chars()
+            .map(Self::cursor_mode_search_lower_char)
+            .collect()
+    }
+
+    /// First match start in `line_lower` at or after `from_col`.
+    fn cursor_mode_search_line_find_from(
+        line_lower: &[char],
+        pattern_lower: &[char],
+        from_col: usize,
+    ) -> Option<usize> {
+        let len = line_lower.len();
+        let pattern_len = pattern_lower.len();
+        if pattern_len == 0 || len < pattern_len || from_col > len - pattern_len {
+            return None;
+        }
+        (from_col..=len - pattern_len)
+            .find(|&start| line_lower[start..start + pattern_len] == *pattern_lower)
+    }
+
+    /// Last match start in `line_lower` strictly before `before_col`.
+    fn cursor_mode_search_line_rfind_before(
+        line_lower: &[char],
+        pattern_lower: &[char],
+        before_col: usize,
+    ) -> Option<usize> {
+        let len = line_lower.len();
+        let pattern_len = pattern_lower.len();
+        if pattern_len == 0 || len < pattern_len {
+            return None;
+        }
+        let upper = before_col.min(len - pattern_len + 1);
+        (0..upper)
+            .rev()
+            .find(|&start| line_lower[start..start + pattern_len] == *pattern_lower)
+    }
+
+    /// First match at or after `from`, wrapping to the top of the buffer.
+    /// Matches never span line boundaries (patterns are single-line).
+    fn cursor_mode_search_find_forward(
+        state: &CursorModeState,
+        from: CursorModePoint,
+    ) -> Option<CursorModePoint> {
+        let pattern = &state.search.pattern_lower;
+        if pattern.is_empty() || state.lines.is_empty() {
+            return None;
+        }
+        let total = state.lines.len();
+        for line_idx in from.line.min(total)..total {
+            let lower = Self::cursor_mode_search_line_lower(&state.lines[line_idx]);
+            let from_col = if line_idx == from.line { from.col } else { 0 };
+            if let Some(col) = Self::cursor_mode_search_line_find_from(&lower, pattern, from_col) {
+                return Some(CursorModePoint {
+                    line: line_idx,
+                    col,
+                });
+            }
+        }
+        // Wrap: the first pass covered everything at or after `from`, so any
+        // hit down here is genuinely before it (or `from` itself again).
+        for line_idx in 0..=from.line.min(total - 1) {
+            let lower = Self::cursor_mode_search_line_lower(&state.lines[line_idx]);
+            if let Some(col) = Self::cursor_mode_search_line_find_from(&lower, pattern, 0) {
+                return Some(CursorModePoint {
+                    line: line_idx,
+                    col,
+                });
+            }
+        }
+        None
+    }
+
+    /// Last match strictly before `before`, wrapping to the buffer tail.
+    fn cursor_mode_search_find_backward(
+        state: &CursorModeState,
+        before: CursorModePoint,
+    ) -> Option<CursorModePoint> {
+        let pattern = &state.search.pattern_lower;
+        if pattern.is_empty() || state.lines.is_empty() {
+            return None;
+        }
+        let total = state.lines.len();
+        let start_line = before.line.min(total - 1);
+        let lower = Self::cursor_mode_search_line_lower(&state.lines[start_line]);
+        if let Some(col) = Self::cursor_mode_search_line_rfind_before(&lower, pattern, before.col) {
+            return Some(CursorModePoint {
+                line: start_line,
+                col,
+            });
+        }
+        for line_idx in (0..start_line).rev() {
+            let lower = Self::cursor_mode_search_line_lower(&state.lines[line_idx]);
+            if let Some(col) =
+                Self::cursor_mode_search_line_rfind_before(&lower, pattern, usize::MAX)
+            {
+                return Some(CursorModePoint {
+                    line: line_idx,
+                    col,
+                });
+            }
+        }
+        // Wrap from the tail down. A hit on the cursor line here is at or
+        // after the cursor (everything earlier was rejected above).
+        for line_idx in (start_line..total).rev() {
+            let lower = Self::cursor_mode_search_line_lower(&state.lines[line_idx]);
+            if let Some(col) =
+                Self::cursor_mode_search_line_rfind_before(&lower, pattern, usize::MAX)
+            {
+                return Some(CursorModePoint {
+                    line: line_idx,
+                    col,
+                });
+            }
+        }
+        None
+    }
+
+    /// Paint every visible match gargo-style: DarkYellow background for
+    /// matches, Yellow-on-Black for the match under the cursor.
+    fn cursor_mode_apply_search_highlight(
+        rows: &mut [Vec<StyledCell>],
+        state: &CursorModeState,
+        width: usize,
+        height: usize,
+    ) {
+        let pattern = &state.search.pattern_lower;
+        if pattern.is_empty() || width == 0 {
+            return;
+        }
+        let pattern_len = pattern.len();
+        for (row, cells) in rows.iter_mut().enumerate().take(height) {
+            let line_idx = state.viewport_top.saturating_add(row);
+            let Some(line) = state.lines.get(line_idx) else {
+                continue;
+            };
+            let lower = Self::cursor_mode_search_line_lower(line);
+            let mut scan_from = 0usize;
+            while let Some(col) =
+                Self::cursor_mode_search_line_find_from(&lower, pattern, scan_from)
+            {
+                let last_col = col + pattern_len - 1;
+                let start_cell = Self::cursor_mode_char_col_to_cell_col(line, col, width);
+                let end_cell = Self::cursor_mode_char_col_to_cell_col_end(line, last_col, width);
+                let current = line_idx == state.cursor.line && col == state.cursor.col;
+                for cell_idx in start_cell..=end_cell {
+                    if let Some(cell) = cells.get_mut(cell_idx) {
+                        if current {
+                            cell.style.bg = Some(Color::Yellow);
+                            cell.style.fg = Some(Color::Black);
+                        } else {
+                            cell.style.bg = Some(Color::DarkYellow);
+                        }
+                    }
+                }
+                scan_from = col + pattern_len;
+            }
+        }
     }
 
     pub(super) fn cursor_mode_selected_text(state: &CursorModeState) -> String {
@@ -758,6 +1209,7 @@ impl App {
         }
         pane.rows.truncate(height);
         Self::cursor_mode_apply_frame_selection_highlight(&mut pane.rows, state, width, height);
+        Self::cursor_mode_apply_search_highlight(&mut pane.rows, state, width, height);
 
         let line = state
             .lines
