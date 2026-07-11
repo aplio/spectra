@@ -8,9 +8,13 @@
 //! then a private per-invocation Unix listener socket is created under the
 //! runtime dir, the normal interactive client attaches to it, and every
 //! accepted connection is pumped through `ssh -T` stdin/stdout to the remote
-//! host, executing the seeded binary. Only when the remote platform differs
-//! from the local one (so the local binary cannot run there) does the bridge
-//! fall back to a spectra already installed on the remote host.
+//! host, executing the seeded binary. When the remote platform differs from
+//! the local one (so the local binary cannot run there), the remote host
+//! instead downloads the matching release asset for its own platform from
+//! GitHub — same version as the local build — into the seeded path. Only
+//! when that also fails (unreleased dev version, unsupported platform, no
+//! curl/wget) does the bridge fall back to a spectra already installed on
+//! the remote host.
 //!
 //! Remote side (`spectra remote-client-bridge`, hidden subcommand): ensures a
 //! server is running (same auto-spawn as a local attach), connects to the
@@ -346,10 +350,12 @@ fn compose_transport(prefix: &[String], remote_command: &str) -> Vec<String> {
 
 /// How the bridge is executed on the remote host.
 enum RemoteExec {
-    /// The seeded copy of the local binary at [`REMOTE_SEEDED_BINARY_SUFFIX`].
+    /// The binary at [`REMOTE_SEEDED_BINARY_SUFFIX`]: either a seeded copy of
+    /// the local binary (same platform) or a release asset the remote host
+    /// downloaded from GitHub for its own platform.
     Seeded,
-    /// A spectra already installed on the remote host (platform mismatch:
-    /// the local binary cannot run there).
+    /// A spectra already installed on the remote host (platform mismatch and
+    /// no release asset could be fetched).
     PathDiscovery,
 }
 
@@ -398,18 +404,56 @@ mv "$tmp" "$dest""#
     )
 }
 
+/// GitHub repository the remote host downloads release assets from when its
+/// platform differs from the local one. Must match the release workflow's
+/// asset naming: `spectra-v<version>-<target>.tar.gz`.
+const RELEASE_REPO: &str = "aplio/spectra";
+
+/// Release asset target suffix for a normalized remote `uname -s`/`-m` pair,
+/// or `None` when no prebuilt asset exists for that platform.
+fn release_target(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("Linux", "x86_64") => Some("linux-x86_64"),
+        ("Linux", "aarch64") => Some("linux-aarch64"),
+        ("Darwin", "aarch64") => Some("macos-arm64"),
+        ("Darwin", "x86_64") => Some("macos-x86_64"),
+        _ => None,
+    }
+}
+
+/// Shell script that makes the remote host download the release asset for
+/// its own platform from GitHub into the seeded path (atomic tmp + mv),
+/// skipping the download when the seeded binary already reports `version`.
+/// Runs via `sh -c '...'`, so no single quotes.
+fn download_script(version: &str, target: &str) -> String {
+    format!(
+        r#"dest=$HOME/{REMOTE_SEEDED_BINARY_SUFFIX}
+if [ -x "$dest" ] && [ "$("$dest" --version 2>/dev/null)" = "spectra {version}" ]; then exit 0; fi
+url=https://github.com/{RELEASE_REPO}/releases/download/v{version}/spectra-v{version}-{target}.tar.gz
+dir=${{dest%/*}}
+mkdir -p "$dir"
+tmp=$dir/.fetch.$$
+mkdir -p "$tmp"
+trap "rm -rf \"$tmp\"" EXIT
+if command -v curl >/dev/null 2>&1; then curl -fsSL -o "$tmp/spectra.tar.gz" "$url"
+elif command -v wget >/dev/null 2>&1; then wget -q -O "$tmp/spectra.tar.gz" "$url"
+else echo "spectra: neither curl nor wget is available on the remote host" >&2; exit 3
+fi || exit 4
+tar -xzf "$tmp/spectra.tar.gz" -C "$tmp" spectra || exit 5
+chmod 755 "$tmp/spectra"
+mv "$tmp/spectra" "$dest""#
+    )
+}
+
 /// Make sure the remote host has a runnable spectra: seed the local binary
-/// when it is missing or differs (by sha256), or fall back to a remotely
-/// installed spectra when the platforms differ.
+/// when it is missing or differs (by sha256). When the platforms differ the
+/// remote host downloads the release asset for its own platform from GitHub
+/// instead, falling back to a remotely installed spectra when that fails.
 fn ensure_remote_binary(host: &str, prefix: &[String]) -> io::Result<RemoteExec> {
     let probe = run_probe(host, prefix)?;
     let (local_os, local_arch) = local_platform();
     if probe.os != local_os || probe.arch != local_arch {
-        eprintln!(
-            "spectra: remote platform {}/{} differs from local {}/{}; cannot seed the local binary — using spectra installed on '{host}'",
-            probe.os, probe.arch, local_os, local_arch
-        );
-        return Ok(RemoteExec::PathDiscovery);
+        return Ok(ensure_cross_platform_binary(host, prefix, &probe));
     }
 
     let local_exe = local_binary_path()?;
@@ -422,6 +466,55 @@ fn ensure_remote_binary(host: &str, prefix: &[String]) -> io::Result<RemoteExec>
     eprintln!("spectra: seeding local binary to {host}:~/{REMOTE_SEEDED_BINARY_SUFFIX}");
     seed_remote_binary(prefix, &local_exe)?;
     Ok(RemoteExec::Seeded)
+}
+
+/// Platform mismatch path: the local binary cannot run on the remote host,
+/// so have the remote host download the release asset for its own platform
+/// (same version as the local build) from GitHub. Any failure falls back to
+/// a spectra already installed on the remote host.
+fn ensure_cross_platform_binary(host: &str, prefix: &[String], probe: &RemoteProbe) -> RemoteExec {
+    let (local_os, local_arch) = local_platform();
+    let Some(target) = release_target(&probe.os, &probe.arch) else {
+        eprintln!(
+            "spectra: remote platform {}/{} differs from local {}/{} and has no prebuilt release — using spectra installed on '{host}'",
+            probe.os, probe.arch, local_os, local_arch
+        );
+        return RemoteExec::PathDiscovery;
+    };
+
+    let version = env!("CARGO_PKG_VERSION");
+    eprintln!(
+        "spectra: remote platform {}/{} differs from local {}/{}; fetching v{version} ({target}) from GitHub on '{host}'",
+        probe.os, probe.arch, local_os, local_arch
+    );
+    match run_download(prefix, version, target) {
+        Ok(()) => RemoteExec::Seeded,
+        Err(err) => {
+            eprintln!(
+                "spectra: downloading the release binary on '{host}' failed ({err}) — using spectra installed there instead"
+            );
+            RemoteExec::PathDiscovery
+        }
+    }
+}
+
+/// Run the download script on the remote host over the transport.
+fn run_download(prefix: &[String], version: &str, target: &str) -> io::Result<()> {
+    let (program, args) = split_transport(prefix)?;
+    let status = Command::new(program)
+        .args(args)
+        .arg(format!("sh -c '{}'", download_script(version, target)))
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "download script exited with {status}"
+        )))
+    }
 }
 
 struct RemoteProbe {
@@ -559,8 +652,8 @@ fn split_transport(transport: &[String]) -> io::Result<(&String, &[String])> {
 mod tests {
     use super::{
         REMOTE_BRIDGE_COMMAND, REMOTE_SEEDED_BINARY_SUFFIX, RemoteExec, SeededBinary,
-        compose_transport, normalize_host, parse_probe_output, probe_script, seed_script,
-        transport_prefix_with_override,
+        compose_transport, download_script, normalize_host, parse_probe_output, probe_script,
+        release_target, seed_script, transport_prefix_with_override,
     };
 
     #[test]
@@ -621,6 +714,27 @@ mod tests {
         assert!(!RemoteExec::Seeded.bridge_command().contains('\''));
         assert!(!probe_script().contains('\''));
         assert!(!seed_script().contains('\''));
+        assert!(!download_script("0.2.15", "linux-aarch64").contains('\''));
+    }
+
+    #[test]
+    fn release_target_maps_supported_platforms() {
+        assert_eq!(release_target("Linux", "x86_64"), Some("linux-x86_64"));
+        assert_eq!(release_target("Linux", "aarch64"), Some("linux-aarch64"));
+        assert_eq!(release_target("Darwin", "aarch64"), Some("macos-arm64"));
+        assert_eq!(release_target("Darwin", "x86_64"), Some("macos-x86_64"));
+        assert_eq!(release_target("FreeBSD", "x86_64"), None);
+        assert_eq!(release_target("Linux", "riscv64"), None);
+    }
+
+    #[test]
+    fn download_script_targets_versioned_release_asset() {
+        let script = download_script("0.2.15", "linux-aarch64");
+        assert!(script.contains(
+            "https://github.com/aplio/spectra/releases/download/v0.2.15/spectra-v0.2.15-linux-aarch64.tar.gz"
+        ));
+        // Re-running is a no-op when the seeded binary already matches.
+        assert!(script.contains("= \"spectra 0.2.15\""));
     }
 
     #[test]

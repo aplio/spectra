@@ -309,10 +309,12 @@ fn build_request() -> Result<UpdateRequest, String> {
 fn resolve_target_triple() -> Result<String, String> {
     let target = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => "linux-x86_64",
+        ("linux", "aarch64") => "linux-aarch64",
         ("macos", "aarch64") => "macos-arm64",
+        ("macos", "x86_64") => "macos-x86_64",
         (os, arch) => {
             return Err(format!(
-                "unsupported platform for update: {os}/{arch} (supported: linux x86_64 or macos aarch64)"
+                "unsupported platform for update: {os}/{arch} (supported: linux/macos on x86_64/aarch64)"
             ));
         }
     };
@@ -474,7 +476,10 @@ mod tests {
     #[test]
     fn target_triple_matches_supported_platforms() {
         let target = resolve_target_triple().expect("resolve platform");
-        let valid = matches!(target.as_str(), "linux-x86_64" | "macos-arm64");
+        let valid = matches!(
+            target.as_str(),
+            "linux-x86_64" | "linux-aarch64" | "macos-arm64" | "macos-x86_64"
+        );
         assert!(valid, "unexpected target: {target}");
     }
 }
