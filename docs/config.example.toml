@@ -6,6 +6,8 @@ prefix = "C-j"
 prefix_sticky = true
 session_name = "main"
 initial_command = "echo ready"
+# Editor for open-in-editor commands and click-to-open on a file. Unset, the
+# fallback chain is $EDITOR, then the first of gargo/vi/emacs/nano on PATH.
 editor = "vim"
 
 [shell]
@@ -19,6 +21,13 @@ new_cwd = "follow"
 
 [mouse]
 enabled = false
+# Modifier held with a left click to open the path or URL under the cursor
+# (ghostty-style cmd+click): an existing directory opens as a new pane cwd'd
+# there, an existing file opens in the editor (jumping to a trailing :line),
+# a URL opens in the browser. Values: "ctrl" (default), "alt", "shift",
+# "super", "off". Terminal mouse reporting only carries shift/alt/ctrl, so
+# "super" needs a host terminal that reports it.
+open_click = "ctrl"
 
 [terminal]
 # tmux-compatible pass-through (DCS tmux;...ST) to the outer terminal.

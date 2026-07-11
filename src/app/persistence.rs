@@ -7,7 +7,7 @@ use crate::storage::{SessionInfo, unix_time_now};
 use super::types::*;
 use super::{App, AppSignal};
 
-fn resolve_editor_command(configured: Option<&str>) -> Option<String> {
+pub(super) fn resolve_editor_command(configured: Option<&str>) -> Option<String> {
     configured
         .map(str::trim)
         .filter(|v| !v.is_empty())
@@ -17,10 +17,67 @@ fn resolve_editor_command(configured: Option<&str>) -> Option<String> {
                 .ok()
                 .filter(|v| !v.trim().is_empty())
         })
+        .or_else(default_editor_fallback)
         .or_else(|| Some("vi".to_string()))
 }
 
-fn shell_quote(value: &str) -> String {
+/// First editor of the default fallback chain found on PATH, used when
+/// neither the `editor` config option nor `$EDITOR` is set.
+pub(super) fn default_editor_fallback() -> Option<String> {
+    ["gargo", "vi", "emacs", "nano"]
+        .into_iter()
+        .find(|name| executable_in_path(name))
+        .map(String::from)
+}
+
+fn executable_in_path(name: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|dir| {
+        if dir.as_os_str().is_empty() {
+            return false;
+        }
+        let candidate = dir.join(name);
+        is_executable_file(&candidate)
+    })
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &std::path::Path) -> bool {
+    path.is_file()
+}
+
+/// Editors whose CLI jumps to a line with a `+N` argument.
+fn editor_takes_plus_line(command: &str) -> bool {
+    matches!(
+        editor_binary_name(command),
+        "vi" | "vim" | "nvim" | "emacs" | "nano" | "pico" | "micro" | "kak" | "gargo"
+    )
+}
+
+/// Editors whose CLI jumps to a line with a `path:N` argument.
+fn editor_takes_colon_line(command: &str) -> bool {
+    matches!(editor_binary_name(command), "hx" | "helix" | "zed" | "subl")
+}
+
+fn editor_binary_name(command: &str) -> &str {
+    let bin = command.split_whitespace().next().unwrap_or("");
+    std::path::Path::new(bin)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+}
+
+pub(super) fn shell_quote(value: &str) -> String {
     let escaped = value.replace('\'', "'\"'\"'");
     format!("'{escaped}'")
 }
@@ -255,6 +312,68 @@ impl App {
         self.write_log("opened config in editor");
         self.set_message(
             &format!("opened config in editor: {}", path.display()),
+            Duration::from_secs(3),
+        );
+    }
+
+    /// Open `path` in the configured editor as a new window (click-to-open
+    /// on a file). The editor pane auto-closes when the editor exits, like
+    /// the other open-in-editor commands. `line` jumps there when the
+    /// editor's CLI supports it.
+    pub(super) fn open_path_in_editor(&mut self, path: &std::path::Path, line: Option<usize>) {
+        let Some(editor_command) = resolve_editor_command(self.editor_command.as_deref()) else {
+            self.set_message(
+                "no editor configured (set editor in config or $EDITOR)",
+                Duration::from_secs(3),
+            );
+            return;
+        };
+
+        let quoted = shell_quote(path.to_string_lossy().as_ref());
+        let command_line = match line {
+            Some(line) if editor_takes_plus_line(&editor_command) => {
+                format!("{editor_command} +{line} {quoted}")
+            }
+            Some(line) if editor_takes_colon_line(&editor_command) => {
+                let with_line = format!("{}:{line}", path.to_string_lossy());
+                format!("{editor_command} {}", shell_quote(&with_line))
+            }
+            _ => format!("{editor_command} {quoted}"),
+        };
+        let (cols, rows) = self.current_effective_pane_dims();
+        if let Err(err) =
+            self.current_session_mut()
+                .new_window_with_command(cols, rows, vec![command_line])
+        {
+            self.set_message(
+                &format!("open in editor failed: {err}"),
+                Duration::from_secs(3),
+            );
+            return;
+        }
+
+        let Some(editor_pane_id) = self.current_session().focused_pane_id() else {
+            self.set_message("editor pane focus failed", Duration::from_secs(3));
+            return;
+        };
+
+        let session_id = self.current_session_id().to_string();
+        let target = EditorPaneCloseTarget {
+            session_id,
+            pane_id: editor_pane_id,
+        };
+        if !self.editor_pane_close_targets.contains(&target) {
+            self.editor_pane_close_targets.push(target);
+        }
+
+        self.sync_tree_names();
+        self.needs_render = true;
+        self.needs_full_clear = true;
+        self.persist_active_session_info();
+        self.emit_hook(HookEvent::WindowCreated, self.current_hook_context());
+        self.write_log("opened clicked file in editor");
+        self.set_message(
+            &format!("opened in editor: {}", path.display()),
             Duration::from_secs(3),
         );
     }

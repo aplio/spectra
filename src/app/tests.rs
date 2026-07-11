@@ -13,6 +13,7 @@ use crossterm::event::{
 use crossterm::style::Color;
 
 use crate::command_history::CommandHistory;
+use crate::config::OpenClickModifier;
 use crate::input::{CommandAction, KeyMapper};
 use crate::ipc::protocol::{CommandRequest, CommandResult, CommandSplitAxis};
 use crate::session::manager::{PaneTerminalEvent, SessionManager, SessionOptions};
@@ -328,6 +329,7 @@ fn build_app_for_resize_test() -> App {
         command_history: CommandHistory::new_with_data_dir(data_dir),
         started_unix: 1,
         mouse_enabled: false,
+        open_click: OpenClickModifier::default(),
         client_focus_profiles: HashMap::new(),
         client_identities: HashMap::from([(
             super::LOCAL_CLIENT_ID,
@@ -459,6 +461,7 @@ fn build_app_with_history() -> App {
         command_history: CommandHistory::new_with_data_dir(data_dir),
         started_unix: 1,
         mouse_enabled: false,
+        open_click: OpenClickModifier::default(),
         client_focus_profiles: HashMap::new(),
         client_identities: HashMap::from([(
             super::LOCAL_CLIENT_ID,
@@ -583,6 +586,7 @@ fn build_app_with_write_behavior(behavior: WriteBehavior) -> App {
         command_history: CommandHistory::new_with_data_dir(data_dir),
         started_unix: 1,
         mouse_enabled: false,
+        open_click: OpenClickModifier::default(),
         client_focus_profiles: HashMap::new(),
         client_identities: HashMap::from([(
             super::LOCAL_CLIENT_ID,
@@ -664,6 +668,7 @@ fn build_app_with_close_on_write_behavior(behavior: CloseOnWriteBehavior) -> App
         command_history: CommandHistory::new_with_data_dir(data_dir),
         started_unix: 1,
         mouse_enabled: false,
+        open_click: OpenClickModifier::default(),
         client_focus_profiles: HashMap::new(),
         client_identities: HashMap::from([(
             super::LOCAL_CLIENT_ID,
@@ -784,6 +789,7 @@ fn build_recording_app_one_session() -> (App, RecordedWrites) {
         command_history: CommandHistory::new_with_data_dir(data_dir),
         started_unix: 1,
         mouse_enabled: false,
+        open_click: OpenClickModifier::default(),
         client_focus_profiles: HashMap::new(),
         client_identities: HashMap::from([(
             super::LOCAL_CLIENT_ID,
@@ -886,6 +892,7 @@ fn build_recording_app_with_history() -> (App, RecordedWrites) {
         command_history: CommandHistory::new_with_data_dir(data_dir),
         started_unix: 1,
         mouse_enabled: false,
+        open_click: OpenClickModifier::default(),
         client_focus_profiles: HashMap::new(),
         client_identities: HashMap::from([(
             super::LOCAL_CLIENT_ID,
@@ -966,6 +973,7 @@ fn build_recording_app_with_output(output: Vec<Vec<u8>>) -> (App, RecordedWrites
         command_history: CommandHistory::new_with_data_dir(data_dir),
         started_unix: 1,
         mouse_enabled: false,
+        open_click: OpenClickModifier::default(),
         client_focus_profiles: HashMap::new(),
         client_identities: HashMap::from([(
             super::LOCAL_CLIENT_ID,
@@ -1068,6 +1076,7 @@ fn build_recording_app_multi_session() -> (App, RecordedWrites) {
         command_history: CommandHistory::new_with_data_dir(data_dir),
         started_unix: 1,
         mouse_enabled: false,
+        open_click: OpenClickModifier::default(),
         client_focus_profiles: HashMap::new(),
         client_identities: HashMap::from([(
             super::LOCAL_CLIENT_ID,
@@ -1222,6 +1231,7 @@ fn build_editor_command_app() -> (App, RecordedSpawnConfigs, BackendClosedFlags)
         command_history: CommandHistory::new_with_data_dir(data_dir),
         started_unix: 1,
         mouse_enabled: false,
+        open_click: OpenClickModifier::default(),
         client_focus_profiles: HashMap::new(),
         client_identities: HashMap::from([(
             super::LOCAL_CLIENT_ID,
@@ -1322,6 +1332,7 @@ fn restore_from_runtime_state_recovers_multi_session_layout_and_focus() {
         RuntimeUiConfig {
             keys: app.view.keys.clone(),
             mouse_enabled: app.mouse_enabled,
+            open_click: app.open_click,
             status_format: app.status_format.clone(),
             sidebar_formats: app.sidebar_formats.clone(),
             status_style: app.status_style,
@@ -1410,6 +1421,7 @@ fn restore_from_runtime_state_returns_none_on_corrupt_json() {
         RuntimeUiConfig {
             keys: app.view.keys.clone(),
             mouse_enabled: app.mouse_enabled,
+            open_click: app.open_click,
             status_format: app.status_format.clone(),
             sidebar_formats: app.sidebar_formats.clone(),
             status_style: app.status_style,
@@ -1444,6 +1456,7 @@ fn restore_from_runtime_state_honors_sidebar_default_open() {
         RuntimeUiConfig {
             keys: app.view.keys.clone(),
             mouse_enabled: app.mouse_enabled,
+            open_click: app.open_click,
             status_format: app.status_format.clone(),
             sidebar_formats: app.sidebar_formats.clone(),
             status_style: app.status_style,
@@ -1483,6 +1496,7 @@ fn restore_from_runtime_state_returns_none_on_invalid_snapshot() {
         RuntimeUiConfig {
             keys: app.view.keys.clone(),
             mouse_enabled: app.mouse_enabled,
+            open_click: app.open_click,
             status_format: app.status_format.clone(),
             sidebar_formats: app.sidebar_formats.clone(),
             status_style: app.status_style,
@@ -1864,6 +1878,7 @@ fn restore_from_runtime_state_restores_client_focus_profiles() {
         RuntimeUiConfig {
             keys: app.view.keys.clone(),
             mouse_enabled: app.mouse_enabled,
+            open_click: app.open_click,
             status_format: app.status_format.clone(),
             sidebar_formats: app.sidebar_formats.clone(),
             status_style: app.status_style,
@@ -1906,6 +1921,7 @@ fn attach_target_overrides_restored_profile_for_client() {
         RuntimeUiConfig {
             keys: app.view.keys.clone(),
             mouse_enabled: app.mouse_enabled,
+            open_click: app.open_click,
             status_format: app.status_format.clone(),
             sidebar_formats: app.sidebar_formats.clone(),
             status_style: app.status_style,
@@ -3821,7 +3837,7 @@ fn open_pane_buffer_in_editor_falls_back_to_env_editor() {
 }
 
 #[test]
-fn open_pane_buffer_in_editor_uses_default_vi_when_no_editor() {
+fn open_pane_buffer_in_editor_uses_fallback_chain_when_no_editor() {
     let (mut app, configs, _) = build_editor_command_app();
     app.editor_command = None;
 
@@ -3837,11 +3853,16 @@ fn open_pane_buffer_in_editor_uses_default_vi_when_no_editor() {
     assert_eq!(app.current_session().window_count(), 2);
     assert_eq!(app.current_session().pane_count(), 2);
 
+    // The gargo -> vi -> emacs -> nano chain picks the first editor present
+    // on this machine's PATH ("vi" as the last resort), so the expectation
+    // has to resolve the chain the same way.
+    let expected =
+        super::persistence::default_editor_fallback().unwrap_or_else(|| "vi".to_string());
     let recorded = configs.lock().expect("spawn configs lock");
     assert_eq!(recorded.len(), 2);
     assert_eq!(recorded[1].command.len(), 1);
     assert!(
-        recorded[1].command[0].starts_with("vi "),
+        recorded[1].command[0].starts_with(&format!("{expected} ")),
         "unexpected fallback editor command: {:?}",
         recorded[1].command
     );
@@ -9834,4 +9855,83 @@ fn cursor_mode_search_highlights_matches_in_frame() {
     }
     // Non-match cells stay unstyled.
     assert_eq!(match_row[4].style.bg, None);
+}
+
+#[test]
+fn open_click_on_directory_path_splits_pane_with_that_cwd() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sub = dir.path().join("proj");
+    std::fs::create_dir(&sub).expect("mkdir");
+    let line = format!("ls {}", sub.display());
+    let (mut app, _writes) = build_recording_app_with_output(vec![line.into_bytes()]);
+    app.mouse_enabled = true;
+    app.tick();
+
+    // Click inside the absolute path (after the "ls " prefix).
+    app.handle_mouse(mouse_event_with_modifiers(
+        MouseEventKind::Down(MouseButton::Left),
+        4,
+        0,
+        KeyModifiers::CONTROL,
+    ));
+
+    assert_eq!(app.current_session().window_count(), 1);
+    assert_eq!(app.current_session().pane_count(), 2);
+    let new_pane = app
+        .current_session()
+        .all_pane_ids()
+        .into_iter()
+        .max()
+        .expect("new pane id");
+    assert_eq!(app.current_session().pane_cwd(new_pane), Some(sub));
+}
+
+#[test]
+fn open_click_on_file_path_opens_editor_window() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("main.rs");
+    std::fs::write(&file, "fn main() {}\n").expect("write file");
+    let line = format!("{}:12: error", file.display());
+    let (mut app, _writes) = build_recording_app_with_output(vec![line.into_bytes()]);
+    app.mouse_enabled = true;
+    app.editor_command = Some("vi".to_string());
+    app.tick();
+
+    app.handle_mouse(mouse_event_with_modifiers(
+        MouseEventKind::Down(MouseButton::Left),
+        1,
+        0,
+        KeyModifiers::CONTROL,
+    ));
+
+    assert_eq!(app.current_session().window_count(), 2);
+    assert_eq!(app.current_session().pane_count(), 2);
+    assert_eq!(
+        app.editor_pane_close_targets.len(),
+        1,
+        "clicked-file editor pane should auto-close when the editor exits"
+    );
+}
+
+#[test]
+fn open_click_with_no_target_consumes_without_selecting_or_splitting() {
+    let (mut app, _writes) = build_recording_app_with_output(vec![b"plain words only".to_vec()]);
+    app.mouse_enabled = true;
+    app.tick();
+
+    // Blank area far to the right of the text.
+    app.handle_mouse(mouse_event_with_modifiers(
+        MouseEventKind::Down(MouseButton::Left),
+        60,
+        0,
+        KeyModifiers::CONTROL,
+    ));
+
+    assert_eq!(app.current_session().pane_count(), 1);
+    assert_eq!(app.current_session().window_count(), 1);
+    assert!(
+        app.view.text_selection.is_none(),
+        "a consumed open-click must not start a selection"
+    );
+    assert!(app.view.status_message.is_some());
 }

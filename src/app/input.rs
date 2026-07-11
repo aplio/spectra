@@ -168,6 +168,18 @@ impl App {
             return;
         }
 
+        // Modifier+click opens the path or URL under the cursor (ghostty's
+        // cmd+click). It runs before guest forwarding so it also works over
+        // mouse-reporting TUIs, and consumes the click unconditionally so a
+        // miss doesn't degrade into a stray selection or guest click.
+        if matches!(self.view.input_mode, InputMode::Normal)
+            && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && self.open_click_modifier_matches(mouse.modifiers)
+        {
+            self.handle_open_click(mouse.column, mouse.row);
+            return;
+        }
+
         // Forward mouse input to the guest program when the pane under the
         // cursor requested mouse reporting (DECSET 9/1000/1002/1003). This
         // works regardless of spectra's own [mouse] config. Shift bypasses
@@ -619,7 +631,7 @@ impl App {
         true
     }
 
-    fn mouse_pane_info_at(
+    pub(super) fn mouse_pane_info_at(
         frame: &crate::session::manager::RenderFrame,
         col: u16,
         row: u16,

@@ -192,7 +192,7 @@ impl App {
         }
     }
 
-    fn apply_action_effects(&mut self, effects: ActionEffects) {
+    pub(super) fn apply_action_effects(&mut self, effects: ActionEffects) {
         if effects.record_focus {
             self.record_focus_for_active_session();
         }
@@ -702,6 +702,7 @@ impl App {
         }
 
         self.mouse_enabled = loaded.mouse.enabled;
+        self.open_click = loaded.mouse.open_click;
         if !self.mouse_enabled {
             self.view.mouse_drag = None;
         }

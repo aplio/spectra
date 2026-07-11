@@ -187,6 +187,26 @@ fn default_handoff_replay_bytes() -> usize {
 pub struct MouseConfig {
     #[serde(default)]
     pub enabled: bool,
+    /// Modifier held with a left click to open the path or URL under the
+    /// cursor (ghostty's cmd+click). A directory opens as a new pane, a file
+    /// opens in the configured editor, a URL opens in the browser. Standard
+    /// terminal mouse reporting only carries shift/alt/ctrl, so `super` only
+    /// works in host terminals that report it. (default: ctrl)
+    #[serde(default)]
+    pub open_click: OpenClickModifier,
+}
+
+/// Modifier gating click-to-open (`[mouse] open_click`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OpenClickModifier {
+    /// Disable click-to-open.
+    Off,
+    #[default]
+    Ctrl,
+    Alt,
+    Shift,
+    Super,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

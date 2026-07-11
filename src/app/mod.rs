@@ -11,6 +11,7 @@ mod hooks;
 mod ime;
 mod input;
 mod keybindings;
+mod open_click;
 mod persistence;
 mod plugins;
 mod render_snapshot;
@@ -148,6 +149,7 @@ pub struct App {
     command_history: CommandHistory,
     started_unix: u64,
     mouse_enabled: bool,
+    open_click: config::OpenClickModifier,
     client_focus_profiles: HashMap<String, PersistedClientFocusState>,
     client_identities: HashMap<ClientId, String>,
     active_client_id: ClientId,
@@ -260,6 +262,7 @@ impl App {
             command_history,
             started_unix,
             mouse_enabled: runtime_ui.mouse_enabled,
+            open_click: runtime_ui.open_click,
             client_focus_profiles: HashMap::new(),
             client_identities,
             active_client_id: LOCAL_CLIENT_ID,
@@ -316,6 +319,7 @@ impl App {
         let runtime_ui = RuntimeUiConfig {
             keys,
             mouse_enabled: app_config.mouse.enabled,
+            open_click: app_config.mouse.open_click,
             status_format: app_config
                 .status
                 .format
@@ -468,6 +472,7 @@ impl App {
             command_history,
             started_unix,
             mouse_enabled: runtime_ui.mouse_enabled,
+            open_click: runtime_ui.open_click,
             client_focus_profiles: state.client_focus_profiles,
             client_identities,
             active_client_id: LOCAL_CLIENT_ID,

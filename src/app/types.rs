@@ -569,6 +569,7 @@ impl SidebarFormats {
 pub(super) struct RuntimeUiConfig {
     pub keys: KeyMapper,
     pub mouse_enabled: bool,
+    pub open_click: config::OpenClickModifier,
     pub status_format: String,
     pub status_style: CellStyle,
     pub hooks: config::HooksConfig,

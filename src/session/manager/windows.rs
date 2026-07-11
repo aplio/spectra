@@ -2,9 +2,31 @@ use super::*;
 
 impl SessionManager {
     pub fn split_focused(&mut self, axis: SplitAxis, cols: u16, rows: u16) -> Result<(), String> {
+        let inherited_cwd = self.new_pane_cwd();
+        self.split_focused_cwd(axis, cols, rows, inherited_cwd)
+    }
+
+    /// Split the focused pane with the new pane starting in `cwd`, bypassing
+    /// the `[shell] new_cwd` policy (click-to-open on a directory).
+    pub fn split_focused_with_cwd(
+        &mut self,
+        axis: SplitAxis,
+        cols: u16,
+        rows: u16,
+        cwd: PathBuf,
+    ) -> Result<(), String> {
+        self.split_focused_cwd(axis, cols, rows, Some(cwd))
+    }
+
+    fn split_focused_cwd(
+        &mut self,
+        axis: SplitAxis,
+        cols: u16,
+        rows: u16,
+        inherited_cwd: Option<PathBuf>,
+    ) -> Result<(), String> {
         self.ensure_active_window_unzoomed()?;
         let area = workspace_area(cols, rows);
-        let inherited_cwd = self.new_pane_cwd();
         let new_pane_id = self.next_pane_id;
         self.next_pane_id += 1;
 
@@ -92,7 +114,13 @@ impl SessionManager {
     /// has been tracked yet, or the tracked path is no longer a directory (e.g.
     /// a stale or remote OSC 7 path that does not resolve locally).
     fn focused_pane_cwd(&self) -> Option<PathBuf> {
-        let pane_id = self.focused_pane_id()?;
+        self.pane_cwd(self.focused_pane_id()?)
+    }
+
+    /// Tracked cwd of `pane_id` (OSC 7 or spawn cwd), when it still resolves
+    /// to a local directory. Base for resolving relative paths clicked in
+    /// that pane's output.
+    pub fn pane_cwd(&self, pane_id: PaneId) -> Option<PathBuf> {
         let cwd = self.panes.get(&pane_id)?.cwd()?;
         cwd.is_dir().then(|| cwd.to_path_buf())
     }

@@ -69,6 +69,11 @@ The prefix is `Ctrl+j`. Press `prefix ?` for the full searchable cheat sheet.
 
 With `[mouse].enabled = true`, click focuses panes, dragging on dividers resizes,
 and dragging over text selects (double/triple click expands word → run → line).
+Ctrl+click opens the path or URL under the cursor (ghostty-style cmd+click):
+an existing directory opens as a new pane in that directory, an existing file
+opens in the configured `editor` (falling back to `$EDITOR`, then the first of
+gargo/vi/emacs/nano on PATH, and jumping to a trailing `:line`), and URLs open
+in the browser. The modifier is `[mouse].open_click`.
 
 ## Config
 
