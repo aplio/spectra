@@ -34,6 +34,9 @@ impl App {
             if let Some(sel) = &app.view.text_selection {
                 Self::apply_selection_highlight(&mut frame, sel);
             }
+            if let Some(hover) = &app.view.open_click_hover {
+                Self::apply_open_click_hover_underline(&mut frame, hover);
+            }
             if let InputMode::CursorMode { state } = &app.view.input_mode {
                 Self::apply_cursor_mode_frame(&mut frame, state);
             }
@@ -437,6 +440,30 @@ impl App {
             }
             for cell in cells.get_mut(from..to).into_iter().flatten() {
                 cell.style.reverse = !cell.style.reverse;
+            }
+        }
+    }
+
+    /// Underline the open-click target under the pointer (ghostty's
+    /// cmd+hover affordance). Rows are absolute buffer rows, so the
+    /// underline stays glued to the content if the view scrolls.
+    fn apply_open_click_hover_underline(
+        frame: &mut crate::session::manager::RenderFrame,
+        hover: &OpenClickHoverState,
+    ) {
+        let Some(pane) = frame.panes.iter_mut().find(|p| p.pane_id == hover.pane_id) else {
+            return;
+        };
+        for (abs_row, cols) in &hover.rows {
+            let Some(row) = abs_row.checked_sub(pane.view_row_origin) else {
+                continue;
+            };
+            let Some(cells) = pane.rows.get_mut(row) else {
+                continue;
+            };
+            let cols = cols.start.min(cells.len())..cols.end.min(cells.len());
+            for cell in cells.get_mut(cols).into_iter().flatten() {
+                cell.style.underlined = true;
             }
         }
     }

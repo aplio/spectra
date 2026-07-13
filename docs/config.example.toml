@@ -24,7 +24,8 @@ enabled = false
 # Modifier held with a left click to open the path or URL under the cursor
 # (ghostty-style cmd+click): an existing directory opens as a new pane cwd'd
 # there, an existing file opens in the editor (jumping to a trailing :line),
-# a URL opens in the browser. Values: "ctrl" (default), "alt", "shift",
+# a URL opens in the browser. Hovering with the modifier held underlines
+# what a click would open. Values: "ctrl" (default), "alt", "shift",
 # "super", "off". Terminal mouse reporting only carries shift/alt/ctrl, so
 # "super" needs a host terminal that reports it.
 open_click = "ctrl"

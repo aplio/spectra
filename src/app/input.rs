@@ -42,6 +42,12 @@ impl App {
             self.needs_render = true;
         }
 
+        // Keys change pane content or mode; the hover underline would go
+        // stale under either, and the modifier was likely released anyway.
+        if self.view.open_click_hover.take().is_some() {
+            self.needs_render = true;
+        }
+
         if self.view.locked_input {
             if (matches!(key.code, crossterm::event::KeyCode::Esc) && key.modifiers.is_empty())
                 || self.view.keys.check_global_action(key) == Some(CommandAction::LeaveLockMode)
@@ -165,8 +171,15 @@ impl App {
         if self.view.locked_input {
             self.view.mouse_drag = None;
             self.view.selection_autoscroll = None;
+            self.view.open_click_hover = None;
             return;
         }
+
+        // Underline what a modifier+click would open while the pointer moves
+        // with the modifier held (ghostty's cmd+hover). Runs before guest
+        // forwarding, like the click itself, so the affordance also shows
+        // over mouse-reporting TUIs; motion events still reach the guest.
+        self.update_open_click_hover(&mouse);
 
         // Modifier+click opens the path or URL under the cursor (ghostty's
         // cmd+click). It runs before guest forwarding so it also works over

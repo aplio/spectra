@@ -414,6 +414,16 @@ pub(super) struct TextSelectionState {
     pub dragging: bool,
 }
 
+/// Cells under the pointer that a modifier+click would open, underlined
+/// while the `[mouse] open_click` modifier is held (ghostty's cmd+hover).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct OpenClickHoverState {
+    pub pane_id: usize,
+    /// Underlined spans as (absolute buffer row, pane-local column range);
+    /// one entry per row when the target soft-wraps.
+    pub rows: Vec<(usize, std::ops::Range<usize>)>,
+}
+
 /// Active edge auto-scroll during a text-selection drag: the pointer is
 /// resting on (or past) the pane's top or bottom row, so the view keeps
 /// scrolling on a timer and the selection extends to each newly revealed row.
@@ -776,6 +786,7 @@ pub(super) struct ClientViewState {
     pub mouse_drag: Option<MouseDragState>,
     pub text_selection: Option<TextSelectionState>,
     pub selection_autoscroll: Option<SelectionAutoscroll>,
+    pub open_click_hover: Option<OpenClickHoverState>,
     pub click_chain: Option<ClickChainState>,
     pub pending_clipboard_ansi: Vec<String>,
     pub pending_passthrough_ansi: Vec<String>,

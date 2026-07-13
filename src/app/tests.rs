@@ -301,6 +301,7 @@ fn build_app_for_resize_test() -> App {
             mouse_drag: None,
             text_selection: None,
             selection_autoscroll: None,
+            open_click_hover: None,
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
@@ -433,6 +434,7 @@ fn build_app_with_history() -> App {
             mouse_drag: None,
             text_selection: None,
             selection_autoscroll: None,
+            open_click_hover: None,
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
@@ -558,6 +560,7 @@ fn build_app_with_write_behavior(behavior: WriteBehavior) -> App {
             mouse_drag: None,
             text_selection: None,
             selection_autoscroll: None,
+            open_click_hover: None,
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
@@ -640,6 +643,7 @@ fn build_app_with_close_on_write_behavior(behavior: CloseOnWriteBehavior) -> App
             mouse_drag: None,
             text_selection: None,
             selection_autoscroll: None,
+            open_click_hover: None,
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
@@ -761,6 +765,7 @@ fn build_recording_app_one_session() -> (App, RecordedWrites) {
             mouse_drag: None,
             text_selection: None,
             selection_autoscroll: None,
+            open_click_hover: None,
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
@@ -864,6 +869,7 @@ fn build_recording_app_with_history() -> (App, RecordedWrites) {
             mouse_drag: None,
             text_selection: None,
             selection_autoscroll: None,
+            open_click_hover: None,
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
@@ -945,6 +951,7 @@ fn build_recording_app_with_output(output: Vec<Vec<u8>>) -> (App, RecordedWrites
             mouse_drag: None,
             text_selection: None,
             selection_autoscroll: None,
+            open_click_hover: None,
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
@@ -1048,6 +1055,7 @@ fn build_recording_app_multi_session() -> (App, RecordedWrites) {
             mouse_drag: None,
             text_selection: None,
             selection_autoscroll: None,
+            open_click_hover: None,
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
@@ -1203,6 +1211,7 @@ fn build_editor_command_app() -> (App, RecordedSpawnConfigs, BackendClosedFlags)
             mouse_drag: None,
             text_selection: None,
             selection_autoscroll: None,
+            open_click_hover: None,
             click_chain: None,
             pending_clipboard_ansi: Vec::new(),
             pending_passthrough_ansi: Vec::new(),
@@ -9910,6 +9919,91 @@ fn open_click_on_file_path_opens_editor_window() {
         app.editor_pane_close_targets.len(),
         1,
         "clicked-file editor pane should auto-close when the editor exits"
+    );
+}
+
+#[test]
+fn open_click_hover_underlines_path_while_modifier_held() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sub = dir.path().join("proj");
+    std::fs::create_dir(&sub).expect("mkdir");
+    let line = format!("ls {}", sub.display());
+    let path_len = sub.display().to_string().len();
+    let (mut app, _writes) = build_recording_app_with_output(vec![line.into_bytes()]);
+    app.mouse_enabled = true;
+    app.tick();
+
+    // Hover the path with the modifier held: the path cells get underlined.
+    app.handle_mouse(mouse_event_with_modifiers(
+        MouseEventKind::Moved,
+        4,
+        0,
+        KeyModifiers::CONTROL,
+    ));
+    let hover = app.view.open_click_hover.clone().expect("hover state");
+    assert_eq!(hover.rows, vec![(0, 3..3 + path_len)]);
+
+    let snapshot = app
+        .render_snapshot_for_client(super::LOCAL_CLIENT_ID)
+        .expect("snapshot");
+    let pane = &snapshot.frame.panes[0];
+    assert!(
+        pane.rows[0][3..3 + path_len]
+            .iter()
+            .all(|cell| cell.style.underlined),
+        "hovered path cells must be underlined"
+    );
+    assert!(!pane.rows[0][0].style.underlined, "prefix stays plain");
+
+    // Hover past the text: nothing resolves, the underline clears.
+    app.handle_mouse(mouse_event_with_modifiers(
+        MouseEventKind::Moved,
+        60,
+        0,
+        KeyModifiers::CONTROL,
+    ));
+    assert!(app.view.open_click_hover.is_none());
+
+    // Hover the path again, then move without the modifier: clears too.
+    app.handle_mouse(mouse_event_with_modifiers(
+        MouseEventKind::Moved,
+        4,
+        0,
+        KeyModifiers::CONTROL,
+    ));
+    assert!(app.view.open_click_hover.is_some());
+    app.handle_mouse(mouse_event_with_modifiers(
+        MouseEventKind::Moved,
+        4,
+        0,
+        KeyModifiers::NONE,
+    ));
+    assert!(app.view.open_click_hover.is_none());
+}
+
+#[test]
+fn open_click_hover_clears_on_key_input() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sub = dir.path().join("proj");
+    std::fs::create_dir(&sub).expect("mkdir");
+    let line = format!("ls {}", sub.display());
+    let (mut app, _writes) = build_recording_app_with_output(vec![line.into_bytes()]);
+    app.mouse_enabled = true;
+    app.tick();
+
+    app.handle_mouse(mouse_event_with_modifiers(
+        MouseEventKind::Moved,
+        4,
+        0,
+        KeyModifiers::CONTROL,
+    ));
+    assert!(app.view.open_click_hover.is_some());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))
+        .expect("key");
+    assert!(
+        app.view.open_click_hover.is_none(),
+        "typing invalidates the hover underline"
     );
 }
 

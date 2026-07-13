@@ -15,6 +15,23 @@ pub(super) enum OpenClickTarget {
 /// giant wrapped line stays cheap.
 const MAX_WRAP_JOIN_ROWS: usize = 16;
 
+/// The logical line around a clicked/hovered cell, plus enough cell
+/// bookkeeping to map a byte span in `text` back onto screen cells.
+struct OpenClickContext {
+    text: String,
+    /// Byte offset of the clicked cell within `text`.
+    click_offset: usize,
+    /// OSC 8 hyperlink carried by the clicked cell.
+    link: Option<String>,
+    /// Cells of the clicked row sharing that hyperlink, as
+    /// (absolute row, contiguous column range).
+    link_run: Option<(usize, std::ops::Range<usize>)>,
+    /// (byte offset in `text`, absolute row, pane-local column) for every
+    /// cell that contributed; wide-char continuation cells repeat their
+    /// owner's offset.
+    cells: Vec<(usize, usize, usize)>,
+}
+
 impl App {
     /// Whether `modifiers` carries the `[mouse] open_click` modifier.
     pub(super) fn open_click_modifier_matches(
@@ -40,31 +57,22 @@ impl App {
     /// selection or guest click.
     pub(super) fn handle_open_click(&mut self, col: u16, row: u16) {
         self.needs_render = true;
-        let side_window_tree = self.side_window_tree_overlay();
-        let frame = self.pane_frame_for_current_view_with_sidebar(side_window_tree.as_ref());
-        let Some(pane) = Self::mouse_pane_info_at(&frame, col, row) else {
+        self.view.open_click_hover = None;
+        let Some((pane_id, absolute_row, local_col)) = self.open_click_position(col, row) else {
             return;
         };
-        let pane_id = pane.pane_id;
-        let local_col = usize::from(col)
-            .saturating_sub(pane.rect.x)
-            .min(pane.rect.width.saturating_sub(1));
-        let local_row = usize::from(row)
-            .saturating_sub(pane.rect.y)
-            .min(pane.rect.height.saturating_sub(1));
-        let absolute_row = pane.view_row_origin.saturating_add(local_row);
 
-        let Some((text, click_offset, link)) =
-            self.open_click_row_text(pane_id, absolute_row, local_col)
-        else {
+        let Some(ctx) = self.open_click_context(pane_id, absolute_row, local_col) else {
             self.set_message("nothing to open here", Duration::from_secs(2));
             return;
         };
 
         let cwd = self.current_session().pane_cwd(pane_id);
-        let target = match link {
-            Some(link) => target_for_link(&link),
-            None => target_at(&text, click_offset, cwd.as_deref()),
+        let target = match &ctx.link {
+            Some(link) => target_for_link(link),
+            None => {
+                target_at(&ctx.text, ctx.click_offset, cwd.as_deref()).map(|(target, _)| target)
+            }
         };
         let Some(target) = target else {
             self.set_message("no path or url under cursor", Duration::from_secs(2));
@@ -77,16 +85,70 @@ impl App {
         }
     }
 
+    /// Resolve screen coordinates to the pane under them and the buffer cell
+    /// they land on, as (pane id, absolute row, pane-local column).
+    fn open_click_position(&self, col: u16, row: u16) -> Option<(usize, usize, usize)> {
+        let side_window_tree = self.side_window_tree_overlay();
+        let frame = self.pane_frame_for_current_view_with_sidebar(side_window_tree.as_ref());
+        let pane = Self::mouse_pane_info_at(&frame, col, row)?;
+        let local_col = usize::from(col)
+            .saturating_sub(pane.rect.x)
+            .min(pane.rect.width.saturating_sub(1));
+        let local_row = usize::from(row)
+            .saturating_sub(pane.rect.y)
+            .min(pane.rect.height.saturating_sub(1));
+        let absolute_row = pane.view_row_origin.saturating_add(local_row);
+        Some((pane.pane_id, absolute_row, local_col))
+    }
+
+    /// Track what an open-click at the pointer would hit while the modifier
+    /// is held, underlining it via [`ClientViewState::open_click_hover`]
+    /// (ghostty's cmd+hover affordance). Any other event clears the
+    /// underline; motion without a resolvable target does too.
+    pub(super) fn update_open_click_hover(&mut self, mouse: &crossterm::event::MouseEvent) {
+        let hover = if matches!(self.view.input_mode, InputMode::Normal)
+            && matches!(mouse.kind, crossterm::event::MouseEventKind::Moved)
+            && self.open_click_modifier_matches(mouse.modifiers)
+        {
+            self.open_click_hover_at(mouse.column, mouse.row)
+        } else {
+            None
+        };
+        if hover != self.view.open_click_hover {
+            self.view.open_click_hover = hover;
+            self.needs_render = true;
+        }
+    }
+
+    /// The cells an open-click at screen (col, row) would open, or `None`
+    /// when nothing under the pointer resolves.
+    fn open_click_hover_at(&self, col: u16, row: u16) -> Option<OpenClickHoverState> {
+        let (pane_id, absolute_row, local_col) = self.open_click_position(col, row)?;
+        let ctx = self.open_click_context(pane_id, absolute_row, local_col)?;
+        if let Some(link) = &ctx.link {
+            target_for_link(link)?;
+            let (link_row, cols) = ctx.link_run?;
+            return Some(OpenClickHoverState {
+                pane_id,
+                rows: vec![(link_row, cols)],
+            });
+        }
+        let cwd = self.current_session().pane_cwd(pane_id);
+        let (_, span) = target_at(&ctx.text, ctx.click_offset, cwd.as_deref())?;
+        let rows = hover_rows_for_span(&ctx.cells, span);
+        (!rows.is_empty()).then_some(OpenClickHoverState { pane_id, rows })
+    }
+
     /// Text of the logical line containing `absolute_row` (soft-wrapped
     /// neighbours joined, bounded by [`MAX_WRAP_JOIN_ROWS`]), the byte
-    /// offset of the clicked cell within it, and the clicked cell's OSC 8
-    /// hyperlink when it carries one.
-    fn open_click_row_text(
+    /// offset of the clicked cell within it, the clicked cell's OSC 8
+    /// hyperlink when it carries one, and the text-to-cell mapping.
+    fn open_click_context(
         &self,
         pane_id: usize,
         absolute_row: usize,
         local_col: usize,
-    ) -> Option<(String, usize, Option<String>)> {
+    ) -> Option<OpenClickContext> {
         let session = self.current_session();
         let clicked_cells = session.pane_absolute_row_cells(pane_id, absolute_row)?;
         if clicked_cells.is_empty() {
@@ -105,6 +167,23 @@ impl App {
             .get(local_col)
             .and_then(|cell| cell.link.as_ref())
             .map(|link| link.to_string());
+        let link_run = link.as_ref().map(|link| {
+            let same_link = |col: usize| {
+                clicked_cells[col]
+                    .link
+                    .as_ref()
+                    .is_some_and(|l| l.as_ref() == link)
+            };
+            let mut from = local_col;
+            while from > 0 && same_link(from - 1) {
+                from -= 1;
+            }
+            let mut to = local_col + 1;
+            while to < clicked_cells.len() && same_link(to) {
+                to += 1;
+            }
+            (absolute_row, from..to)
+        });
 
         let mut start_row = absolute_row;
         for _ in 0..MAX_WRAP_JOIN_ROWS {
@@ -129,6 +208,7 @@ impl App {
         }
 
         let mut text = String::new();
+        let mut cell_offsets = Vec::new();
         let mut click_offset = None;
         for row in start_row..=end_row {
             let cells = if row == absolute_row {
@@ -138,16 +218,32 @@ impl App {
                     .pane_absolute_row_cells(pane_id, row)
                     .unwrap_or_default()
             };
+            let mut last_offset = None;
             for (col, cell) in cells.iter().enumerate() {
                 if row == absolute_row && col == local_col {
                     click_offset = Some(text.len());
                 }
-                if cell.ch != '\0' {
+                let offset = if cell.ch != '\0' {
+                    let offset = text.len();
                     text.push(cell.ch);
+                    Some(offset)
+                } else {
+                    // A continuation cell highlights with its owner char.
+                    last_offset
+                };
+                if let Some(offset) = offset {
+                    cell_offsets.push((offset, row, col));
+                    last_offset = Some(offset);
                 }
             }
         }
-        Some((text, click_offset?, link))
+        Some(OpenClickContext {
+            text,
+            click_offset: click_offset?,
+            link,
+            link_run,
+            cells: cell_offsets,
+        })
     }
 
     fn open_click_dir(&mut self, pane_id: usize, path: PathBuf) {
@@ -229,24 +325,60 @@ fn target_for_link(link: &str) -> Option<OpenClickTarget> {
 
 /// Resolve the token under `offset` in `text` to an open target: a web URL
 /// span, or a path candidate that exists on disk (relative ones against
-/// `cwd`).
-fn target_at(text: &str, offset: usize, cwd: Option<&Path>) -> Option<OpenClickTarget> {
+/// `cwd`). Also returns the byte span in `text` the target came from, so a
+/// hover can underline exactly what a click would open.
+fn target_at(
+    text: &str,
+    offset: usize,
+    cwd: Option<&Path>,
+) -> Option<(OpenClickTarget, std::ops::Range<usize>)> {
     if let Some(span) = crate::ui::url::find_web_url_spans(text)
         .into_iter()
         .find(|span| span.contains_byte(offset))
     {
-        return Some(OpenClickTarget::Url(span.as_str(text).to_string()));
+        return Some((
+            OpenClickTarget::Url(span.as_str(text).to_string()),
+            span.start..span.end,
+        ));
     }
 
-    let token = path_token_at(text, offset)?;
+    let (token, token_start) = path_token_at(text, offset)?;
     for (candidate, line) in path_candidates(&token) {
         if let Some(resolved) = resolve_path_candidate(&candidate, cwd)
             && let Some(target) = classify_existing_path(resolved, line)
         {
-            return Some(target);
+            // The span keeps trimmed trailing punctuation out but always
+            // covers the `:line` suffix and a stripped `a/` diff prefix, so
+            // the underline reads as one token.
+            let span_len = token.trim_end_matches(['.', ',', ';', ':', '!']).len();
+            return Some((
+                target,
+                token_start..token_start + span_len.max(candidate.len()),
+            ));
         }
     }
     None
+}
+
+/// Map a byte span of the joined logical line back onto screen cells, as
+/// (absolute row, contiguous pane-local column range) per touched row.
+fn hover_rows_for_span(
+    cells: &[(usize, usize, usize)],
+    span: std::ops::Range<usize>,
+) -> Vec<(usize, std::ops::Range<usize>)> {
+    let mut rows: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
+    for &(offset, row, col) in cells {
+        if !span.contains(&offset) {
+            continue;
+        }
+        match rows.last_mut() {
+            Some((last_row, range)) if *last_row == row && range.end == col => {
+                range.end = col + 1;
+            }
+            _ => rows.push((row, col..col + 1)),
+        }
+    }
+    rows
 }
 
 fn classify_existing_path(path: PathBuf, line: Option<usize>) -> Option<OpenClickTarget> {
@@ -294,8 +426,9 @@ fn is_path_char(c: char) -> bool {
     )
 }
 
-/// The maximal run of path characters around byte `offset`.
-fn path_token_at(text: &str, offset: usize) -> Option<String> {
+/// The maximal run of path characters around byte `offset`, with its byte
+/// start in `text`.
+fn path_token_at(text: &str, offset: usize) -> Option<(String, usize)> {
     if offset >= text.len() {
         return None;
     }
@@ -315,7 +448,7 @@ fn path_token_at(text: &str, offset: usize) -> Option<String> {
         end += c.len_utf8();
     }
     let token = &text[start..end];
-    (!token.is_empty()).then(|| token.to_string())
+    (!token.is_empty()).then(|| (token.to_string(), start))
 }
 
 /// Interpretations of a token to try against the filesystem, in order:
@@ -423,8 +556,8 @@ mod tests {
         let text = "error in (src/main.rs:42:7): expected";
         let offset = text.find("main").unwrap();
         assert_eq!(
-            path_token_at(text, offset).as_deref(),
-            Some("src/main.rs:42:7")
+            path_token_at(text, offset),
+            Some(("src/main.rs:42:7".to_string(), text.find("src").unwrap()))
         );
     }
 
@@ -433,8 +566,8 @@ mod tests {
         let text = "open \"~/notes/todo.md\" next";
         let offset = text.find("todo").unwrap();
         assert_eq!(
-            path_token_at(text, offset).as_deref(),
-            Some("~/notes/todo.md")
+            path_token_at(text, offset),
+            Some(("~/notes/todo.md".to_string(), text.find('~').unwrap()))
         );
         assert_eq!(path_token_at("  ", 1), None);
     }
@@ -506,28 +639,58 @@ mod tests {
         let text = "see sub/file.rs:3 and sub/ or https://example.com now";
         let cwd = Some(dir.path());
 
+        let file_start = text.find("sub/file").unwrap();
         let offset = text.find("file.rs").unwrap();
         assert_eq!(
             target_at(text, offset, cwd),
-            Some(OpenClickTarget::File {
-                path: dir.path().join("sub/file.rs"),
-                line: Some(3),
-            })
+            Some((
+                OpenClickTarget::File {
+                    path: dir.path().join("sub/file.rs"),
+                    line: Some(3),
+                },
+                file_start..file_start + "sub/file.rs:3".len(),
+            ))
         );
 
         let offset = text.find("sub/ ").unwrap();
         assert_eq!(
             target_at(text, offset, cwd),
-            Some(OpenClickTarget::Dir(dir.path().join("sub")))
+            Some((
+                OpenClickTarget::Dir(dir.path().join("sub")),
+                offset..offset + "sub/".len(),
+            ))
         );
 
         let offset = text.find("example").unwrap();
+        let url_start = text.find("https").unwrap();
         assert_eq!(
             target_at(text, offset, cwd),
-            Some(OpenClickTarget::Url("https://example.com".to_string()))
+            Some((
+                OpenClickTarget::Url("https://example.com".to_string()),
+                url_start..url_start + "https://example.com".len(),
+            ))
         );
 
         assert_eq!(target_at(text, text.find("now").unwrap(), cwd), None);
         assert_eq!(target_at(text, text.find("and").unwrap(), cwd), None);
+    }
+
+    #[test]
+    fn hover_rows_group_contiguous_cells_per_row() {
+        // Joined text "abcdef" split over two rows, with a wide char: offsets
+        // 2 and 3 map to (row 10, cols 2..4) and (row 11, col 0).
+        let cells = vec![
+            (0, 10, 0),
+            (1, 10, 1),
+            (2, 10, 2),
+            (2, 10, 3), // continuation cell of the wide char at offset 2
+            (3, 11, 0),
+            (4, 11, 1),
+        ];
+        assert_eq!(
+            hover_rows_for_span(&cells, 2..4),
+            vec![(10, 2..4), (11, 0..1)]
+        );
+        assert_eq!(hover_rows_for_span(&cells, 6..8), vec![]);
     }
 }
