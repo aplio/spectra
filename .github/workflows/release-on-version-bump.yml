@@ -81,8 +81,11 @@ jobs:
             asset_suffix: linux-aarch64
           - os: macos-latest
             asset_suffix: macos-arm64
-          - os: macos-13
-            asset_suffix: macos-x86_64
+          # Intel macOS (macos-x86_64) support was dropped: GitHub's macos-13
+          # Intel runners no longer get scheduled reliably and left release
+          # jobs hanging in the queue for ~24h until force-cancelled (see the
+          # v0.2.16 run), which blocked publishing. Apple Silicon is the only
+          # supported mac.
     steps:
       - name: Checkout
         uses: actions/checkout@v4
