@@ -785,6 +785,8 @@ impl App {
 
         self.mouse_enabled = loaded.mouse.enabled;
         self.open_click = loaded.mouse.open_click;
+        self.open_click_commands =
+            super::open_click::normalize_open_click_commands(&loaded.mouse.open_click_commands);
         if !self.mouse_enabled {
             self.view.mouse_drag = None;
         }

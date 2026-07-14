@@ -580,6 +580,7 @@ pub(super) struct RuntimeUiConfig {
     pub keys: KeyMapper,
     pub mouse_enabled: bool,
     pub open_click: config::OpenClickModifier,
+    pub open_click_commands: HashMap<String, String>,
     pub status_format: String,
     pub status_style: CellStyle,
     pub hooks: config::HooksConfig,

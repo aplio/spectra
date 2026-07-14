@@ -331,6 +331,7 @@ fn build_app_for_resize_test() -> App {
         started_unix: 1,
         mouse_enabled: false,
         open_click: OpenClickModifier::default(),
+        open_click_commands: HashMap::new(),
         client_focus_profiles: HashMap::new(),
         client_identities: HashMap::from([(
             super::LOCAL_CLIENT_ID,
@@ -464,6 +465,7 @@ fn build_app_with_history() -> App {
         started_unix: 1,
         mouse_enabled: false,
         open_click: OpenClickModifier::default(),
+        open_click_commands: HashMap::new(),
         client_focus_profiles: HashMap::new(),
         client_identities: HashMap::from([(
             super::LOCAL_CLIENT_ID,
@@ -590,6 +592,7 @@ fn build_app_with_write_behavior(behavior: WriteBehavior) -> App {
         started_unix: 1,
         mouse_enabled: false,
         open_click: OpenClickModifier::default(),
+        open_click_commands: HashMap::new(),
         client_focus_profiles: HashMap::new(),
         client_identities: HashMap::from([(
             super::LOCAL_CLIENT_ID,
@@ -673,6 +676,7 @@ fn build_app_with_close_on_write_behavior(behavior: CloseOnWriteBehavior) -> App
         started_unix: 1,
         mouse_enabled: false,
         open_click: OpenClickModifier::default(),
+        open_click_commands: HashMap::new(),
         client_focus_profiles: HashMap::new(),
         client_identities: HashMap::from([(
             super::LOCAL_CLIENT_ID,
@@ -795,6 +799,7 @@ fn build_recording_app_one_session() -> (App, RecordedWrites) {
         started_unix: 1,
         mouse_enabled: false,
         open_click: OpenClickModifier::default(),
+        open_click_commands: HashMap::new(),
         client_focus_profiles: HashMap::new(),
         client_identities: HashMap::from([(
             super::LOCAL_CLIENT_ID,
@@ -899,6 +904,7 @@ fn build_recording_app_with_history() -> (App, RecordedWrites) {
         started_unix: 1,
         mouse_enabled: false,
         open_click: OpenClickModifier::default(),
+        open_click_commands: HashMap::new(),
         client_focus_profiles: HashMap::new(),
         client_identities: HashMap::from([(
             super::LOCAL_CLIENT_ID,
@@ -981,6 +987,7 @@ fn build_recording_app_with_output(output: Vec<Vec<u8>>) -> (App, RecordedWrites
         started_unix: 1,
         mouse_enabled: false,
         open_click: OpenClickModifier::default(),
+        open_click_commands: HashMap::new(),
         client_focus_profiles: HashMap::new(),
         client_identities: HashMap::from([(
             super::LOCAL_CLIENT_ID,
@@ -1085,6 +1092,7 @@ fn build_recording_app_multi_session() -> (App, RecordedWrites) {
         started_unix: 1,
         mouse_enabled: false,
         open_click: OpenClickModifier::default(),
+        open_click_commands: HashMap::new(),
         client_focus_profiles: HashMap::new(),
         client_identities: HashMap::from([(
             super::LOCAL_CLIENT_ID,
@@ -1241,6 +1249,7 @@ fn build_editor_command_app() -> (App, RecordedSpawnConfigs, BackendClosedFlags)
         started_unix: 1,
         mouse_enabled: false,
         open_click: OpenClickModifier::default(),
+        open_click_commands: HashMap::new(),
         client_focus_profiles: HashMap::new(),
         client_identities: HashMap::from([(
             super::LOCAL_CLIENT_ID,
@@ -1342,6 +1351,7 @@ fn restore_from_runtime_state_recovers_multi_session_layout_and_focus() {
             keys: app.view.keys.clone(),
             mouse_enabled: app.mouse_enabled,
             open_click: app.open_click,
+            open_click_commands: app.open_click_commands.clone(),
             status_format: app.status_format.clone(),
             sidebar_formats: app.sidebar_formats.clone(),
             status_style: app.status_style,
@@ -1431,6 +1441,7 @@ fn restore_from_runtime_state_returns_none_on_corrupt_json() {
             keys: app.view.keys.clone(),
             mouse_enabled: app.mouse_enabled,
             open_click: app.open_click,
+            open_click_commands: app.open_click_commands.clone(),
             status_format: app.status_format.clone(),
             sidebar_formats: app.sidebar_formats.clone(),
             status_style: app.status_style,
@@ -1466,6 +1477,7 @@ fn restore_from_runtime_state_honors_sidebar_default_open() {
             keys: app.view.keys.clone(),
             mouse_enabled: app.mouse_enabled,
             open_click: app.open_click,
+            open_click_commands: app.open_click_commands.clone(),
             status_format: app.status_format.clone(),
             sidebar_formats: app.sidebar_formats.clone(),
             status_style: app.status_style,
@@ -1506,6 +1518,7 @@ fn restore_from_runtime_state_returns_none_on_invalid_snapshot() {
             keys: app.view.keys.clone(),
             mouse_enabled: app.mouse_enabled,
             open_click: app.open_click,
+            open_click_commands: app.open_click_commands.clone(),
             status_format: app.status_format.clone(),
             sidebar_formats: app.sidebar_formats.clone(),
             status_style: app.status_style,
@@ -1888,6 +1901,7 @@ fn restore_from_runtime_state_restores_client_focus_profiles() {
             keys: app.view.keys.clone(),
             mouse_enabled: app.mouse_enabled,
             open_click: app.open_click,
+            open_click_commands: app.open_click_commands.clone(),
             status_format: app.status_format.clone(),
             sidebar_formats: app.sidebar_formats.clone(),
             status_style: app.status_style,
@@ -1931,6 +1945,7 @@ fn attach_target_overrides_restored_profile_for_client() {
             keys: app.view.keys.clone(),
             mouse_enabled: app.mouse_enabled,
             open_click: app.open_click,
+            open_click_commands: app.open_click_commands.clone(),
             status_format: app.status_format.clone(),
             sidebar_formats: app.sidebar_formats.clone(),
             status_style: app.status_style,
@@ -9998,6 +10013,43 @@ fn open_click_on_file_path_opens_editor_window() {
         1,
         "clicked-file editor pane should auto-close when the editor exits"
     );
+}
+
+#[test]
+fn open_click_on_configured_extension_runs_the_command() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("report.xlsx");
+    std::fs::write(&file, "").expect("write file");
+    let out = dir.path().join("cmd.out");
+    let line = file.display().to_string();
+    let (mut app, _writes) = build_recording_app_with_output(vec![line.into_bytes()]);
+    app.mouse_enabled = true;
+    app.open_click_commands = HashMap::from([(
+        "xlsx".to_string(),
+        format!("echo CLICKED:${{PATH}} >> {}", out.display()),
+    )]);
+    app.tick();
+
+    app.handle_mouse(mouse_event_with_modifiers(
+        MouseEventKind::Down(MouseButton::Left),
+        1,
+        0,
+        KeyModifiers::CONTROL,
+    ));
+
+    // The command runs fire-and-forget on a detached thread.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let written = loop {
+        if let Ok(content) = std::fs::read_to_string(&out) {
+            break content;
+        }
+        assert!(Instant::now() < deadline, "open command never ran");
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(written, format!("CLICKED:{}\n", file.display()));
+    // No editor window: the click was handled by the configured command.
+    assert_eq!(app.current_session().window_count(), 1);
+    assert!(app.editor_pane_close_targets.is_empty());
 }
 
 #[test]

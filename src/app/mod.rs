@@ -150,6 +150,9 @@ pub struct App {
     started_unix: u64,
     mouse_enabled: bool,
     open_click: config::OpenClickModifier,
+    /// Per-extension open-click command overrides, keys normalized to
+    /// lowercase without the leading dot (see `[mouse.open_click_commands]`).
+    open_click_commands: HashMap<String, String>,
     client_focus_profiles: HashMap<String, PersistedClientFocusState>,
     client_identities: HashMap<ClientId, String>,
     active_client_id: ClientId,
@@ -264,6 +267,7 @@ impl App {
             started_unix,
             mouse_enabled: runtime_ui.mouse_enabled,
             open_click: runtime_ui.open_click,
+            open_click_commands: runtime_ui.open_click_commands,
             client_focus_profiles: HashMap::new(),
             client_identities,
             active_client_id: LOCAL_CLIENT_ID,
@@ -321,6 +325,9 @@ impl App {
             keys,
             mouse_enabled: app_config.mouse.enabled,
             open_click: app_config.mouse.open_click,
+            open_click_commands: open_click::normalize_open_click_commands(
+                &app_config.mouse.open_click_commands,
+            ),
             status_format: app_config
                 .status
                 .format
@@ -475,6 +482,7 @@ impl App {
             started_unix,
             mouse_enabled: runtime_ui.mouse_enabled,
             open_click: runtime_ui.open_click,
+            open_click_commands: runtime_ui.open_click_commands,
             client_focus_profiles: state.client_focus_profiles,
             client_identities,
             active_client_id: LOCAL_CLIENT_ID,

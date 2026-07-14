@@ -23,12 +23,26 @@ new_cwd = "follow"
 enabled = false
 # Modifier held with a left click to open the path or URL under the cursor
 # (ghostty-style cmd+click): an existing directory opens as a new pane cwd'd
-# there, an existing file opens in the editor (jumping to a trailing :line),
+# there, an existing file opens by type (see open_click_commands below),
 # a URL opens in the browser. Hovering with the modifier held underlines
 # what a click would open. Values: "ctrl" (default), "alt", "shift",
 # "super", "off". Terminal mouse reporting only carries shift/alt/ctrl, so
 # "super" needs a host terminal that reports it.
 open_click = "ctrl"
+
+# What a clicked file launches, keyed by extension (leading dot optional,
+# case-insensitive). A value is a shell command where ${PATH} is replaced
+# with the shell-quoted file path (appended when the template omits it), or
+# one of the special values "editor" / "system" forcing the configured
+# editor / the system opener (open on macOS, xdg-open elsewhere).
+# Extensions without an entry follow the built-in rule: documents (docx,
+# xlsx, pptx, pdf, ...), images, audio/video and archives go to the system
+# opener; everything else - text and code - opens in the editor (jumping to
+# a trailing :line).
+# [mouse.open_click_commands]
+# xlsx = "open ${PATH}"
+# csv = "open -a Numbers ${PATH}"
+# svg = "editor"
 
 [terminal]
 # tmux-compatible pass-through (DCS tmux;...ST) to the outer terminal.

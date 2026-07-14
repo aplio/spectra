@@ -80,8 +80,35 @@ impl App {
         };
         match target {
             OpenClickTarget::Dir(path) => self.open_click_dir(pane_id, path),
-            OpenClickTarget::File { path, line } => self.open_path_in_editor(&path, line),
+            OpenClickTarget::File { path, line } => self.open_click_file(&path, line),
             OpenClickTarget::Url(url) => self.open_click_url(&url),
+        }
+    }
+
+    /// Dispatch a clicked file by extension: a `[mouse.open_click_commands]`
+    /// entry wins (a shell command, or the special `editor`/`system`
+    /// values), known document/image/media/archive types go to the system
+    /// opener, and everything else — text and code — opens in the editor.
+    fn open_click_file(&mut self, path: &Path, line: Option<usize>) {
+        match file_open_route(&self.open_click_commands, path) {
+            FileOpenRoute::Editor => self.open_path_in_editor(path, line),
+            FileOpenRoute::System => {
+                let target = path.display().to_string();
+                self.spawn_system_opener(&target);
+            }
+            FileOpenRoute::Command(command) => {
+                let command_line = open_command_line(&command, path);
+                self.spawn_shell_detached(
+                    "open click command",
+                    command_line,
+                    HookContext::default(),
+                    Vec::new(),
+                );
+                self.set_message(
+                    &format!("opened {}", path.display()),
+                    Duration::from_secs(2),
+                );
+            }
         }
     }
 
@@ -274,13 +301,19 @@ impl App {
     }
 
     fn open_click_url(&mut self, url: &str) {
+        self.spawn_system_opener(url);
+    }
+
+    /// Hand `target` (a URL or file path) to the platform opener,
+    /// fire-and-forget.
+    fn spawn_system_opener(&mut self, target: &str) {
         let opener = if cfg!(target_os = "macos") {
             "open"
         } else {
             "xdg-open"
         };
         match std::process::Command::new(opener)
-            .arg(url)
+            .arg(target)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -291,16 +324,90 @@ impl App {
                 std::thread::spawn(move || {
                     let _ = child.wait();
                 });
-                self.set_message(&format!("opened {url}"), Duration::from_secs(2));
+                self.set_message(&format!("opened {target}"), Duration::from_secs(2));
             }
             Err(err) => {
                 self.set_message(
-                    &format!("open url failed ({opener}): {err}"),
+                    &format!("open failed ({opener}): {err}"),
                     Duration::from_secs(3),
                 );
             }
         }
     }
+}
+
+/// Where a clicked file goes, decided by [`file_open_route`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FileOpenRoute {
+    Editor,
+    System,
+    Command(String),
+}
+
+/// Extensions the built-in rule hands to the system opener instead of the
+/// editor: documents, images, audio/video and archives. Text and code stay
+/// with the editor, so anything not listed here falls through to it.
+const SYSTEM_OPEN_EXTENSIONS: &[&str] = &[
+    // documents
+    "doc", "docx", "odt", "rtf", "pages", "xls", "xlsx", "xlsm", "ods", "numbers", "ppt", "pptx",
+    "odp", "key", "pdf", "epub", // images
+    "png", "jpg", "jpeg", "gif", "bmp", "webp", "tiff", "tif", "ico", "heic", "svg",
+    // audio / video
+    "mp3", "wav", "flac", "m4a", "ogg", "mp4", "mov", "avi", "mkv", "webm",
+    // archives and disk images
+    "zip", "tar", "gz", "tgz", "bz2", "xz", "zst", "7z", "rar", "dmg",
+];
+
+/// Resolve the open route for `path`: a configured per-extension command
+/// (with `editor`/`system` as forcing special values) beats the built-in
+/// [`SYSTEM_OPEN_EXTENSIONS`] rule, which beats the editor default.
+fn file_open_route(commands: &HashMap<String, String>, path: &Path) -> FileOpenRoute {
+    let Some(ext) = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase)
+    else {
+        return FileOpenRoute::Editor;
+    };
+    if let Some(command) = commands.get(&ext) {
+        return match command.trim() {
+            "editor" => FileOpenRoute::Editor,
+            "system" => FileOpenRoute::System,
+            command => FileOpenRoute::Command(command.to_string()),
+        };
+    }
+    if SYSTEM_OPEN_EXTENSIONS.contains(&ext.as_str()) {
+        FileOpenRoute::System
+    } else {
+        FileOpenRoute::Editor
+    }
+}
+
+/// Build the shell command line for a configured open command: `${PATH}`
+/// is replaced with the shell-quoted file path, or the path is appended
+/// when the template never mentions it.
+fn open_command_line(command: &str, path: &Path) -> String {
+    let quoted = super::persistence::shell_quote(path.to_string_lossy().as_ref());
+    if command.contains("${PATH}") {
+        command.replace("${PATH}", &quoted)
+    } else {
+        format!("{command} {quoted}")
+    }
+}
+
+/// Normalize `[mouse.open_click_commands]` keys for lookup: lowercase,
+/// leading dot stripped, empty entries dropped.
+pub(super) fn normalize_open_click_commands(
+    commands: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    commands
+        .iter()
+        .filter_map(|(ext, command)| {
+            let ext = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+            let command = command.trim();
+            (!ext.is_empty() && !command.is_empty()).then(|| (ext, command.to_string()))
+        })
+        .collect()
 }
 
 /// Resolve an OSC 8 hyperlink: `file://` targets open as paths, web URLs go
@@ -673,6 +780,69 @@ mod tests {
 
         assert_eq!(target_at(text, text.find("now").unwrap(), cwd), None);
         assert_eq!(target_at(text, text.find("and").unwrap(), cwd), None);
+    }
+
+    #[test]
+    fn file_routes_split_editor_system_and_configured_commands() {
+        let commands = normalize_open_click_commands(&HashMap::from([
+            (".XLSX".to_string(), "open ${PATH}".to_string()),
+            ("svg".to_string(), "editor".to_string()),
+            ("log".to_string(), "system".to_string()),
+            ("".to_string(), "never".to_string()),
+            ("md".to_string(), "  ".to_string()),
+        ]));
+
+        // Configured command wins over the built-in system rule, matching
+        // case-insensitively with the leading dot stripped.
+        assert_eq!(
+            file_open_route(&commands, Path::new("/tmp/Sheet.xlsx")),
+            FileOpenRoute::Command("open ${PATH}".to_string())
+        );
+        // Special values force a built-in route.
+        assert_eq!(
+            file_open_route(&commands, Path::new("/tmp/icon.svg")),
+            FileOpenRoute::Editor
+        );
+        assert_eq!(
+            file_open_route(&commands, Path::new("/tmp/build.log")),
+            FileOpenRoute::System
+        );
+        // Empty keys and blank commands are dropped by normalization.
+        assert_eq!(
+            file_open_route(&commands, Path::new("/tmp/notes.md")),
+            FileOpenRoute::Editor
+        );
+        // Built-in defaults: documents to the system opener, code and
+        // extension-less files to the editor.
+        assert_eq!(
+            file_open_route(&HashMap::new(), Path::new("/tmp/deck.PPTX")),
+            FileOpenRoute::System
+        );
+        assert_eq!(
+            file_open_route(&HashMap::new(), Path::new("/tmp/main.rs")),
+            FileOpenRoute::Editor
+        );
+        assert_eq!(
+            file_open_route(&HashMap::new(), Path::new("/tmp/Makefile")),
+            FileOpenRoute::Editor
+        );
+    }
+
+    #[test]
+    fn open_command_line_substitutes_or_appends_the_quoted_path() {
+        let path = Path::new("/tmp/report q1.xlsx");
+        assert_eq!(
+            open_command_line("open ${PATH}", path),
+            "open '/tmp/report q1.xlsx'"
+        );
+        assert_eq!(
+            open_command_line("libreoffice --calc ${PATH} &", path),
+            "libreoffice --calc '/tmp/report q1.xlsx' &"
+        );
+        assert_eq!(
+            open_command_line("open -a Numbers", path),
+            "open -a Numbers '/tmp/report q1.xlsx'"
+        );
     }
 
     #[test]

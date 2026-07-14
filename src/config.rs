@@ -194,6 +194,16 @@ pub struct MouseConfig {
     /// works in host terminals that report it. (default: ctrl)
     #[serde(default)]
     pub open_click: OpenClickModifier,
+    /// What a click-to-open file launches, keyed by extension (leading dot
+    /// optional, case-insensitive). A value is a shell command where
+    /// `${PATH}` becomes the shell-quoted file path (appended when absent),
+    /// or one of the special values `"editor"` / `"system"` forcing the
+    /// configured editor / the system opener (`open` / `xdg-open`).
+    /// Extensions without an entry follow the built-in rule: documents,
+    /// images, media and archives go to the system opener, everything else
+    /// (text and code) opens in the editor.
+    #[serde(default)]
+    pub open_click_commands: HashMap<String, String>,
 }
 
 /// Modifier gating click-to-open (`[mouse] open_click`).
@@ -465,6 +475,10 @@ suppress_prompt_eol_marker = true
 [mouse]
 enabled = true
 
+[mouse.open_click_commands]
+xlsx = "open ${PATH}"
+".SVG" = "editor"
+
 [terminal]
 allow_passthrough = false
 scrollback_lines = 50000
@@ -513,6 +527,22 @@ C-w = "window-list"
         assert_eq!(config.editor.as_deref(), Some("hx"));
         assert!(config.shell.suppress_prompt_eol_marker);
         assert!(config.mouse.enabled);
+        assert_eq!(
+            config
+                .mouse
+                .open_click_commands
+                .get("xlsx")
+                .map(String::as_str),
+            Some("open ${PATH}")
+        );
+        assert_eq!(
+            config
+                .mouse
+                .open_click_commands
+                .get(".SVG")
+                .map(String::as_str),
+            Some("editor")
+        );
         assert!(!config.terminal.allow_passthrough);
         assert_eq!(config.terminal.scrollback_lines, 50_000);
         assert_eq!(config.pane.undo_close_seconds, 5);
