@@ -425,6 +425,18 @@ impl SessionManager {
         self.panes.get_mut(&pane_id).is_some_and(Pane::is_closed)
     }
 
+    /// Ids of every pane whose process has exited, sorted for deterministic
+    /// close order.
+    pub fn closed_pane_ids(&mut self) -> Vec<PaneId> {
+        let mut ids: Vec<PaneId> = self
+            .panes
+            .iter_mut()
+            .filter_map(|(pane_id, pane)| pane.is_closed().then_some(*pane_id))
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
     pub fn focused_window_number(&self) -> Option<usize> {
         (!self.windows.is_empty()).then_some(self.active_window + 1)
     }

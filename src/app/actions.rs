@@ -158,6 +158,88 @@ impl App {
         }
     }
 
+    /// Close every pane whose process exited, wherever it lives — a split
+    /// neighbor, a background window, or another session. The focused pane
+    /// of the active view is handled by [`Self::close_focused_or_quit`]
+    /// before this sweep runs so its quit/undo/status-message semantics
+    /// stay unchanged; this catches the rest, the way ghostty closes a
+    /// surface as soon as its child exits. A session left with only dead
+    /// panes is killed outright (quitting when it was the last one).
+    pub(super) fn close_exited_unfocused_panes(&mut self) {
+        let (cols, rows) = self.current_effective_pane_dims();
+        let mut session_index = 0;
+        while session_index < self.sessions.len() {
+            if self.should_quit {
+                return;
+            }
+            let dead = self.sessions[session_index].session.closed_pane_ids();
+            if dead.is_empty() {
+                session_index += 1;
+                continue;
+            }
+
+            let session_id = self.sessions[session_index].session_id.clone();
+            if dead.len() >= self.sessions[session_index].session.pane_count() {
+                match self.kill_session_by_index(session_index) {
+                    // Ok(false) removed the session, shifting the next one
+                    // into this slot; Ok(true) set should_quit for the loop
+                    // guard. Either way the index stays put.
+                    Ok(_) => {
+                        self.write_log(&format!(
+                            "pane process exited: closed dead session {session_id}"
+                        ));
+                    }
+                    Err(err) => {
+                        self.write_log(&format!(
+                            "auto close of dead session {session_id} failed: {err}"
+                        ));
+                        session_index += 1;
+                    }
+                }
+                continue;
+            }
+
+            // close_pane focuses its target before closing, which would
+            // yank a live focused pane sitting next to the dead one.
+            let focus_before = self.sessions[session_index].session.focused_pane_id();
+            let mut closed_any = false;
+            for pane_id in dead {
+                let close_result = self.sessions[session_index]
+                    .session
+                    .close_pane(pane_id, cols, rows);
+                match close_result {
+                    Ok(()) => {
+                        closed_any = true;
+                        let session = &self.sessions[session_index];
+                        let context = HookContext {
+                            session_id: Some(session.session_id.clone()),
+                            session_name: Some(session.session.session_name().to_string()),
+                            pane_id: Some(pane_id),
+                            ..HookContext::default()
+                        };
+                        self.emit_hook(HookEvent::PaneClosed, context);
+                        self.write_log(&format!("pane process exited: closed pane {pane_id}"));
+                    }
+                    Err(err) => {
+                        self.write_log(&format!("auto close of pane {pane_id} failed: {err}"));
+                    }
+                }
+            }
+            if closed_any {
+                if let Some(pane_id) = focus_before
+                    && self.sessions[session_index].session.pane_exists(pane_id)
+                {
+                    let _ = self.sessions[session_index].session.focus_pane_id(pane_id);
+                }
+                self.sync_tree_names();
+                self.needs_render = true;
+                self.needs_full_clear = true;
+                self.persist_active_session_info();
+            }
+            session_index += 1;
+        }
+    }
+
     /// Key-chord hint for undoing the close just performed (e.g. `C-j u`),
     /// shown in the status message. `None` when nothing was retained or the
     /// restore action is unbound.

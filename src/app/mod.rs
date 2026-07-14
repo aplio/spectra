@@ -597,6 +597,7 @@ impl App {
             self.close_focused_or_quit("pane process exited");
             self.needs_render = true;
         }
+        self.close_exited_unfocused_panes();
 
         let mut expired = self.clear_expired_message();
         let now = Instant::now();

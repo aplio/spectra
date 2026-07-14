@@ -3917,6 +3917,84 @@ fn editor_pane_auto_close_works_after_focus_moves_elsewhere() {
 }
 
 #[test]
+fn exited_unfocused_split_pane_auto_closes_on_tick() {
+    let (mut app, _, close_flags) = build_editor_command_app();
+    let _ = app.handle_action(CommandAction::Split(SplitAxis::Vertical));
+    assert_eq!(app.current_session().pane_count(), 2);
+    assert_eq!(app.current_session().focused_pane_id(), Some(2));
+
+    close_flags
+        .lock()
+        .expect("close flags lock")
+        .insert(1, true);
+    app.tick();
+
+    assert!(!app.current_session().pane_exists(1));
+    assert_eq!(app.current_session().pane_count(), 1);
+    assert_eq!(app.current_session().focused_pane_id(), Some(2));
+    assert!(!app.should_quit);
+}
+
+#[test]
+fn exited_pane_in_unfocused_window_auto_closes_on_tick() {
+    let (mut app, _, close_flags) = build_editor_command_app();
+    app.current_session_mut()
+        .new_window(80, 24)
+        .expect("create second window");
+    assert_eq!(app.current_session().focused_pane_id(), Some(2));
+
+    close_flags
+        .lock()
+        .expect("close flags lock")
+        .insert(1, true);
+    app.tick();
+
+    assert!(!app.current_session().pane_exists(1));
+    assert_eq!(app.current_session().focused_pane_id(), Some(2));
+    assert!(!app.should_quit);
+}
+
+#[test]
+fn background_session_with_dead_pane_is_killed_on_tick() {
+    let (mut app, _, _) = build_editor_command_app();
+    let configs = Arc::new(Mutex::new(Vec::new()));
+    let close_flags = Arc::new(Mutex::new(HashMap::new()));
+    let factory = Arc::new(EditorPaneFactory::new(
+        Arc::clone(&configs),
+        Arc::clone(&close_flags),
+    ));
+    let options = app
+        .session_template
+        .clone()
+        .with_session_name("bg".to_string());
+    let session =
+        SessionManager::with_factory(options, factory, 80, 24).expect("create bg session");
+    app.sessions.push(ManagedSession {
+        ordinal: 2,
+        session_id: "bg-2".to_string(),
+        session,
+        window_names: HashMap::new(),
+        pane_names: HashMap::new(),
+        window_auto_names: HashMap::new(),
+        pane_auto_names: HashMap::new(),
+        terminal_titles: HashMap::new(),
+        cwd_fallbacks: HashMap::new(),
+        agents: AgentTracking::default(),
+    });
+
+    close_flags
+        .lock()
+        .expect("close flags lock")
+        .insert(1, true);
+    app.tick();
+
+    assert_eq!(app.sessions.len(), 1);
+    assert_eq!(app.sessions[0].session_id, "main-1");
+    assert_eq!(app.view.active_session, 0);
+    assert!(!app.should_quit);
+}
+
+#[test]
 fn command_palette_escape_closes_without_executing() {
     let mut app = build_app_for_resize_test();
     open_command_palette(&mut app);
