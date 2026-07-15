@@ -601,9 +601,26 @@ impl App {
 
         self.close_exited_editor_panes();
 
+        // A dead focused pane gets close_focused_or_quit's full treatment
+        // (quit-on-last-pane, undo retention, status message) in the view
+        // that is focused on it. tick() only sees the active view, so step
+        // every client's view — a remote client's focused pane would
+        // otherwise fall through to the silent unfocused sweep below.
         if self.current_session_mut().focused_pane_closed() {
             self.close_focused_or_quit("pane process exited");
             self.needs_render = true;
+        }
+        let client_ids: Vec<ClientId> = self.inactive_client_states.keys().copied().collect();
+        for client_id in client_ids {
+            if self.should_quit || self.sessions.is_empty() {
+                break;
+            }
+            self.with_client_context(client_id, |app| {
+                if app.current_session_mut().focused_pane_closed() {
+                    app.close_focused_or_quit("pane process exited");
+                    app.needs_render = true;
+                }
+            });
         }
         self.close_exited_unfocused_panes();
 

@@ -1762,6 +1762,64 @@ fn tick_auto_close_of_exited_unfocused_pane_keeps_max_client_viewport_sizes() {
 }
 
 #[test]
+fn tick_closes_dead_focused_pane_of_a_remote_clients_session() {
+    let (mut app, _resizes, _closed) = build_app_with_closable_panes(0);
+
+    // A second session on its own closable backends; the remote client
+    // moves onto it while the local view stays on session 0.
+    let session_resizes = Arc::new(Mutex::new(Vec::new()));
+    let session_closed = Arc::new(Mutex::new(std::collections::HashSet::new()));
+    let session = SessionManager::with_factory(
+        app.session_template.clone(),
+        Arc::new(ClosableFactory {
+            resizes: Arc::clone(&session_resizes),
+            closed: Arc::clone(&session_closed),
+        }),
+        80,
+        24,
+    )
+    .expect("create second session");
+    app.sessions.push(ManagedSession {
+        ordinal: 2,
+        session_id: "main-2".to_string(),
+        session,
+        window_names: HashMap::new(),
+        pane_names: HashMap::new(),
+        window_auto_names: HashMap::new(),
+        pane_auto_names: HashMap::new(),
+        terminal_titles: HashMap::new(),
+        cwd_fallbacks: HashMap::new(),
+        agents: AgentTracking::default(),
+    });
+    let _ = app.handle_action_for_client(1, CommandAction::NextSession);
+    let _ = app.handle_action_for_client(1, CommandAction::Split(SplitAxis::Vertical));
+    assert_eq!(app.sessions[1].session.pane_count(), 2);
+
+    // The remote client's focused pane (2, in session 2) exits. tick()
+    // only sees the local view (session 0), so the close must be handled
+    // by stepping the remote client's own view context — landing in
+    // close_focused_or_quit with its status message — rather than falling
+    // through to the silent unfocused sweep.
+    session_closed.lock().expect("closed mark lock").insert(2);
+    app.tick();
+
+    assert_eq!(app.sessions[1].session.pane_count(), 1);
+    let state = app
+        .inactive_client_states
+        .get(&1)
+        .expect("remote client state");
+    let message = &state
+        .status_message
+        .as_ref()
+        .expect("remote client should get the pane-closed message")
+        .text;
+    assert!(
+        message.contains("pane closed"),
+        "expected pane-closed message in the remote client's view, got {message:?}"
+    );
+}
+
+#[test]
 fn side_window_tree_toggle_resizes_backends_to_effective_viewport() {
     let (mut app, resizes) = build_app_with_resize_recording_backend(80, 24);
 
