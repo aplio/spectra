@@ -1712,7 +1712,7 @@ dependencies = [
 
 [[package]]
 name = "spectra"
-version = "0.2.18"
+version = "0.2.19"
 dependencies = [
  "base64",
  "clap",
