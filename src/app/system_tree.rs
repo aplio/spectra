@@ -912,7 +912,7 @@ impl App {
     }
 
     pub(super) fn execute_tree_delete(&mut self, target: TreeRowKind) -> Result<String, String> {
-        let (cols, rows) = self.current_effective_pane_dims();
+        let (cols, rows) = self.max_client_pane_dims();
         match target {
             TreeRowKind::Session { session_index } => {
                 let shutdown = self.kill_session_by_index(session_index)?;

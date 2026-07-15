@@ -192,7 +192,7 @@ impl App {
         self.api_focus_target(pane_id, session_id)
             .map_err(|err| format!("split-window failed: {err}"))?;
 
-        let (cols, rows) = self.current_effective_pane_dims();
+        let (cols, rows) = self.max_client_pane_dims();
         self.current_session_mut()
             .split_focused(axis, cols, rows)
             .map_err(|err| format!("split-window failed: {err}"))?;
@@ -219,7 +219,7 @@ impl App {
         direction: crate::ui::window_manager::Direction,
     ) -> Result<(), String> {
         self.api_focus_target(pane_id, session_id)?;
-        let (cols, rows) = self.current_effective_pane_dims();
+        let (cols, rows) = self.max_client_pane_dims();
         self.current_session_mut()
             .swap_pane_in_direction(direction, cols, rows)?;
         self.sync_focus_history_for_active_session();
@@ -238,7 +238,7 @@ impl App {
         to_window: Option<usize>,
     ) -> Result<(usize, usize), String> {
         self.api_focus_target(pane_id, session_id)?;
-        let (cols, rows) = self.current_effective_pane_dims();
+        let (cols, rows) = self.max_client_pane_dims();
         let moved = match to_window {
             Some(number) => self
                 .current_session_mut()
@@ -280,7 +280,7 @@ impl App {
             return Err("pane is already in that session".to_string());
         }
 
-        let (cols, rows) = self.current_effective_pane_dims();
+        let (cols, rows) = self.max_client_pane_dims();
         let pane = self.sessions[source_index]
             .session
             .take_pane_for_transfer(pane_id, cols, rows)?;
@@ -355,7 +355,7 @@ impl App {
                 .focused_window_number()
                 .ok_or_else(|| "session has no windows".to_string())?,
         };
-        let (cols, rows) = self.current_effective_pane_dims();
+        let (cols, rows) = self.max_client_pane_dims();
         self.sessions[index]
             .session
             .apply_window_layout(number, tree, cols, rows)?;
@@ -374,7 +374,7 @@ impl App {
         ratio_percent: u8,
     ) -> Result<(), String> {
         let index = self.api_session_index_for_pane(pane_id, session_id)?;
-        let (cols, rows) = self.current_effective_pane_dims();
+        let (cols, rows) = self.max_client_pane_dims();
         self.sessions[index]
             .session
             .set_split_ratio(pane_id, ratio_percent, cols, rows)?;

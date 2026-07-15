@@ -109,7 +109,7 @@ impl App {
     }
 
     pub(super) fn close_focused_or_quit(&mut self, reason: &str) {
-        let (cols, rows) = self.current_effective_pane_dims();
+        let (cols, rows) = self.max_client_pane_dims();
 
         if self.current_session().pane_count() <= 1 {
             if self.sessions.len() > 1 {
@@ -166,7 +166,7 @@ impl App {
     /// surface as soon as its child exits. A session left with only dead
     /// panes is killed outright (quitting when it was the last one).
     pub(super) fn close_exited_unfocused_panes(&mut self) {
-        let (cols, rows) = self.current_effective_pane_dims();
+        let (cols, rows) = self.max_client_pane_dims();
         let mut session_index = 0;
         while session_index < self.sessions.len() {
             if self.should_quit {
@@ -257,7 +257,7 @@ impl App {
     /// Restore the most recently closed pane (undo close), if one is still
     /// within its retention window.
     pub(super) fn restore_last_closed_pane(&mut self) {
-        let (cols, rows) = self.current_effective_pane_dims();
+        let (cols, rows) = self.max_client_pane_dims();
         match self
             .current_session_mut()
             .restore_last_closed_pane(cols, rows)
@@ -346,7 +346,7 @@ impl App {
     }
 
     pub(super) fn handle_action(&mut self, action: CommandAction) -> AppSignal {
-        let (cols, rows) = self.current_effective_pane_dims();
+        let (cols, rows) = self.max_client_pane_dims();
 
         // Any action other than a repeated quit cancels a pending
         // quit confirmation.
@@ -656,7 +656,7 @@ impl App {
         options.session_name = format!("{}-{ordinal}", self.session_template.session_name);
         options.session_id = session_id_for(&options.session_name, ordinal);
 
-        let (cols, rows) = self.current_effective_pane_dims();
+        let (cols, rows) = self.max_client_pane_dims();
         let mut session = SessionManager::new(options, cols, rows)
             .map_err(|err| format!("create session failed: {err}"))?;
         session

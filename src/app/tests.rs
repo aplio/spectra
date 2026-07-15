@@ -1616,6 +1616,151 @@ fn client_resize_event_resizes_backends_to_max_connected_viewport() {
     );
 }
 
+struct ClosablePaneBackend {
+    pane_id: usize,
+    resizes: Arc<Mutex<Vec<(usize, u16, u16)>>>,
+    closed: Arc<Mutex<std::collections::HashSet<usize>>>,
+}
+
+impl PaneBackend for ClosablePaneBackend {
+    fn write(&mut self, _bytes: &[u8]) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn resize(&mut self, cols: u16, rows: u16) -> io::Result<()> {
+        self.resizes
+            .lock()
+            .expect("resize lock")
+            .push((self.pane_id, cols, rows));
+        Ok(())
+    }
+
+    fn poll_output(&mut self) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+
+    fn is_closed(&mut self) -> bool {
+        self.closed
+            .lock()
+            .expect("closed lock")
+            .contains(&self.pane_id)
+    }
+}
+
+struct ClosableFactory {
+    resizes: Arc<Mutex<Vec<(usize, u16, u16)>>>,
+    closed: Arc<Mutex<std::collections::HashSet<usize>>>,
+}
+
+impl PaneFactory for ClosableFactory {
+    fn spawn(&self, config: &PaneSpawnConfig) -> io::Result<Box<dyn PaneBackend>> {
+        Ok(Box::new(ClosablePaneBackend {
+            pane_id: config.pane_id,
+            resizes: Arc::clone(&self.resizes),
+            closed: Arc::clone(&self.closed),
+        }))
+    }
+}
+
+/// App on an 80x24 local view with a 200x50 remote client attached and the
+/// remote having split `splits` times. Returns the shared resize records and
+/// the closed-pane marker set feeding every pane backend's `is_closed`.
+#[allow(clippy::type_complexity)]
+fn build_app_with_closable_panes(
+    splits: usize,
+) -> (
+    App,
+    Arc<Mutex<Vec<(usize, u16, u16)>>>,
+    Arc<Mutex<std::collections::HashSet<usize>>>,
+) {
+    let mut app = build_app_for_resize_test();
+    let resizes = Arc::new(Mutex::new(Vec::new()));
+    let closed = Arc::new(Mutex::new(std::collections::HashSet::new()));
+    let session = SessionManager::with_factory(
+        app.session_template.clone(),
+        Arc::new(ClosableFactory {
+            resizes: Arc::clone(&resizes),
+            closed: Arc::clone(&closed),
+        }),
+        80,
+        24,
+    )
+    .expect("create closable session");
+    app.sessions[0].session = session;
+    app.view.cols = 80;
+    app.view.rows = 24;
+
+    app.register_client(1, 200, 50);
+    app.handle_client_resize_event(1, 200, 50)
+        .expect("resize remote client");
+    for _ in 0..splits {
+        let _ = app.handle_action_for_client(1, CommandAction::Split(SplitAxis::Vertical));
+    }
+    assert_eq!(app.sessions[0].session.pane_count(), splits + 1);
+    (app, resizes, closed)
+}
+
+/// The survivors of a close must tile the max client viewport (200x50 → a
+/// 200x49 workspace): every pane full height, widths summing to the full
+/// width minus one column per divider between `pane_count` panes.
+fn assert_resizes_tile_max_client_viewport(recorded: &[(usize, u16, u16)], pane_count: u16) {
+    assert!(
+        !recorded.is_empty(),
+        "expected the auto close to re-apply layout sizes"
+    );
+    assert!(
+        recorded.iter().all(|&(_, _, rows)| rows == 49),
+        "expected surviving panes at max client viewport height, got {recorded:?}"
+    );
+    let total_width: u16 = recorded.iter().map(|&(_, cols, _)| cols).sum();
+    assert_eq!(
+        total_width,
+        200 - (pane_count - 1),
+        "expected surviving pane widths to tile the max client viewport, got {recorded:?}"
+    );
+}
+
+#[test]
+fn tick_auto_close_of_exited_focused_pane_keeps_max_client_viewport_sizes() {
+    let (mut app, resizes, closed) = build_app_with_closable_panes(1);
+
+    // Pane 1 is the focused pane of the server's local view (its focus
+    // history restores when event handling swaps the remote client's view
+    // back out). Its process exits and the next tick auto-closes it via
+    // close_focused_or_quit. tick() runs outside any client context — on
+    // the 80x24 local view — so the surviving pane must stay laid out for
+    // the attached 200x50 client, not shrink to the local view.
+    closed.lock().expect("closed mark lock").insert(1);
+    resizes.lock().expect("resize clear lock").clear();
+    app.tick();
+
+    assert_eq!(app.sessions[0].session.pane_count(), 1);
+    let recorded = resizes.lock().expect("resize read lock");
+    assert_resizes_tile_max_client_viewport(&recorded, 1);
+}
+
+#[test]
+fn tick_auto_close_of_exited_unfocused_pane_keeps_max_client_viewport_sizes() {
+    let (mut app, resizes, closed) = build_app_with_closable_panes(2);
+
+    // Pane 2 is focused in no view (the local view's history restores pane
+    // 1, the remote client sits on pane 3), so its exit is picked up by the
+    // close_exited_unfocused_panes sweep in tick(). Same trap as the
+    // focused variant: the sweep runs on the 80x24 local view and must not
+    // shrink the survivors below the attached client's 200x50 viewport.
+    closed.lock().expect("closed mark lock").insert(2);
+    resizes.lock().expect("resize clear lock").clear();
+    app.tick();
+
+    assert_eq!(app.sessions[0].session.pane_count(), 2);
+    assert!(
+        !app.sessions[0].session.pane_exists(2),
+        "expected the exited pane to be auto-closed"
+    );
+    let recorded = resizes.lock().expect("resize read lock");
+    assert_resizes_tile_max_client_viewport(&recorded, 2);
+}
+
 #[test]
 fn side_window_tree_toggle_resizes_backends_to_effective_viewport() {
     let (mut app, resizes) = build_app_with_resize_recording_backend(80, 24);

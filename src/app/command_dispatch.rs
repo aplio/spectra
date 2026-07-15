@@ -34,7 +34,7 @@ impl App {
                 if let Some(target) = target {
                     self.apply_attach_target(&target)?;
                 }
-                let (cols, rows) = self.current_effective_pane_dims();
+                let (cols, rows) = self.max_client_pane_dims();
                 self.current_session_mut()
                     .new_window(cols, rows)
                     .map_err(|err| format!("new-window failed: {err}"))?;
@@ -58,7 +58,7 @@ impl App {
                         crate::ui::window_manager::SplitAxis::Horizontal
                     }
                 };
-                let (cols, rows) = self.current_effective_pane_dims();
+                let (cols, rows) = self.max_client_pane_dims();
                 self.current_session_mut()
                     .split_focused(split_axis, cols, rows)
                     .map_err(|err| format!("split-window failed: {err}"))?;

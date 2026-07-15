@@ -175,7 +175,7 @@ impl App {
             "{editor_command} {}",
             shell_quote(path.to_string_lossy().as_ref())
         );
-        let (cols, rows) = self.current_effective_pane_dims();
+        let (cols, rows) = self.max_client_pane_dims();
         if let Err(err) =
             self.current_session_mut()
                 .new_window_with_command(cols, rows, vec![command_line])
@@ -278,7 +278,7 @@ impl App {
             "{editor_command} {}",
             shell_quote(path.to_string_lossy().as_ref())
         );
-        let (cols, rows) = self.current_effective_pane_dims();
+        let (cols, rows) = self.max_client_pane_dims();
         if let Err(err) =
             self.current_session_mut()
                 .new_window_with_command(cols, rows, vec![command_line])
@@ -340,7 +340,7 @@ impl App {
             }
             _ => format!("{editor_command} {quoted}"),
         };
-        let (cols, rows) = self.current_effective_pane_dims();
+        let (cols, rows) = self.max_client_pane_dims();
         if let Err(err) =
             self.current_session_mut()
                 .new_window_with_command(cols, rows, vec![command_line])
@@ -405,7 +405,7 @@ impl App {
             }
 
             let close_result = {
-                let (cols, rows) = self.current_effective_pane_dims();
+                let (cols, rows) = self.max_client_pane_dims();
                 self.sessions[session_index]
                     .session
                     .close_pane(target.pane_id, cols, rows)

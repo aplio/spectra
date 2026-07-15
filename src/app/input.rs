@@ -508,7 +508,7 @@ impl App {
                 };
 
                 let resized = {
-                    let (cols, rows) = self.current_effective_pane_dims();
+                    let (cols, rows) = self.max_client_pane_dims();
                     let session = self.current_session_mut();
                     if session.focus_pane_id(drag.pane_id).is_ok() {
                         session.resize_focused(direction, amount, cols, rows)
@@ -981,7 +981,7 @@ impl App {
             } else {
                 RESIZE_MODE_STEP
             };
-            let (cols, rows) = self.current_effective_pane_dims();
+            let (cols, rows) = self.max_client_pane_dims();
             if self
                 .current_session_mut()
                 .resize_focused(direction, amount, cols, rows)

@@ -1094,7 +1094,14 @@ impl App {
         expired
     }
 
-    fn resize_sessions_to_max_client_viewport(&mut self) -> io::Result<()> {
+    /// Effective pane dims (cols, rows) sessions must be laid out for: the
+    /// max across every connected client's sidebar-adjusted viewport, not
+    /// just the active view. Structural changes (split, close, restore, …)
+    /// re-apply layout sizes with these dims; using the active view instead
+    /// would shrink every pane's grid and PTY to the server's default-sized
+    /// local view whenever the change runs outside a client context (e.g.
+    /// auto-close of an exited pane in `tick`).
+    pub(super) fn max_client_pane_dims(&self) -> (u16, u16) {
         let mut max_cols =
             Self::effective_pane_cols_for_view(self.view.cols, self.view.side_window_tree_open);
         let mut max_rows = self.view.rows;
@@ -1105,6 +1112,11 @@ impl App {
             ));
             max_rows = max_rows.max(state.rows);
         }
+        (max_cols, max_rows)
+    }
+
+    fn resize_sessions_to_max_client_viewport(&mut self) -> io::Result<()> {
+        let (max_cols, max_rows) = self.max_client_pane_dims();
         for managed in &mut self.sessions {
             managed.session.resize(max_cols, max_rows)?;
         }

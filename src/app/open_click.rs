@@ -274,7 +274,7 @@ impl App {
     }
 
     fn open_click_dir(&mut self, pane_id: usize, path: PathBuf) {
-        let (cols, rows) = self.current_effective_pane_dims();
+        let (cols, rows) = self.max_client_pane_dims();
         if self.current_session().focused_pane_id() != Some(pane_id)
             && self.current_session_mut().focus_pane_id(pane_id).is_ok()
         {
