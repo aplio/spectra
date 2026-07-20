@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -168,6 +168,8 @@ pub struct SessionRuntimeSnapshot {
     pub next_window_id: WindowId,
     pub active_window: usize,
     pub windows: Vec<SessionWindowSnapshot>,
+    #[serde(default)]
+    pub protected_pane_ids: HashSet<PaneId>,
     /// Tracked cwd per pane at snapshot time, so a disk restore respawns
     /// each shell in the directory it was in (missing for older snapshots).
     #[serde(default)]
@@ -179,6 +181,8 @@ pub struct SessionWindowSnapshot {
     pub id: WindowId,
     pub manager: WindowManagerSnapshot,
     #[serde(default)]
+    pub protected: bool,
+    #[serde(default)]
     pub zoomed: bool,
     #[serde(default)]
     pub synchronize_panes: bool,
@@ -189,6 +193,7 @@ pub struct SessionWindowSnapshot {
 pub(super) struct SessionWindow {
     pub(super) id: WindowId,
     pub(super) manager: WindowManager,
+    pub(super) protected: bool,
     pub(super) zoomed: bool,
     pub(super) synchronize_panes: bool,
     pub(super) zoom_snapshot: Option<WindowManagerSnapshot>,
@@ -217,6 +222,7 @@ pub struct SessionManager {
     pub(super) options: SessionOptions,
     pub(super) pane_factory: Arc<dyn PaneFactory>,
     pub(super) panes: HashMap<PaneId, Pane>,
+    pub(super) protected_pane_ids: HashSet<PaneId>,
     pub(super) windows: Vec<SessionWindow>,
     pub(super) active_window: usize,
     pub(super) next_pane_id: PaneId,
@@ -259,9 +265,11 @@ impl SessionManager {
             options,
             pane_factory,
             panes,
+            protected_pane_ids: HashSet::new(),
             windows: vec![SessionWindow {
                 id: 1,
                 manager: WindowManager::new(first_pane_id),
+                protected: false,
                 zoomed: false,
                 synchronize_panes: false,
                 zoom_snapshot: None,

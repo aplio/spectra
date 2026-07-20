@@ -13,6 +13,7 @@ pub enum CommandAction {
     Focus(Direction),
     FocusNextPane,
     FocusPrevPane,
+    TogglePaneProtection,
     ClosePane,
     /// Restore the most recently closed pane (undo close).
     RestoreClosedPane,
@@ -63,6 +64,7 @@ pub enum CommandAction {
     CreateDefaultConfig,
     KillSession,
     CloseWindow,
+    ToggleWindowProtection,
     OpenConfigInEditor,
     EnterLockMode,
     LeaveLockMode,
@@ -90,6 +92,7 @@ impl CommandAction {
             Self::Focus(direction) => format!("Focus {} pane", direction_word(*direction)),
             Self::FocusNextPane => "Focus next pane".to_string(),
             Self::FocusPrevPane => "Focus previous pane".to_string(),
+            Self::TogglePaneProtection => "Protect/unprotect focused pane".to_string(),
             Self::ClosePane => "Close pane".to_string(),
             Self::RestoreClosedPane => "Restore closed pane".to_string(),
             Self::Quit => "Quit".to_string(),
@@ -129,6 +132,7 @@ impl CommandAction {
             Self::CreateDefaultConfig => "Create default config".to_string(),
             Self::KillSession => "Kill session".to_string(),
             Self::CloseWindow => "Close window".to_string(),
+            Self::ToggleWindowProtection => "Protect/unprotect current window".to_string(),
             Self::OpenConfigInEditor => "Open config in editor".to_string(),
             Self::EnterLockMode => "Enter lock mode".to_string(),
             Self::LeaveLockMode => "Leave lock mode".to_string(),
@@ -352,6 +356,8 @@ fn default_prefix_bindings() -> HashMap<String, CommandAction> {
     map.insert("r".to_string(), CommandAction::ReloadConfig);
     map.insert("O".to_string(), CommandAction::FocusPrevPane);
     map.insert("o".to_string(), CommandAction::FocusNextPane);
+    map.insert("m".to_string(), CommandAction::TogglePaneProtection);
+    map.insert("M".to_string(), CommandAction::ToggleWindowProtection);
 
     map.insert("{".to_string(), CommandAction::SwapPrevWindow);
     map.insert("}".to_string(), CommandAction::SwapNextWindow);
@@ -461,6 +467,9 @@ fn parse_action(spec: &str) -> Option<CommandAction> {
         "focus-prev-pane" | "focus-previous-pane" | "prev-pane" => {
             Some(CommandAction::FocusPrevPane)
         }
+        "toggle-pane-protection" | "protect-pane" | "unprotect-pane" => {
+            Some(CommandAction::TogglePaneProtection)
+        }
 
         "close-pane" => Some(CommandAction::ClosePane),
         "restore-pane"
@@ -527,6 +536,9 @@ fn parse_action(spec: &str) -> Option<CommandAction> {
         }
         "kill-session" | "kill-current-session" => Some(CommandAction::KillSession),
         "close-window" | "close-current-window" => Some(CommandAction::CloseWindow),
+        "toggle-window-protection" | "protect-window" | "unprotect-window" => {
+            Some(CommandAction::ToggleWindowProtection)
+        }
         "open-config-in-editor" | "edit-config" => Some(CommandAction::OpenConfigInEditor),
         "enter-lock-mode" | "lock" => Some(CommandAction::EnterLockMode),
         "leave-lock-mode" | "unlock" => Some(CommandAction::LeaveLockMode),
@@ -965,6 +977,19 @@ mod tests {
         mapper.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
         let action = mapper.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
         assert_eq!(action, InputAction::Command(CommandAction::NewSession));
+    }
+
+    #[test]
+    fn prefix_m_toggles_pane_and_window_protection() {
+        for (key, expected) in [
+            ('m', CommandAction::TogglePaneProtection),
+            ('M', CommandAction::ToggleWindowProtection),
+        ] {
+            let mut mapper = KeyMapper::new();
+            mapper.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+            let action = mapper.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+            assert_eq!(action, InputAction::Command(expected));
+        }
     }
 
     #[test]

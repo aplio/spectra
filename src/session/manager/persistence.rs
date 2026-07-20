@@ -62,6 +62,7 @@ impl SessionManager {
             windows.push(SessionWindow {
                 id: window_snapshot.id,
                 manager,
+                protected: window_snapshot.protected,
                 zoomed,
                 synchronize_panes: window_snapshot.synchronize_panes,
                 zoom_snapshot: if zoomed {
@@ -106,13 +107,18 @@ impl SessionManager {
             panes.insert(pane_id, pane);
         }
 
-        let max_pane_id = pane_ids.into_iter().max().unwrap_or(0);
+        let max_pane_id = pane_ids.iter().copied().max().unwrap_or(0);
         let max_window_id = windows.iter().map(|window| window.id).max().unwrap_or(0);
 
         let mut session = Self {
             options,
             pane_factory,
             panes,
+            protected_pane_ids: snapshot
+                .protected_pane_ids
+                .into_iter()
+                .filter(|pane_id| pane_ids.contains(pane_id))
+                .collect(),
             windows,
             active_window: snapshot.active_window,
             next_pane_id: snapshot.next_pane_id.max(max_pane_id + 1),
@@ -143,11 +149,13 @@ impl SessionManager {
                 .map(|window| SessionWindowSnapshot {
                     id: window.id,
                     manager: window.manager.snapshot(),
+                    protected: window.protected,
                     zoomed: window.zoomed,
                     synchronize_panes: window.synchronize_panes,
                     zoom_snapshot: window.zoom_snapshot.clone(),
                 })
                 .collect(),
+            protected_pane_ids: self.protected_pane_ids.clone(),
             pane_cwds: self
                 .panes
                 .iter()

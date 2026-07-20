@@ -277,6 +277,8 @@ pub(super) struct CommandPaletteContext {
     pub cursor_mode_active: bool,
     /// Whether a recently closed pane is still retained for undo close.
     pub can_restore_pane: bool,
+    pub pane_protected: bool,
+    pub window_protected: bool,
 }
 
 /// One row of the keyboard-shortcut cheat sheet: a key display and what it does.

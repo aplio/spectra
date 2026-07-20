@@ -235,6 +235,8 @@ impl App {
             locked_input: self.view.locked_input,
             cursor_mode_active: matches!(self.view.input_mode, InputMode::CursorMode { .. }),
             can_restore_pane: self.current_session().has_restorable_closed_pane(),
+            pane_protected: self.current_session().focused_pane_protected(),
+            window_protected: self.current_session().active_window_protected(),
         }
     }
 
@@ -314,6 +316,18 @@ impl App {
             "Close focused pane",
             "close pane focused",
             &["action: close focused pane"],
+        );
+        Self::push_command_palette_entry(
+            &mut entries,
+            "pane.toggle_protection",
+            CommandAction::TogglePaneProtection,
+            if ctx.pane_protected {
+                "Unprotect focused pane"
+            } else {
+                "Protect focused pane"
+            },
+            "protect unprotect toggle protection focused pane pin lock",
+            &["action: toggle deletion protection", "scope: focused pane"],
         );
         Self::push_command_palette_entry_if(
             &mut entries,
@@ -711,6 +725,21 @@ impl App {
             &[
                 "action: close the active window",
                 "scope: all panes in window",
+            ],
+        );
+        Self::push_command_palette_entry(
+            &mut entries,
+            "window.toggle_protection",
+            CommandAction::ToggleWindowProtection,
+            if ctx.window_protected {
+                "Unprotect current window"
+            } else {
+                "Protect current window"
+            },
+            "protect unprotect toggle protection current window pin lock",
+            &[
+                "action: toggle deletion protection",
+                "scope: current window",
             ],
         );
 

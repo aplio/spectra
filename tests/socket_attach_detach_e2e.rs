@@ -234,6 +234,18 @@ impl TestClient {
         })
     }
 
+    fn run_palette_query(&mut self, query: &str) -> io::Result<()> {
+        self.send_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))?;
+        self.send_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE))?;
+        for ch in query.chars() {
+            self.send_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE))?;
+        }
+        self.send_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))?;
+        // The default prefix is sticky. Clear it so the next helper starts
+        // from a deterministic normal-mode state.
+        self.send_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+    }
+
     fn send_detach(&mut self) -> io::Result<()> {
         self.send_key(KeyEvent::new_with_kind(
             KeyCode::Char('j'),
@@ -585,6 +597,106 @@ fn socket_attach_detach_and_reattach_flow() {
         }
         thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[test]
+fn command_palette_protection_blocks_pane_and_window_deletion() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime_dir = dir.path().join("runtime");
+    let data_home = dir.path().join("data");
+    std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+    std::fs::create_dir_all(&data_home).expect("create data dir");
+
+    let _server = spawn_server(&runtime_dir, &data_home).expect("spawn server");
+    let socket = socket_path(&runtime_dir);
+    wait_for_socket(&socket).expect("wait for socket");
+
+    let mut client = TestClient::connect(&socket, 100, 30).expect("connect client");
+    client
+        .wait_for_message(WAIT_TIMEOUT, |message| {
+            matches!(message, ServerMessage::Render { .. })
+        })
+        .expect("initial render");
+
+    client
+        .run_palette_query("protect focused pane")
+        .expect("protect pane through command palette");
+    client
+        .wait_for_render_containing("pane protected", WAIT_TIMEOUT)
+        .expect("pane protected status");
+
+    client
+        .send_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
+        .expect("prefix for close pane");
+    client
+        .send_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+        .expect("attempt close pane");
+    client
+        .wait_for_render_containing("pane is protected", WAIT_TIMEOUT)
+        .expect("protected pane rejects close");
+    client
+        .send_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .expect("clear sticky prefix");
+
+    client
+        .run_palette_query("unprotect focused pane")
+        .expect("unprotect pane through command palette");
+    client
+        .wait_for_render_containing("pane unprotected", WAIT_TIMEOUT)
+        .expect("pane unprotected status");
+
+    client
+        .send_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
+        .expect("prefix for new window");
+    client
+        .send_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
+        .expect("create second window");
+    client
+        .wait_for_message(WAIT_TIMEOUT, |message| {
+            matches!(message, ServerMessage::Render { .. })
+        })
+        .expect("render second window");
+    client
+        .send_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .expect("clear sticky prefix");
+
+    client
+        .run_palette_query("protect current window")
+        .expect("protect window through command palette");
+    client
+        .wait_for_render_containing("window protected", WAIT_TIMEOUT)
+        .expect("window protected status");
+    client
+        .run_palette_query("close current window")
+        .expect("attempt close protected window");
+    client
+        .wait_for_render_containing("close window failed: window is protected", WAIT_TIMEOUT)
+        .expect("protected window rejects close");
+
+    client
+        .send(ClientMessage::Command {
+            request: CommandRequest::Ls,
+        })
+        .expect("list sessions");
+    let listed = client
+        .wait_for_message(WAIT_TIMEOUT, |message| {
+            matches!(
+                message,
+                ServerMessage::CommandResult {
+                    result: CommandResult::SessionList { .. }
+                }
+            )
+        })
+        .expect("session list result");
+    let ServerMessage::CommandResult {
+        result: CommandResult::SessionList { sessions },
+    } = listed
+    else {
+        panic!("expected session list result");
+    };
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].window_count, 2);
+    assert_eq!(sessions[0].pane_count, 2);
 }
 
 #[test]

@@ -2332,6 +2332,27 @@ fn close_pane_on_last_pane_of_last_session_quits() {
 }
 
 #[test]
+fn protection_blocks_close_and_session_kill_actions() {
+    let mut app = build_app_for_resize_test();
+
+    app.handle_action(CommandAction::TogglePaneProtection);
+    app.handle_action(CommandAction::ClosePane);
+    assert!(!app.should_quit);
+    assert_eq!(app.current_session().pane_count(), 1);
+
+    app.handle_action(CommandAction::KillSession);
+    assert!(!app.should_quit);
+    assert_eq!(app.sessions.len(), 1);
+
+    app.handle_action(CommandAction::TogglePaneProtection);
+    app.handle_action(CommandAction::NewWindow);
+    assert_eq!(app.current_session().window_count(), 2);
+    app.handle_action(CommandAction::ToggleWindowProtection);
+    app.handle_action(CommandAction::CloseWindow);
+    assert_eq!(app.current_session().window_count(), 2);
+}
+
+#[test]
 fn close_pane_on_last_pane_of_session_closes_only_that_session() {
     let mut app = build_app_for_resize_test();
     app.create_session();
@@ -2629,6 +2650,28 @@ fn command_palette_includes_copy_version() {
     let entries = App::command_palette_entries();
     assert!(entries.iter().any(|entry| {
         entry.id == "help.copy_version" && entry.action == CommandAction::CopyVersion
+    }));
+}
+
+#[test]
+fn command_palette_protection_labels_follow_current_state() {
+    let mut app = build_app_for_resize_test();
+    let entries = App::command_palette_entries_for(app.command_palette_context());
+    assert!(entries.iter().any(|entry| {
+        entry.id == "pane.toggle_protection" && entry.label == "Protect focused pane"
+    }));
+    assert!(entries.iter().any(|entry| {
+        entry.id == "window.toggle_protection" && entry.label == "Protect current window"
+    }));
+
+    app.handle_action(CommandAction::TogglePaneProtection);
+    app.handle_action(CommandAction::ToggleWindowProtection);
+    let entries = App::command_palette_entries_for(app.command_palette_context());
+    assert!(entries.iter().any(|entry| {
+        entry.id == "pane.toggle_protection" && entry.label == "Unprotect focused pane"
+    }));
+    assert!(entries.iter().any(|entry| {
+        entry.id == "window.toggle_protection" && entry.label == "Unprotect current window"
     }));
 }
 

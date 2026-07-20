@@ -8,6 +8,9 @@ impl App {
         if session_index >= self.sessions.len() {
             return Err("session index out of range".to_string());
         }
+        if self.sessions[session_index].session.has_protected_items() {
+            return Err("session contains a protected window or pane".to_string());
+        }
 
         if self.sessions.len() == 1 {
             let context = self.current_hook_context();
@@ -111,7 +114,16 @@ impl App {
     pub(super) fn close_focused_or_quit(&mut self, reason: &str) {
         let (cols, rows) = self.max_client_pane_dims();
 
+        if self.current_session().focused_pane_protected() {
+            self.set_message("pane is protected", Duration::from_secs(2));
+            return;
+        }
+
         if self.current_session().pane_count() <= 1 {
+            if self.current_session().active_window_protected() {
+                self.set_message("window is protected", Duration::from_secs(2));
+                return;
+            }
             if self.sessions.len() > 1 {
                 let closed_session = self.current_session_id().to_string();
                 match self.kill_session_by_index(self.view.active_session) {
@@ -142,19 +154,22 @@ impl App {
             return;
         }
 
-        if self.current_session_mut().close_focused(cols, rows).is_ok() {
-            self.apply_action_effects(ActionEffects {
-                hook: Some(HookEvent::PaneClosed),
-                ..ActionEffects::reorder()
-            });
-            self.write_log(&format!("{reason}: closed focused pane"));
-            let message = self
-                .undo_close_hint()
-                .map(|hint| format!("pane closed ({hint} to restore)"))
-                .unwrap_or_else(|| "pane closed".to_string());
-            self.set_message(&message, Duration::from_secs(3));
-        } else {
-            self.set_message("pane close failed", Duration::from_secs(2));
+        match self.current_session_mut().close_focused(cols, rows) {
+            Ok(()) => {
+                self.apply_action_effects(ActionEffects {
+                    hook: Some(HookEvent::PaneClosed),
+                    ..ActionEffects::reorder()
+                });
+                self.write_log(&format!("{reason}: closed focused pane"));
+                let message = self
+                    .undo_close_hint()
+                    .map(|hint| format!("pane closed ({hint} to restore)"))
+                    .unwrap_or_else(|| "pane closed".to_string());
+                self.set_message(&message, Duration::from_secs(3));
+            }
+            Err(err) => {
+                self.set_message(&format!("pane close failed: {err}"), Duration::from_secs(2))
+            }
         }
     }
 
@@ -394,6 +409,25 @@ impl App {
                     self.apply_action_effects(ActionEffects::layout());
                 }
             }
+            CommandAction::TogglePaneProtection => {
+                match self.current_session_mut().toggle_focused_pane_protection() {
+                    Ok(true) => {
+                        self.apply_action_effects(ActionEffects {
+                            persist_runtime_state: true,
+                            ..Default::default()
+                        });
+                        self.set_message("pane protected", Duration::from_secs(2));
+                    }
+                    Ok(false) => {
+                        self.apply_action_effects(ActionEffects {
+                            persist_runtime_state: true,
+                            ..Default::default()
+                        });
+                        self.set_message("pane unprotected", Duration::from_secs(2));
+                    }
+                    Err(err) => self.set_message(&err, Duration::from_secs(2)),
+                }
+            }
             CommandAction::ClosePane => self.close_focused_or_quit("close pane"),
             CommandAction::RestoreClosedPane => self.restore_last_closed_pane(),
             CommandAction::Quit => self.request_quit(),
@@ -628,6 +662,25 @@ impl App {
                             Duration::from_secs(3),
                         );
                     }
+                }
+            }
+            CommandAction::ToggleWindowProtection => {
+                match self.current_session_mut().toggle_active_window_protection() {
+                    Ok(true) => {
+                        self.apply_action_effects(ActionEffects {
+                            persist_runtime_state: true,
+                            ..Default::default()
+                        });
+                        self.set_message("window protected", Duration::from_secs(2));
+                    }
+                    Ok(false) => {
+                        self.apply_action_effects(ActionEffects {
+                            persist_runtime_state: true,
+                            ..Default::default()
+                        });
+                        self.set_message("window unprotected", Duration::from_secs(2));
+                    }
+                    Err(err) => self.set_message(&err, Duration::from_secs(2)),
                 }
             }
         }

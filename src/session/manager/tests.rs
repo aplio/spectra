@@ -781,6 +781,64 @@ fn close_pane_can_close_non_focused_pane() {
 }
 
 #[test]
+fn protected_pane_cannot_be_closed() {
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options, Arc::new(FakeFactory), 80, 24)
+        .expect("create session");
+    session
+        .split_focused(SplitAxis::Vertical, 80, 24)
+        .expect("split vertical");
+
+    assert!(
+        session
+            .toggle_focused_pane_protection()
+            .expect("protect pane")
+    );
+    let err = session
+        .close_focused(80, 24)
+        .expect_err("protected pane must not close");
+
+    assert_eq!(err, "pane is protected");
+    assert_eq!(session.pane_count(), 2);
+    assert!(session.focused_pane_protected());
+}
+
+#[test]
+fn protected_window_and_its_protected_panes_cannot_be_closed() {
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options, Arc::new(FakeFactory), 80, 24)
+        .expect("create session");
+    session.new_window(80, 24).expect("create second window");
+
+    assert!(
+        session
+            .toggle_active_window_protection()
+            .expect("protect window")
+    );
+    let err = session
+        .close_active_window(80, 24)
+        .expect_err("protected window must not close");
+    assert_eq!(err, "window is protected");
+    assert_eq!(session.window_count(), 2);
+
+    assert!(
+        !session
+            .toggle_active_window_protection()
+            .expect("unprotect")
+    );
+    assert!(
+        session
+            .toggle_focused_pane_protection()
+            .expect("protect pane")
+    );
+    let err = session
+        .close_active_window(80, 24)
+        .expect_err("window containing protected pane must not close");
+    assert_eq!(err, "window contains a protected pane");
+    assert_eq!(session.window_count(), 2);
+}
+
+#[test]
 fn rename_session_updates_name() {
     let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
     let mut session = SessionManager::with_factory(options, Arc::new(FakeFactory), 80, 24)
@@ -959,6 +1017,32 @@ fn runtime_snapshot_preserves_zoom_and_synchronize_flags() {
 }
 
 #[test]
+fn runtime_snapshot_preserves_protection() {
+    let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
+    let mut session = SessionManager::with_factory(options.clone(), Arc::new(FakeFactory), 80, 24)
+        .expect("create session");
+    session
+        .toggle_focused_pane_protection()
+        .expect("protect pane");
+    session
+        .toggle_active_window_protection()
+        .expect("protect window");
+
+    let restored = SessionManager::with_factory_from_runtime_snapshot(
+        options,
+        Arc::new(FakeFactory),
+        session.runtime_snapshot(),
+        80,
+        24,
+    )
+    .expect("restore session");
+
+    assert!(restored.focused_pane_protected());
+    assert!(restored.active_window_protected());
+    assert!(restored.has_protected_items());
+}
+
+#[test]
 fn restore_rejects_snapshot_without_windows() {
     let options = SessionOptions::from_cli(Some("/bin/sh".to_string()), None, vec![]);
     let snapshot = SessionRuntimeSnapshot {
@@ -967,6 +1051,7 @@ fn restore_rejects_snapshot_without_windows() {
         next_window_id: 1,
         active_window: 0,
         windows: Vec::new(),
+        protected_pane_ids: std::collections::HashSet::new(),
         pane_cwds: std::collections::HashMap::new(),
     };
 

@@ -398,10 +398,12 @@ mod tests {
             windows: vec![crate::session::manager::SessionWindowSnapshot {
                 id: 1,
                 manager: crate::ui::window_manager::WindowManager::new(1).snapshot(),
+                protected: false,
                 zoomed: false,
                 synchronize_panes: false,
                 zoom_snapshot: None,
             }],
+            protected_pane_ids: std::collections::HashSet::new(),
             pane_cwds: HashMap::new(),
         };
 

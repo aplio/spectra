@@ -97,6 +97,7 @@ impl SessionManager {
         self.windows.push(SessionWindow {
             id: window_id,
             manager: WindowManager::new(new_pane_id),
+            protected: false,
             zoomed: false,
             synchronize_panes: false,
             zoom_snapshot: None,
@@ -257,6 +258,7 @@ impl SessionManager {
         self.windows.push(SessionWindow {
             id: window_id,
             manager: WindowManager::new(pane_id),
+            protected: false,
             zoomed: false,
             synchronize_panes: false,
             zoom_snapshot: None,
@@ -299,6 +301,11 @@ impl SessionManager {
             .manager
             .focused_pane_id()
             .ok_or_else(|| "No focused pane".to_string())?;
+        if self.windows[source_index].manager.pane_count() == 1
+            && self.windows[source_index].protected
+        {
+            return Err("source window is protected".to_string());
+        }
 
         let mut target_index = target_index;
         if self.windows[source_index].manager.pane_count() > 1 {
@@ -341,6 +348,14 @@ impl SessionManager {
         };
         if self.panes.len() <= 1 {
             return Err("cannot move the session's last pane".to_string());
+        }
+        if self.protected_pane_ids.contains(&pane_id) {
+            return Err("pane is protected".to_string());
+        }
+        if self.windows[window_index].manager.pane_count() == 1
+            && self.windows[window_index].protected
+        {
+            return Err("window is protected".to_string());
         }
 
         {
@@ -390,6 +405,7 @@ impl SessionManager {
         self.windows.push(SessionWindow {
             id: window_id,
             manager: WindowManager::new(pane_id),
+            protected: false,
             zoomed: false,
             synchronize_panes: false,
             zoom_snapshot: None,
@@ -501,9 +517,46 @@ impl SessionManager {
         Ok(window.synchronize_panes)
     }
 
+    pub fn focused_pane_protected(&self) -> bool {
+        self.focused_pane_id()
+            .is_some_and(|pane_id| self.protected_pane_ids.contains(&pane_id))
+    }
+
+    pub fn active_window_protected(&self) -> bool {
+        self.active_window().is_some_and(|window| window.protected)
+    }
+
+    pub fn has_protected_items(&self) -> bool {
+        !self.protected_pane_ids.is_empty() || self.windows.iter().any(|window| window.protected)
+    }
+
+    pub fn toggle_focused_pane_protection(&mut self) -> Result<bool, String> {
+        let pane_id = self
+            .focused_pane_id()
+            .ok_or_else(|| "No focused pane".to_string())?;
+        if !self.protected_pane_ids.remove(&pane_id) {
+            self.protected_pane_ids.insert(pane_id);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn toggle_active_window_protection(&mut self) -> Result<bool, String> {
+        let window = self.active_window_mut()?;
+        window.protected = !window.protected;
+        Ok(window.protected)
+    }
+
     pub fn close_focused(&mut self, cols: u16, rows: u16) -> Result<(), String> {
         self.ensure_active_window_unzoomed()?;
         let active_index = self.active_window;
+        let pane_id = self
+            .focused_pane_id()
+            .ok_or_else(|| "No focused pane".to_string())?;
+        if self.protected_pane_ids.contains(&pane_id) {
+            return Err("pane is protected".to_string());
+        }
         let window_pane_count = self
             .windows
             .get(active_index)
@@ -528,6 +581,9 @@ impl SessionManager {
                 self.retain_closed_pane(pane_id, pane, window_id, active_index, snapshot);
             }
         } else if self.windows.len() > 1 {
+            if self.windows[active_index].protected {
+                return Err("window is protected".to_string());
+            }
             let window = self
                 .windows
                 .get(active_index)
@@ -553,6 +609,9 @@ impl SessionManager {
     }
 
     pub fn close_pane(&mut self, pane_id: PaneId, cols: u16, rows: u16) -> Result<(), String> {
+        if self.protected_pane_ids.contains(&pane_id) {
+            return Err("pane is protected".to_string());
+        }
         let Some(window_index) = self
             .windows
             .iter()
@@ -592,6 +651,9 @@ impl SessionManager {
                 self.retain_closed_pane(closed, pane, window_id, window_index, snapshot);
             }
         } else if self.windows.len() > 1 {
+            if self.windows[window_index].protected {
+                return Err("window is protected".to_string());
+            }
             let window = self
                 .windows
                 .get(window_index)
@@ -665,6 +727,7 @@ impl SessionManager {
                 SessionWindow {
                     id: window_id,
                     manager,
+                    protected: false,
                     zoomed: false,
                     synchronize_panes: false,
                     zoom_snapshot: None,
@@ -698,6 +761,9 @@ impl SessionManager {
         }
 
         let window = &self.windows[window_index];
+        if window.protected {
+            return Err("window is protected".to_string());
+        }
 
         let mut pane_ids = window.manager.ordered_pane_ids();
         if let Some(snapshot) = &window.zoom_snapshot {
@@ -705,6 +771,12 @@ impl SessionManager {
         }
         pane_ids.sort_unstable();
         pane_ids.dedup();
+        if pane_ids
+            .iter()
+            .any(|pane_id| self.protected_pane_ids.contains(pane_id))
+        {
+            return Err("window contains a protected pane".to_string());
+        }
 
         for pane_id in pane_ids {
             self.panes.remove(&pane_id);
