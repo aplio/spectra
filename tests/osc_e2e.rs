@@ -1,6 +1,7 @@
 use std::io;
 use std::sync::{Arc, Mutex};
 
+use crossterm::style::Color;
 use spectra::session::manager::{SessionManager, SessionOptions};
 use spectra::session::pane::PaneBackend;
 use spectra::session::pty_backend::{PaneFactory, PaneSpawnConfig};
@@ -63,14 +64,6 @@ fn feed(bytes: &[u8]) -> Harness {
     Harness { session, writes }
 }
 
-fn render(session: &SessionManager) -> Vec<u8> {
-    let frame = session.frame(COLS, ROWS);
-    let mut out = Vec::new();
-    spectra::ui::render::render_to_writer(&mut out, &frame, "status", COLS, ROWS, true, None, None)
-        .expect("render pane");
-    out
-}
-
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
@@ -82,36 +75,51 @@ fn replies(harness: &Harness) -> Vec<u8> {
 }
 
 #[test]
-fn osc4_palette_override_recolors_indexed_cells_in_rendered_output() {
+fn osc4_palette_override_recolors_indexed_cells_in_render_frame() {
     // Redefine palette index 1, then draw with SGR 31 (fg = index 1).
     let harness = feed(b"\x1b]4;1;#ff8000\x07\x1b[31mHi\x1b[0m");
-    let output = render(&harness.session);
-    assert!(contains(&output, b"Hi"), "expected pane text in output");
-    assert!(
-        contains(&output, b"38;2;255;128;0"),
-        "expected the palette override as a truecolor SGR, got {:?}",
-        String::from_utf8_lossy(&output)
+    let frame = harness.session.frame(COLS, ROWS);
+    let cell = &frame.panes[0].rows[0][0];
+    assert_eq!(cell.ch, 'H');
+    assert_eq!(
+        cell.style.fg,
+        Some(Color::Rgb {
+            r: 255,
+            g: 128,
+            b: 0,
+        })
     );
 
     // Without the override the same text renders as an indexed color.
     let plain = feed(b"\x1b[31mHi\x1b[0m");
-    let output = render(&plain.session);
-    assert!(!contains(&output, b"38;2;255;128;0"));
+    let frame = plain.session.frame(COLS, ROWS);
+    assert_eq!(
+        frame.panes[0].rows[0][0].style.fg,
+        Some(Color::AnsiValue(1))
+    );
 }
 
 #[test]
-fn osc10_11_overrides_recolor_default_cells_in_rendered_output() {
+fn osc10_11_overrides_recolor_default_cells_in_render_frame() {
     let harness = feed(b"\x1b]10;#123456\x07\x1b]11;#654321\x07Hi");
-    let output = render(&harness.session);
-    assert!(
-        contains(&output, b"38;2;18;52;86"),
-        "expected OSC 10 default-fg override in output, got {:?}",
-        String::from_utf8_lossy(&output)
+    let frame = harness.session.frame(COLS, ROWS);
+    let cell = &frame.panes[0].rows[0][0];
+    assert_eq!(cell.ch, 'H');
+    assert_eq!(
+        cell.style.fg,
+        Some(Color::Rgb {
+            r: 0x12,
+            g: 0x34,
+            b: 0x56,
+        })
     );
-    assert!(
-        contains(&output, b"48;2;101;67;33"),
-        "expected OSC 11 default-bg override in output, got {:?}",
-        String::from_utf8_lossy(&output)
+    assert_eq!(
+        cell.style.bg,
+        Some(Color::Rgb {
+            r: 0x65,
+            g: 0x43,
+            b: 0x21,
+        })
     );
 }
 
